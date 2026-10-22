@@ -220,6 +220,9 @@ test('AgentLoop denies a rewritten Edit target outside the workspace before appr
 test('AgentLoop does not execute a Bash command when interactive approval is denied', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-denied-'));
   const marker = join(workspace, 'must-not-exist.txt');
+  const script = 'require("node:fs").writeFileSync(' + JSON.stringify(marker) + ', "executed")';
+  const encodedScript = Buffer.from(script).toString('base64');
+  const command = JSON.stringify(process.execPath) + ' -e "eval(Buffer.from(\'' + encodedScript + '\', \'base64\').toString())"';
   let approvalCalls = 0;
   try {
     const tools = await createBuiltinTools({ workspace });
@@ -230,7 +233,7 @@ test('AgentLoop does not execute a Bash command when interactive approval is den
           type: 'tool_use',
           id: 'cli-bash-denied-1',
           name: 'Bash',
-          input: { command: process.execPath + ' -e "require(\\'node:fs\\').writeFileSync(' + JSON.stringify(marker) + ', \\'executed\\')" ' },
+          input: { command },
         };
         yield { type: 'message_end', stopReason: 'tool_use' };
       },
