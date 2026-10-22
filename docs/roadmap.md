@@ -63,12 +63,14 @@
 
 ## Phase 5 — Session 与持久化
 
-- [ ] 支持多轮输入、warm session 和 cold resume
-- [ ] 区分会话 ID、Query ID、回合 ID、control request ID 与 tool-use ID
-- [ ] 明确 result、idle、待处理控制请求之间的关系
-- [ ] 定义重启恢复、清理与过期策略
+- [x] 支持多轮输入与 warm session
+- [x] 实现 JSON 文件存储，并用全新 manager 验证 cold resume
+- [x] 分离 Session ID、Turn ID、control request ID 与 tool-use ID；Query ID 的实际生成/恢复仍待接入真实 adapter
+- [x] 明确 result / idle / requires_action 生命周期与 user turn 生命周期是两层状态
+- [x] 实现 revision 检查、显式 interrupted-turn recovery、close 与 delete
+- [ ] 增加过期清理策略与跨进程锁/多写者存储
 
-**验收：** 测试覆盖新会话、多轮发送、中断、恢复和关闭后的资源清理。
+**验收：** 新增测试覆盖 warm 多轮、文件冷恢复、失败 turn 记录、revision 冲突、中断 reconciliation 和关闭后的资源清理；文件存储当前按单写进程设计。
 
 ## Phase 6 — MCP 与扩展工具
 
@@ -99,4 +101,4 @@
 
 ## 当前下一步
 
-下一步补齐 Session / Turn 的持久化契约，再开始真实模型 adapter 与 MCP bridge 的集成。权限必须是独立的 allow/deny/ask 决策层；没有实现权限策略的工具不得默认放行。
+下一步建立 provider-specific model adapter 的测试契约，再实现 MCP bridge；Query ID 与真实模型事件需要在 adapter 层明确映射。权限必须是独立的 allow/deny/ask 决策层；没有实现权限策略的工具不得默认放行。
