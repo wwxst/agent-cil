@@ -274,3 +274,25 @@ test('tool execution errors become error tool_result blocks and allow recovery',
   assert.equal(result.turns, 2);
   assert.equal(result.finalMessage.content[0].text, 'Recovered from the tool error.');
 });
+
+
+test('propagates cancellation when an approval handler aborts and rejects', async () => {
+  const controller = new AbortController();
+  let executions = 0;
+  const loop = new AgentLoop({
+    model: new ScriptedModel([toolEnd('tool-cancel-approval', 'echo', { value: 'wait' })]),
+    tools: makeRegistry(async input => { executions += 1; return input; }),
+    permissionPolicy: async () => ({ behavior: 'ask' }),
+    approvalHandler: async ({ signal }) => {
+      controller.abort();
+      throw signal.reason;
+    },
+    maxTurns: 1,
+  });
+  await assert.rejects(
+    loop.run({ input: 'Cancel during approval.', signal: controller.signal }),
+    { name: 'AbortError' },
+  );
+  assert.equal(executions, 0);
+  assert.equal(loop.active, false);
+});
