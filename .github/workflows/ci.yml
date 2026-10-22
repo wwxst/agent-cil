@@ -19,3 +19,49 @@ jobs:
       - run: npm test
       - name: Syntax-check source and tests
         run: find packages -name '*.js' -print0 | xargs -0 -n1 node --check
+
+  legacy-cli-2-1-88-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download the pinned published package without running install scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" "@anthropic-ai/claude-code@2.1.88" > "$RUNNER_TEMP/pack.json"
+          tarball="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))[0].filename)' "$RUNNER_TEMP/pack.json")"
+          mkdir -p "$RUNNER_TEMP/legacy-cli-package"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/legacy-cli-package"
+          package_dir="$RUNNER_TEMP/legacy-cli-package/package"
+          node -e '
+            const fs = require("node:fs");
+            const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (p.name !== "@anthropic-ai/claude-code" || p.version !== "2.1.88" || p.bin?.claude !== "cli.js") {
+              throw new Error("Unexpected published package identity or entry point");
+            }
+            console.log(JSON.stringify({ name: p.name, version: p.version, bin: p.bin, engines: p.engines, license: p.license }));
+          ' "$package_dir/package.json"
+          printf '%s\n' "$package_dir" > "$RUNNER_TEMP/legacy-cli-package-dir"
+
+      - name: Run only the version fast path with an empty environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="$(cat "$RUNNER_TEMP/legacy-cli-package-dir")"
+          mkdir -p "$RUNNER_TEMP/empty-home"
+          set +e
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/empty-home" TMPDIR="$RUNNER_TEMP" \
+            timeout 10s node "$package_dir/cli.js" --version \
+            > "$RUNNER_TEMP/legacy-cli.stdout" 2> "$RUNNER_TEMP/legacy-cli.stderr"
+          status=$?
+          set -e
+          printf 'exit_code=%s\n' "$status"
+          printf '%s\n' '--- stdout ---'
+          cat "$RUNNER_TEMP/legacy-cli.stdout"
+          printf '%s\n' '--- stderr ---'
+          cat "$RUNNER_TEMP/legacy-cli.stderr"
+          test "$status" -eq 0
+          test "$(cat "$RUNNER_TEMP/legacy-cli.stdout")" = '2.1.88 (Claude Code)'
+          test ! -s "$RUNNER_TEMP/legacy-cli.stderr"
