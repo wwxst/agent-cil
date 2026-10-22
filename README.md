@@ -42,6 +42,7 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 - [agent-loop-comparison.md](docs/reverse-engineering/agent-loop-comparison.md)：旧版 2.1.88 与新版 2.1.304 的代码级对照。
 - [protocol-runtime-slice.md](docs/design/protocol-runtime-slice.md)：协议实现范围、证据对应和验收条件。
 - [process-transport.md](docs/design/process-transport.md)：子进程状态机、stdio 生命周期和测试边界。
+- [query-protocol-session.md](docs/design/query-protocol-session.md)：初始化、双向控制请求和 run-end 生命周期。
 - [baseline.md](docs/reverse-engineering/baseline.md)：样本版本、目录、完整性记录与证据等级。
 - [architecture.md](docs/reverse-engineering/architecture.md)：新版 Desktop、SDK、CLI 的组件职责。
 - [protocol-contracts.md](docs/reverse-engineering/protocol-contracts.md)：控制请求、权限、MCP 与生命周期契约。

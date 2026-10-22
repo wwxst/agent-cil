@@ -7,3 +7,5 @@ export {
   createControlCancelFrame,
 } from './control-requests.js';
 export { ProcessTransport } from './process-transport.js';
+export { NO_CONTROL_RESPONSE, QueryProtocolSession } from './query-session.js';
+export { QueryRunLifecycle } from './query-lifecycle.js';
