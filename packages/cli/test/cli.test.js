@@ -777,6 +777,31 @@ test('file tools reject symbolic links that resolve outside the workspace', asyn
     await rm(outside, { recursive: true, force: true });
   }
 });
+test('Grep reports truncated results when workspace traversal reaches the file cap', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-grep-walk-cap-'));
+  try {
+    const totalFiles = 5001;
+    for (let start = 0; start < totalFiles; start += 100) {
+      const batch = Array.from(
+        { length: Math.min(100, totalFiles - start) },
+        (_, offset) => writeFile(join(workspace, 'file-' + (start + offset) + '.txt'), 'no match here'),
+      );
+      await Promise.all(batch);
+    }
+
+    const tools = await createBuiltinTools({ workspace });
+    const grep = await tools.get('Grep').execute({ pattern: 'never-match-this-token' });
+    assert.deepEqual(grep.matches, []);
+    assert.equal(grep.truncated, true, 'the bounded walk must not be reported as exhaustive');
+
+    const glob = await tools.get('Glob').execute({ pattern: '*.txt' });
+    assert.equal(glob.matches.length, 500);
+    assert.equal(glob.truncated, true);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('Glob and Grep search within the workspace and return relative paths', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-search-'));
   try {
