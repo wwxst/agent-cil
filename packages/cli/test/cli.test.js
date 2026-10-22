@@ -356,6 +356,32 @@ test('Bash tool executes a command in the workspace and captures its output', as
   }
 });
 
+test('Bash cancellation terminates a background descendant before its delayed side effect', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-abort-'));
+  const marker = join(workspace, 'late-side-effect.txt');
+  const script = 'setTimeout(() => require("node:fs").writeFileSync(' + JSON.stringify(marker) + ', "late"), 700)';
+  const encodedScript = Buffer.from(script).toString('base64');
+  const command = `${JSON.stringify(process.execPath)} -e "eval(Buffer.from('${encodedScript}', 'base64').toString())" &`;
+  const controller = new AbortController();
+  const tools = await createBuiltinTools({ workspace });
+  const execution = tools.get('Bash').execute(
+    { command, timeout_ms: 5000 },
+    { signal: controller.signal },
+  );
+  const abortTimer = setTimeout(() => controller.abort(new Error('test cancellation')), 75);
+
+  try {
+    await assert.rejects(execution, /test cancellation/);
+    await new Promise(resolve => setTimeout(resolve, 850));
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  } finally {
+    clearTimeout(abortTimer);
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('CLI streams a model response, executes Read, and feeds tool_result into the next request', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-e2e-'));
   const requests = [];
