@@ -36,7 +36,9 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 - [x] 实现独立 Agent Loop、Tool Registry、schema 子集验证与 fail-closed 权限层
 - [x] 实现 warm Session、JSON 文件持久化与 interrupted-turn recovery
 - [x] 实现 Anthropic Messages SSE adapter 与 fake-fetch 契约测试
-- [ ] 按真实源码证据逐项核对 Agent Loop、工具调度、权限、Session 和 Query 行为
+- [x] 初步审计旧版恢复源码的可构建性、来源与授权限制
+- [x] 对照 CLI 入口、Agent Loop、工具调度和 permission updatedInput 的关键路径
+- [ ] 按真实源码证据继续核对权限、Session 和 Query 的剩余行为
 - [ ] 对真实 SDK stream-json 协议建立经源码确认的兼容子集
 
 Session manager、MCP 和平台包装当前只保留已有原型；新扩张暂停，直到新旧行为对照证明必要性。
@@ -53,7 +55,8 @@ Session manager、MCP 和平台包装当前只保留已有原型；新扩张暂�
 - [protocol-runtime-slice.md](docs/design/protocol-runtime-slice.md)：协议实现范围、证据对应和验收条件。
 - [process-transport.md](docs/design/process-transport.md)：子进程状态机、stdio 生命周期和测试边界。
 - [query-protocol-session.md](docs/design/query-protocol-session.md)：初始化、双向控制请求和 run-end 生命周期。
-- [baseline.md](docs/reverse-engineering/baseline.md)：样本版本、目录、完整性记录与证据等级。
+- [baseline.md](docs/reverse-engineering/baseline.md)：样本版本、目录、完整性记录与证据等级；旧版恢复源码的构建完整性和复用边界。
+- [cli-entry-comparison.md](docs/reverse-engineering/cli-entry-comparison.md)：CLI 2.1.88 / 2.1.304 的入口、启动分流与当前自有代码缺口。
 - [architecture.md](docs/reverse-engineering/architecture.md)：新版 Desktop、SDK、CLI 的组件职责。
 - [protocol-contracts.md](docs/reverse-engineering/protocol-contracts.md)：控制请求、权限、MCP 与生命周期契约。
 - [symbol-map.md](docs/reverse-engineering/symbol-map.md)：旧新版职责映射。
