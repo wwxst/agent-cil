@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, writeFile, stat, readdir, mkdir, realpath } from 'node:fs/promises';
+import { readFile, writeFile, stat, readdir, mkdir, realpath, lstat } from 'node:fs/promises';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -142,6 +142,12 @@ export function resolveWorkspacePath(workspace, candidate) {
 }
 
 async function assertPathWithinWorkspace(workspace, target) {
+  try {
+    const targetInfo = await lstat(target);
+    if (targetInfo.isSymbolicLink()) throw new Error('Symbolic links are not allowed for file tools: ' + target);
+  } catch (error) {
+    if (!(error instanceof Error) || error.code !== 'ENOENT') throw error;
+  }
   const rootReal = await realpath(workspace);
   let probe = target;
   while (true) {
