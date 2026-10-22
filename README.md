@@ -1,6 +1,6 @@
 # Agent CIL
 
-独立重建 Agent 客户端运行时。目标不是搬运旧客户端，也不是把逆向压缩包改造成另一个发行包，而是把已确认的行为契约转化为可测试、可维护的自有实现。
+独立重建 Agent CLI。当前只开发命令行入口、Agent 执行链、工具/权限和必要的宿主协议；不开发前端 UI、Desktop 窗口或聊天界面。目标是将已确认的行为契约转化为可测试、可维护的自有实现，而不是搬运第三方发行包。
 
 ## 当前基线
 
@@ -36,11 +36,13 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 - [x] 实现独立 Agent Loop、Tool Registry、schema 子集验证与 fail-closed 权限层
 - [x] 实现 warm Session、JSON 文件持久化与 interrupted-turn recovery
 - [x] 实现 Anthropic Messages SSE adapter 与 fake-fetch 契约测试
-- [ ] 完成真实凭证下的可选端到端验收与 MCP bridge
-- [ ] 接入桌面 UI 与平台运行 target
+- [ ] 实现自有 CLI 与新版 SDK stream-json 协议的可验证子集
+- [ ] 接入有明确 CLI 需求的工具、权限与 MCP
 
 ## 代码入口
 
+- [agent-cil CLI](packages/cli/README.md)：一次性非交互命令、参数解析、文本流式输出与 JSON 结果。
+- [CLI 入口新旧对照](docs/reverse-engineering/cli-entry-comparison.md)：新版 2.1.304 入口、旧版 2.1.88 query loop 与现有自有实现的差异和证据等级。
 - [@agent-cil/protocol](packages/protocol/README.md)：JSONL framing、控制请求关联、子进程 transport 与 Query 生命周期。
 - [@agent-cil/runtime](packages/runtime/README.md)：provider-neutral Agent Loop、Anthropic Messages SSE adapter、工具注册、输入校验、权限决策、Session 与多轮 tool_result 回填。
 - [anthropic-messages-adapter.md](docs/design/anthropic-messages-adapter.md)：API 请求映射、SSE 事件转换、凭证边界和当前不支持的事件。
@@ -63,13 +65,16 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 
 ~~~bash
 npm test
+npm run cli -- --help
 ~~~
 
-测试覆盖 JSONL 与 SSE 分块 UTF-8、CRLF、坏帧恢复、控制响应关联、进程与 Query 生命周期、Anthropic SSE 事件映射、多轮 API 工具调用、权限拒绝/批准/取消、schema 校验、Session 文件持久化、冷恢复、revision 冲突与 interrupted-turn reconciliation。
+测试覆盖 JSONL 与 SSE 分块 UTF-8、CRLF、坏帧恢复、控制响应关联、进程与 Query 生命周期、Anthropic SSE 事件映射、多轮 API 工具调用、权限拒绝/批准/取消、schema 校验、Session 文件持久化、冷恢复、revision 冲突、CLI 参数/快速路径、文本输出、stdin 输入与 JSON 结果。
 
 ## 研究与实现边界
 
 新仓库只提交原创分析、接口契约、独立实现和测试。不要提交逆向压缩包、第三方二进制、提取的第三方源码/Source Map、凭证或运行时缓存。旧版源码只用于理解与对照；不把旧版函数直接复制成新版实现。静态代码中存在某分支，不代表某账号或某次运行一定启用；未经动态验证的结论会明确标记。
+
+当前 CLI 首个可执行切片只实现 --print 一次性模式，不支持交互式 REPL、内置文件/命令工具或官方 SDK stream-json 协议；这些限制会在对应代码与测试完成前持续明确标注。不得把该入口当作 Desktop 的直接替代品。
 
 ## 参考仓库
 
