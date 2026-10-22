@@ -47,6 +47,19 @@ function toolError(toolUse, message) {
   };
 }
 
+function normalizePermissionInput(value) {
+  if (!isRecord(value)) return { error: 'input must be a JSON object.' };
+  try {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== 'string') return { error: 'input is not JSON-serializable.' };
+    const normalized = JSON.parse(serialized);
+    if (!isRecord(normalized)) return { error: 'input must be a JSON object.' };
+    return { value: normalized };
+  } catch (error) {
+    return { error: 'input is not JSON-serializable: ' + errorText(error) };
+  }
+}
+
 /**
  * Independent, adapter-driven Agent Loop.
  *
@@ -260,8 +273,30 @@ export class AgentLoop extends EventEmitter {
       reason = 'Permission policy returned an invalid decision.';
     }
 
+    let executionInput = toolUse.input;
+    let inputUpdated = false;
+    let inputUpdateSource = 'permission policy';
+    if ((behavior === 'allow' || behavior === 'ask') && decision?.updatedInput !== undefined) {
+      const normalized = normalizePermissionInput(decision.updatedInput);
+      if (normalized.error) {
+        const result = toolError(toolUse, 'Invalid tool input returned by permission policy: ' + normalized.error);
+        this.emit('toolCallFinished', {
+          turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, inputValidationFailed: true,
+        });
+        return result;
+      }
+      executionInput = normalized.value;
+      inputUpdated = true;
+    }
+
     if (behavior === 'ask') {
-      this.emit('permissionRequired', { turn, toolUseId: toolUse.id, toolName: tool.name, input: structuredClone(toolUse.input), reason });
+      this.emit('permissionRequired', {
+        turn,
+        toolUseId: toolUse.id,
+        toolName: tool.name,
+        input: structuredClone(executionInput),
+        reason,
+      });
       if (!this.#approvalHandler) {
         behavior = 'deny';
         reason = reason || 'No approval handler is configured.';
@@ -269,13 +304,26 @@ export class AgentLoop extends EventEmitter {
         try {
           const approval = await this.#approvalHandler({
             name: tool.name,
-            input: structuredClone(toolUse.input),
+            input: structuredClone(executionInput),
             toolUseId: toolUse.id,
             reason,
             signal,
           });
           abortIfNeeded(signal);
           const approved = approval === true || approval?.approved === true;
+          if (approved && approval?.updatedInput !== undefined) {
+            const normalized = normalizePermissionInput(approval.updatedInput);
+            if (normalized.error) {
+              const result = toolError(toolUse, 'Invalid tool input returned by approval handler: ' + normalized.error);
+              this.emit('toolCallFinished', {
+                turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, inputValidationFailed: true,
+              });
+              return result;
+            }
+            executionInput = normalized.value;
+            inputUpdated = true;
+            inputUpdateSource = 'approval handler';
+          }
           behavior = approved ? 'allow' : 'deny';
           if (!approved) reason = typeof approval?.reason === 'string' ? approval.reason : (reason || 'Approval was not granted.');
         } catch (error) {
@@ -292,10 +340,25 @@ export class AgentLoop extends EventEmitter {
       return result;
     }
 
+    if (inputUpdated) {
+      const updatedInputErrors = await this.#tools.validateInput(toolUse.name, executionInput);
+      abortIfNeeded(signal);
+      if (updatedInputErrors.length > 0) {
+        const result = toolError(
+          toolUse,
+          'Invalid tool input returned by ' + inputUpdateSource + ': ' + updatedInputErrors.join(' '),
+        );
+        this.emit('toolCallFinished', {
+          turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, inputValidationFailed: true,
+        });
+        return result;
+      }
+    }
+
     abortIfNeeded(signal);
     this.emit('toolCallStarted', { turn, toolUseId: toolUse.id, toolName: tool.name });
     try {
-      const output = await tool.execute(structuredClone(toolUse.input), {
+      const output = await tool.execute(structuredClone(executionInput), {
         toolUseId: toolUse.id,
         signal,
         messages: structuredClone(history),
