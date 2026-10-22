@@ -1,0 +1,14 @@
+{
+  "name": "agent-cil",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Independent Agent client runtime and protocol research",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --test"
+  }
+}
