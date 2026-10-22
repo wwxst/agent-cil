@@ -409,12 +409,15 @@ test('built-in tools provide read, write and unique-match edit operations', asyn
     await tools.get('Write').execute({ file_path: 'src/example.js', content: 'const value = 1;\n' });
     assert.equal(await tools.get('Read').execute({ file_path: 'src/example.js' }), 'const value = 1;\n');
 
+    await tools.get('Write').execute({ file_path: 'src/example.js', content: 'const value = 1; // overwritten\\n' });
+    assert.equal(await tools.get('Read').execute({ file_path: 'src/example.js' }), 'const value = 1; // overwritten\\n');
+
     await tools.get('Edit').execute({
       file_path: 'src/example.js',
       old_string: 'value = 1',
       new_string: 'value = 2',
     });
-    assert.equal(await readFile(join(workspace, 'src/example.js'), 'utf8'), 'const value = 2;\n');
+    assert.equal(await readFile(join(workspace, 'src/example.js'), 'utf8'), 'const value = 2; // overwritten\\n');
 
     await assert.rejects(
       tools.get('Edit').execute({
