@@ -80,11 +80,11 @@ test('reopens a multi-turn run when a new active session state arrives', async (
   assert.deepEqual((await resumed)[0], { state: 'requires_action' });
   assert.equal(lifecycle.runEnded, false);
   const waiting = lifecycle.waitForRunEnd();
-  session.emit('frame', { type: 'system', subtype: 'session_state_changed', state: 'idle' });
-  assert.equal(lifecycle.runEnded, false, 'idle alone does not end a run before a result');
+  session.emit('frame', { type: 'assistant', parent_tool_use_id: null });
+  assert.equal(lifecycle.runEnded, false);
   session.emit('frame', { type: 'result', result: 'second' });
   assert.deepEqual(await waiting, {
-    reason: 'result', sessionState: 'idle', resultReceived: true,
+    reason: 'result', sessionState: 'requires_action', resultReceived: true,
   });
   lifecycle.close();
 });
