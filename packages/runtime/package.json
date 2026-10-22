@@ -10,7 +10,8 @@
     "./validation": "./src/validation.js",
     "./permissions": "./src/permissions.js",
     "./session-manager": "./src/session-manager.js",
-    "./session-store": "./src/session-store.js"
+    "./session-store": "./src/session-store.js",
+    "./anthropic-messages-adapter": "./src/anthropic-messages-adapter.js"
   },
   "scripts": {
     "test": "node --test"
