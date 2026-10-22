@@ -9,6 +9,10 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --test"
+    "check": "node --test",
+    "cli": "node packages/cli/src/bin.js"
+  },
+  "bin": {
+    "agent-cil": "./packages/cli/src/bin.js"
   }
 }
