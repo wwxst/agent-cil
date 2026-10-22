@@ -44,6 +44,13 @@ test('parses SSE events across split UTF-8 chunks and CRLF boundaries', async ()
   assert.deepEqual(events, [{ event: 'greeting', data: '你好\nsecond line' }]);
 });
 
+test('parses valid SSE streams that use lone CR line endings', async () => {
+  const stream = makeSseBody('event: greeting\rdata: first\rdata: second\r\r', 1);
+  const events = [];
+  for await (const event of parseSseStream(stream)) events.push(event);
+  assert.deepEqual(events, [{ event: 'greeting', data: 'first\nsecond' }]);
+});
+
 test('converts Messages API text, tool JSON deltas, usage, and stop reason', async () => {
   let request;
   let keyProviderCalls = 0;
@@ -74,6 +81,7 @@ test('converts Messages API text, tool JSON deltas, usage, and stop reason', asy
   assert.equal(request.options.headers['x-api-key'], 'test-secret-key');
   assert.equal(request.options.headers['anthropic-version'], '2023-06-01');
   assert.equal(request.options.headers.accept, 'text/event-stream');
+  assert.equal(request.options.redirect, 'error', 'API-key requests must not follow redirects to an untrusted endpoint');
   const body = JSON.parse(request.options.body);
   assert.equal(body.model, 'claude-test-model');
   assert.equal(body.max_tokens, 256);
