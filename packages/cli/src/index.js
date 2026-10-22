@@ -178,19 +178,28 @@ async function assertPathWithinWorkspace(workspace, target) {
 export function createCliPermissionPolicy({ workspace = process.cwd() } = {}) {
   const root = resolve(workspace);
   return async ({ name, input } = {}) => {
-    if (['Read', 'Glob', 'Grep'].includes(name)) {
-      return { behavior: 'allow', reason: 'Read-only workspace operation.' };
+    if (name === 'Glob') {
+      const pattern = typeof input?.pattern === 'string' ? input.pattern.replaceAll(BACKSLASH, '/') : '';
+      if (!pattern || pattern.startsWith('/') || pattern.split('/').includes('..')) {
+        return { behavior: 'deny', reason: 'Glob pattern must stay within the workspace.' };
+      }
+      return { behavior: 'allow', reason: 'Read-only workspace search.' };
     }
 
-    if (name === 'Write' || name === 'Edit') {
+    if (['Read', 'Write', 'Edit', 'Grep'].includes(name)) {
+      const candidate = name === 'Grep' ? (input?.path ?? '.') : input?.file_path;
       try {
-        const target = resolveWorkspacePath(root, input?.file_path);
+        const target = resolveWorkspacePath(root, candidate);
         await assertPathWithinWorkspace(root, target);
       } catch (error) {
         return {
           behavior: 'deny',
           reason: 'File target is not authorized: ' + (error instanceof Error ? error.message : String(error)),
         };
+      }
+
+      if (name === 'Read' || name === 'Grep') {
+        return { behavior: 'allow', reason: 'Read-only workspace operation.' };
       }
       return { behavior: 'ask', reason: 'This tool modifies workspace files.' };
     }
