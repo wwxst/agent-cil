@@ -33,11 +33,11 @@
 - [x] 实现坏帧诊断、最大帧限制与 UTF-8 分块处理
 - [x] 实现按 response.request_id 关联控制响应
 - [x] 实现早到响应有限缓存、取消信号、超时和关闭清理
-- [ ] 实现 spawn / stdin / stdout / stderr 的进程 transport
+- [x] 实现 spawn / stdin / stdout / stderr 的进程 transport
+- [x] 用 fake child process 验证启动、输出帧、输入写入、退出和资源清理
 - [ ] 实现 initialize 屏障、Query 状态和双向控制请求的集成
-- [ ] 用 fake child process 验证启动、退出、错误和资源清理
 
-**验收：** 测试覆盖初始化、流式事件、控制请求、取消、result、进程退出和关闭；普通日志不污染协议 stdout。
+**验收：** Transport 层测试覆盖进程启动、JSONL I/O、错误和关闭；普通日志不污染协议 stdout。Query 生命周期仍需单独验收。
 
 ## Phase 3 — 最小独立 Agent Runtime
 
@@ -95,4 +95,4 @@
 
 ## 当前下一步
 
-完成权限决策与会话恢复的代码级对照；随后实现 spawn-based transport，并用 fake child process 验证 JSONL、控制请求和关闭语义，再开始最小 Agent Loop。不要在进程 transport 和协议生命周期尚未验证前直接连接真实模型或桌面 UI。
+完成权限决策与会话恢复的代码级对照；随后在 ProcessTransport 之上实现 Query 初始化屏障、control request 分发与 session idle/requires_action 生命周期。用 fake child process 验证 result 到达后仍有待处理回调时不会过早关闭，再开始最小 Agent Loop。
