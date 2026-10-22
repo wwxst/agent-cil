@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, writeFile, stat, readdir, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, stat, readdir, mkdir, realpath } from 'node:fs/promises';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -141,6 +141,30 @@ export function resolveWorkspacePath(workspace, candidate) {
   return target;
 }
 
+async function assertPathWithinWorkspace(workspace, target) {
+  const rootReal = await realpath(workspace);
+  let probe = target;
+  while (true) {
+    try {
+      const resolvedProbe = await realpath(probe);
+      const rel = relative(rootReal, resolvedProbe);
+      if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+        throw new Error('Path resolves outside the workspace: ' + target);
+      }
+      return;
+    } catch (error) {
+      if (error instanceof Error && error.code === 'ENOENT') {
+        const parent = dirname(probe);
+        if (parent === probe) throw error;
+        probe = parent;
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+
+
 async function walkFiles(start, output = []) {
   if (output.length >= MAX_WALK_FILES) return output;
   const entries = await readdir(start, { withFileTypes: true });
@@ -208,7 +232,11 @@ export function createBuiltinTools({ workspace = process.cwd() } = {}) {
       required: ['file_path'],
       additionalProperties: false,
     },
-    execute: async ({ file_path }) => readTextFile(resolveWorkspacePath(root, file_path)),
+    execute: async ({ file_path }) => {
+      const target = resolveWorkspacePath(root, file_path);
+      await assertPathWithinWorkspace(root, target);
+      return readTextFile(target);
+    },
   });
 
   tools.register({
@@ -225,7 +253,9 @@ export function createBuiltinTools({ workspace = process.cwd() } = {}) {
     },
     execute: async ({ file_path, content }) => {
       const target = resolveWorkspacePath(root, file_path);
+      await assertPathWithinWorkspace(root, target);
       await mkdir(dirname(target), { recursive: true });
+      await assertPathWithinWorkspace(root, target);
       await writeFile(target, content, 'utf8');
       return { path: relative(root, target).split(sep).join('/'), bytes: Buffer.byteLength(content), written: true };
     },
@@ -246,6 +276,7 @@ export function createBuiltinTools({ workspace = process.cwd() } = {}) {
     },
     execute: async ({ file_path, old_string, new_string }) => {
       const target = resolveWorkspacePath(root, file_path);
+      await assertPathWithinWorkspace(root, target);
       const original = await readTextFile(target);
       const first = original.indexOf(old_string);
       if (first < 0) throw new Error('old_string was not found in ' + file_path);
@@ -253,6 +284,7 @@ export function createBuiltinTools({ workspace = process.cwd() } = {}) {
         throw new Error('old_string occurs more than once; provide a unique match.');
       }
       const updated = original.slice(0, first) + new_string + original.slice(first + old_string.length);
+      await assertPathWithinWorkspace(root, target);
       await writeFile(target, updated, 'utf8');
       return { path: relative(root, target).split(sep).join('/'), edited: true };
     },
@@ -296,6 +328,7 @@ export function createBuiltinTools({ workspace = process.cwd() } = {}) {
     },
     execute: async ({ pattern, path = '.', ignore_case = false }) => {
       const start = resolveWorkspacePath(root, path);
+      await assertPathWithinWorkspace(root, start);
       const info = await stat(start);
       const files = info.isFile() ? [start] : await walkFiles(start);
       const matcher = new RegExp(pattern, ignore_case ? 'i' : '');
