@@ -79,7 +79,7 @@ export class ToolRegistry {
     if (tool.validateInput) {
       let result;
       try {
-        result = await tool.validateInput(input);
+        result = await tool.validateInput(structuredClone(input));
       } catch (error) {
         return ['Custom input validator failed: ' + (error instanceof Error ? error.message : String(error))];
       }
