@@ -35,13 +35,15 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 - [x] 实现 result / idle / requires_action 生命周期跟踪
 - [x] 实现独立 Agent Loop、Tool Registry、schema 子集验证与 fail-closed 权限层
 - [x] 实现 warm Session、JSON 文件持久化与 interrupted-turn recovery
-- [ ] 接入真实模型 adapter 与 MCP bridge
+- [x] 实现 Anthropic Messages SSE adapter 与 fake-fetch 契约测试
+- [ ] 完成真实凭证下的可选端到端验收与 MCP bridge
 - [ ] 接入桌面 UI 与平台运行 target
 
 ## 代码入口
 
 - [@agent-cil/protocol](packages/protocol/README.md)：JSONL framing、控制请求关联、子进程 transport 与 Query 生命周期。
-- [@agent-cil/runtime](packages/runtime/README.md)：provider-neutral Agent Loop、工具注册、输入校验、权限决策和多轮 tool_result 回填。
+- [@agent-cil/runtime](packages/runtime/README.md)：provider-neutral Agent Loop、Anthropic Messages SSE adapter、工具注册、输入校验、权限决策、Session 与多轮 tool_result 回填。
+- [anthropic-messages-adapter.md](docs/design/anthropic-messages-adapter.md)：API 请求映射、SSE 事件转换、凭证边界和当前不支持的事件。
 - [agent-loop-runtime.md](docs/design/agent-loop-runtime.md)：运行时事件契约、工具权限边界、测试范围和未实现项。
 - [session-persistence.md](docs/design/session-persistence.md)：Session / Turn 数据模型、revision 检查、文件原子写入和中断恢复语义。
 - [agent-loop-comparison.md](docs/reverse-engineering/agent-loop-comparison.md)：旧版 2.1.88 与新版 2.1.304 的代码级对照。
@@ -63,7 +65,7 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 npm test
 ~~~
 
-测试覆盖 JSONL 分块输入、UTF-8、CRLF、坏帧恢复、帧大小限制、控制响应关联、进程与 Query 生命周期、多轮工具调用、权限拒绝/批准/取消、schema 校验、Session 持久化、冷恢复、revision 冲突与 interrupted-turn reconciliation。
+测试覆盖 JSONL 与 SSE 分块 UTF-8、CRLF、坏帧恢复、控制响应关联、进程与 Query 生命周期、Anthropic SSE 事件映射、多轮 API 工具调用、权限拒绝/批准/取消、schema 校验、Session 文件持久化、冷恢复、revision 冲突与 interrupted-turn reconciliation。
 
 ## 研究与实现边界
 
