@@ -375,7 +375,6 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
             // Best-effort escalation; close/error handling reports the command outcome.
           }
         }, 250);
-        forceKillTimer.unref?.();
       }
     };
 
@@ -405,7 +404,6 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     });
     child.once('close', code => {
       clearTimeout(timeout);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
       signal?.removeEventListener('abort', onAbort);
 
       if (signal?.aborted) {
