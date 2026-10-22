@@ -78,7 +78,9 @@ test('CLI permission policy checks final Write/Edit paths before asking for appr
     await symlink(outsideFile, join(workspace, 'linked.txt'));
     const policy = createCliPermissionPolicy({ workspace });
 
-    assert.equal((await policy({ name: 'Read', input: { file_path: 'linked.txt' } })).behavior, 'allow');
+    assert.equal((await policy({ name: 'Read', input: { file_path: 'safe.txt' } })).behavior, 'allow');
+    assert.equal((await policy({ name: 'Grep', input: { pattern: 'needle', path: '.' } })).behavior, 'allow');
+    assert.equal((await policy({ name: 'Glob', input: { pattern: '*.js' } })).behavior, 'allow');
     assert.equal((await policy({ name: 'Write', input: { file_path: 'safe/new.txt' } })).behavior, 'ask');
     assert.equal((await policy({ name: 'Edit', input: { file_path: 'safe/new.txt' } })).behavior, 'ask');
 
@@ -89,6 +91,15 @@ test('CLI permission policy checks final Write/Edit paths before asking for appr
     const symlinkWrite = await policy({ name: 'Write', input: { file_path: 'linked.txt' } });
     assert.equal(symlinkWrite.behavior, 'deny');
     assert.match(symlinkWrite.reason, /Symbolic links are not allowed/);
+    const symlinkRead = await policy({ name: 'Read', input: { file_path: 'linked.txt' } });
+    assert.equal(symlinkRead.behavior, 'deny');
+    assert.match(symlinkRead.reason, /Symbolic links are not allowed/);
+    const grepTraversal = await policy({ name: 'Grep', input: { pattern: 'secret', path: '../outside' } });
+    assert.equal(grepTraversal.behavior, 'deny');
+    assert.match(grepTraversal.reason, /escapes the workspace/);
+    const globTraversal = await policy({ name: 'Glob', input: { pattern: '../*.js' } });
+    assert.equal(globTraversal.behavior, 'deny');
+    assert.match(globTraversal.reason, /Glob pattern must stay within the workspace/);
 
     assert.equal((await policy({ name: 'Bash', input: { command: 'echo hello' } })).behavior, 'ask');
     assert.equal((await policy({ name: 'unexpected', input: {} })).behavior, 'deny');
