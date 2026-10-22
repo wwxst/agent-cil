@@ -204,6 +204,106 @@ test('CLI streams a model response, executes Read, and feeds tool_result into th
   }
 });
 
+
+test('CLI denies Write in non-interactive print mode and returns the denial to the model', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-deny-write-'));
+  const requests = [];
+  const sse = (type, fields = {}) => 'event: ' + type + '\ndata: ' + JSON.stringify({ type, ...fields }) + '\n\n';
+  const responses = [
+    [
+      sse('message_start', { message: { usage: { input_tokens: 2 } } }),
+      sse('content_block_start', {
+        index: 0,
+        content_block: { type: 'tool_use', id: 'cli-write-1', name: 'Write', input: {} },
+      }),
+      sse('content_block_delta', {
+        index: 0,
+        delta: {
+          type: 'input_json_delta',
+          partial_json: '{"file_path":"created.txt","content":"should not be written"}',
+        },
+      }),
+      sse('content_block_stop', { index: 0 }),
+      sse('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 4 } }),
+      sse('message_stop'),
+    ].join(''),
+    [
+      sse('message_start', { message: { usage: { input_tokens: 6 } } }),
+      sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      sse('content_block_delta', {
+        index: 0,
+        delta: { type: 'text_delta', text: 'The write was denied.' },
+      }),
+      sse('content_block_stop', { index: 0 }),
+      sse('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 3 } }),
+      sse('message_stop'),
+    ].join(''),
+  ];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    response.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache',
+      connection: 'close',
+    });
+    response.end(responses[Math.min(requests.length - 1, responses.length - 1)]);
+  });
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const cliPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+    const child = spawn(process.execPath, [
+      cliPath,
+      '--print',
+      'Create created.txt with the requested content.',
+      '--cwd', workspace,
+      '--base-url', 'http://127.0.0.1:' + address.port,
+      '--model', 'claude-local-test',
+    ], {
+      env: { ...process.env, ANTHROPIC_API_KEY: 'local-test-key' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const [exitCode, exitSignal] = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, signal) => resolve([code, signal]));
+    });
+
+    assert.equal(exitSignal, null);
+    assert.equal(exitCode, 0, stderr);
+    assert.equal(stdout.trim(), 'The write was denied.');
+    assert.match(stderr, /denied Write: interactive approval is unavailable/);
+    await assert.rejects(readFile(join(workspace, 'created.txt')), { code: 'ENOENT' });
+    assert.equal(requests.length, 2);
+
+    const toolResultMessage = requests[1].messages.find(message =>
+      message.role === 'user' &&
+      Array.isArray(message.content) &&
+      message.content.some(block => block.type === 'tool_result' && block.tool_use_id === 'cli-write-1'),
+    );
+    assert.ok(toolResultMessage, 'the model must receive a result for the denied tool call');
+    const resultBlock = toolResultMessage.content.find(block => block.type === 'tool_result');
+    assert.equal(resultBlock.is_error, true);
+    assert.match(resultBlock.content, /Tool call denied/);
+  } finally {
+    await new Promise(resolve => server.close(() => resolve()));
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('file tools reject symbolic links that resolve outside the workspace', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-safe-workspace-'));
   const outside = await mkdtemp(join(tmpdir(), 'agent-cil-outside-'));
