@@ -140,11 +140,11 @@ export class AnthropicMessagesAdapter {
     }
     if (!['http:', 'https:'].includes(parsedBaseUrl.protocol)) throw new TypeError('baseUrl must use HTTP or HTTPS.');
     if (parsedBaseUrl.protocol === 'http:') {
-      const hostname = parsedBaseUrl.hostname.toLowerCase().replace(/^\\[|\\]$/g, '');
+      const hostname = parsedBaseUrl.hostname.toLowerCase().replace(/^\[|\]$/g, '');
       const isLoopback = hostname === 'localhost'
         || hostname.endsWith('.localhost')
         || hostname === '::1'
-        || /^127(?:\\.\\d{1,3}){3}$/.test(hostname);
+        || /^127(?:\.\d{1,3}){3}$/.test(hostname);
       if (!isLoopback) {
         throw new TypeError('baseUrl must use HTTPS unless it targets localhost or a loopback address.');
       }
