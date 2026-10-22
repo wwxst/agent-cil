@@ -318,7 +318,24 @@ async function readTextHandle(handle, filePath) {
   if (info.size > MAX_TEXT_FILE_BYTES) {
     throw new Error('File exceeds the 1 MiB read limit: ' + filePath);
   }
-  const content = await handle.readFile({ encoding: 'utf8' });
+
+  // Do not rely only on stat(): a concurrently growing file must not bypass the
+  // text-read memory limit between the size check and the actual read.
+  const chunks = [];
+  let total = 0;
+  while (total <= MAX_TEXT_FILE_BYTES) {
+    const length = Math.min(64 * 1024, MAX_TEXT_FILE_BYTES + 1 - total);
+    const buffer = Buffer.allocUnsafe(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, total);
+    if (bytesRead === 0) break;
+    total += bytesRead;
+    if (total > MAX_TEXT_FILE_BYTES) {
+      throw new Error('File exceeds the 1 MiB read limit: ' + filePath);
+    }
+    chunks.push(buffer.subarray(0, bytesRead));
+  }
+
+  const content = Buffer.concat(chunks, total).toString('utf8');
   if (content.includes(String.fromCharCode(0))) throw new Error('Refusing to read a binary file as text: ' + filePath);
   return content;
 }
