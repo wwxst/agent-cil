@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import {
   CliArgumentError,
   createBuiltinTools,
+  main,
   parseArgs,
   resolveWorkspacePath,
 } from '../src/index.js';
@@ -49,6 +50,15 @@ test('rejects unknown options and invalid max token values', () => {
   assert.throws(() => parseArgs(['--unknown']), CliArgumentError);
   assert.throws(() => parseArgs(['--max-tokens', '0']), CliArgumentError);
   assert.throws(() => parseArgs(['--model']), CliArgumentError);
+});
+
+test('CLI rejects a remote plaintext API endpoint during startup', async () => {
+  await assert.rejects(
+    main(['--print', 'hello', '--base-url', 'http://example.test'], {
+      ANTHROPIC_API_KEY: 'local-test-key',
+    }),
+    /must use HTTPS unless it targets localhost or a loopback address/,
+  );
 });
 
 test('workspace path resolution rejects traversal outside the workspace', () => {
