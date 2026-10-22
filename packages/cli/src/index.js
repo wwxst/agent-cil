@@ -279,7 +279,15 @@ async function openWorkspaceFile(workspace, target, flags, mode) {
   // O_NOFOLLOW closes the final-component symlink race on platforms that support it.
   // Post-open identity and realpath checks also run on platforms without that flag.
   const noFollow = constants.O_NOFOLLOW ?? 0;
-  const handle = await open(target, flags | noFollow, mode);
+  let handle;
+  try {
+    handle = await open(target, flags | noFollow, mode);
+  } catch (error) {
+    // Some platforms expose O_NOFOLLOW in constants but do not implement it for open().
+    // Fall back to the post-open path/inode checks rather than failing all file access.
+    if (!noFollow || !['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) throw error;
+    handle = await open(target, flags, mode);
+  }
   try {
     await assertOpenedFileWithinWorkspace(workspace, target, handle);
     return handle;
