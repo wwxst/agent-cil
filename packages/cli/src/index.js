@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, writeFile, stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
+import { stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -335,8 +335,8 @@ function signalProcessTree(child, signalName) {
       // detached=true gives the shell and its descendants a private process group.
       process.kill(-child.pid, signalName);
       return;
-    } catch (error) {
-      if (error?.code !== 'ESRCH' && error?.code !== 'EPERM') throw error;
+    } catch {
+      // Fall back to signaling the direct child if the process group is unavailable.
     }
   }
   try {
