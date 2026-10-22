@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { readFile, writeFile, stat, readdir, mkdir, realpath, lstat } from 'node:fs/promises';
+import { readFile, writeFile, stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -253,15 +254,71 @@ function globToRegExp(pattern) {
   return new RegExp(prefix + source + '$');
 }
 
-async function readTextFile(filePath) {
-  const info = await stat(filePath);
+async function assertOpenedFileWithinWorkspace(workspace, target, handle) {
+  const rootReal = await realpath(workspace);
+  const targetInfo = await lstat(target);
+  if (targetInfo.isSymbolicLink()) {
+    throw new Error('Symbolic links are not allowed for file tools: ' + target);
+  }
+
+  const resolvedTarget = await realpath(target);
+  const rel = relative(rootReal, resolvedTarget);
+  if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+    throw new Error('Path resolves outside the workspace: ' + target);
+  }
+
+  const [openedInfo, pathInfo] = await Promise.all([handle.stat(), stat(resolvedTarget)]);
+  if (!openedInfo.isFile() || !pathInfo.isFile()) throw new Error('Not a regular file: ' + target);
+  if (openedInfo.dev !== pathInfo.dev || openedInfo.ino !== pathInfo.ino) {
+    throw new Error('File path changed while opening; refusing the operation: ' + target);
+  }
+}
+
+async function openWorkspaceFile(workspace, target, flags, mode) {
+  await assertPathWithinWorkspace(workspace, target);
+  // O_NOFOLLOW closes the final-component symlink race on platforms that support it.
+  // Post-open identity and realpath checks also run on platforms without that flag.
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  const handle = await open(target, flags | noFollow, mode);
+  try {
+    await assertOpenedFileWithinWorkspace(workspace, target, handle);
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function readTextHandle(handle, filePath) {
+  const info = await handle.stat();
   if (!info.isFile()) throw new Error('Not a regular file: ' + filePath);
   if (info.size > MAX_TEXT_FILE_BYTES) {
     throw new Error('File exceeds the 1 MiB read limit: ' + filePath);
   }
-  const content = await readFile(filePath, 'utf8');
-  if (content.includes('\0')) throw new Error('Refusing to read a binary file as text: ' + filePath);
+  const content = await handle.readFile({ encoding: 'utf8' });
+  if (content.includes('\\0')) throw new Error('Refusing to read a binary file as text: ' + filePath);
   return content;
+}
+
+async function readTextFile(workspace, filePath) {
+  const handle = await openWorkspaceFile(workspace, filePath, constants.O_RDONLY);
+  try {
+    return await readTextHandle(handle, filePath);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeTextHandle(handle, content) {
+  const buffer = Buffer.from(content, 'utf8');
+  await handle.truncate(0);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const { bytesWritten } = await handle.write(buffer, offset, buffer.length - offset, offset);
+    if (bytesWritten === 0) throw new Error('Could not complete file write.');
+    offset += bytesWritten;
+  }
+  await handle.truncate(buffer.length);
 }
 
 function abortError(signal) {
@@ -387,7 +444,7 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
     execute: async ({ file_path }) => {
       const target = resolveWorkspacePath(root, file_path);
       await assertPathWithinWorkspace(root, target);
-      return readTextFile(target);
+      return readTextFile(root, target);
     },
   });
 
@@ -407,8 +464,15 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
       const target = resolveWorkspacePath(root, file_path);
       await assertPathWithinWorkspace(root, target);
       await mkdir(dirname(target), { recursive: true });
-      await assertPathWithinWorkspace(root, target);
-      await writeFile(target, content, 'utf8');
+      const handle = await openWorkspaceFile(root, target, constants.O_WRONLY | constants.O_CREAT, 0o666);
+      try {
+        // Verify the opened inode immediately before modifying it. The descriptor pins
+        // the final file even if the pathname is subsequently replaced.
+        await assertOpenedFileWithinWorkspace(root, target, handle);
+        await writeTextHandle(handle, content);
+      } finally {
+        await handle.close();
+      }
       return { path: relative(root, target).split(sep).join('/'), bytes: Buffer.byteLength(content), written: true };
     },
   });
@@ -428,17 +492,21 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
     },
     execute: async ({ file_path, old_string, new_string }) => {
       const target = resolveWorkspacePath(root, file_path);
-      await assertPathWithinWorkspace(root, target);
-      const original = await readTextFile(target);
-      const first = original.indexOf(old_string);
-      if (first < 0) throw new Error('old_string was not found in ' + file_path);
-      if (original.indexOf(old_string, first + old_string.length) >= 0) {
-        throw new Error('old_string occurs more than once; provide a unique match.');
+      const handle = await openWorkspaceFile(root, target, constants.O_RDWR);
+      try {
+        const original = await readTextHandle(handle, target);
+        const first = original.indexOf(old_string);
+        if (first < 0) throw new Error('old_string was not found in ' + file_path);
+        if (original.indexOf(old_string, first + old_string.length) >= 0) {
+          throw new Error('old_string occurs more than once; provide a unique match.');
+        }
+        const updated = original.slice(0, first) + new_string + original.slice(first + old_string.length);
+        await assertOpenedFileWithinWorkspace(root, target, handle);
+        await writeTextHandle(handle, updated);
+        return { path: relative(root, target).split(sep).join('/'), edited: true };
+      } finally {
+        await handle.close();
       }
-      const updated = original.slice(0, first) + new_string + original.slice(first + old_string.length);
-      await assertPathWithinWorkspace(root, target);
-      await writeFile(target, updated, 'utf8');
-      return { path: relative(root, target).split(sep).join('/'), edited: true };
     },
   });
 
@@ -490,7 +558,7 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
         if (matches.length >= 200) { truncated = true; break; }
         let content;
         try {
-          content = await readTextFile(file);
+          content = await readTextFile(root, file);
         } catch (error) {
           if (error instanceof Error && (error.message.includes('1 MiB') || error.message.includes('binary file'))) continue;
           throw error;
