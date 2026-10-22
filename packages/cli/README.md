@@ -22,7 +22,7 @@ Configuration is environment-based for this first slice:
 - ANTHROPIC_BASE_URL selects an API-compatible Messages endpoint.
 - --model, --base-url, --max-tokens, --system, and --cwd override defaults.
 
-Read-only tools (Read, Glob, Grep) are allowed automatically. File writes/edits and shell commands (Write, Edit, Bash) require interactive approval. In non-interactive print mode, actions requiring approval are denied by default. File tools reject lexical paths that escape the chosen workspace; symbolic links are not traversed by search tools.
+Read-only tools (Read, Glob, Grep) are allowed automatically. File writes/edits and shell commands (Write, Edit, Bash) require interactive approval. In non-interactive print mode, actions requiring approval are denied by default. File tools reject lexical paths that escape the chosen workspace and resolve existing path components to detect symlink escapes; symlink targets are rejected, and search tools do not traverse symlink entries.
 
 ## Current limitations
 
