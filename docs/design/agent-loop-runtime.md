@@ -31,14 +31,14 @@ ToolRegistry 维护工具名、描述、输入 schema、可选自定义验证器
 - 默认拒绝、显式批准与缺失审批处理器；
 - schema 输入校验先于权限策略；
 - 未知工具、重复 tool-use ID、模型消息不完整；
-- 最大轮次、取消后的状态清理、权限策略异常；
+- 最大轮次、取消后的状态清理、审批期间取消、权限策略异常与工具执行错误恢复；
 - registry 注册、描述、移除与 schema 子集校验。
 
 ## 尚未覆盖
 
 - 真实模型 provider adapter 的流式兼容；
 - 并行工具调用与调度公平性；
-- approval handler 取消和工具执行异常的专门回归测试；
+- 更广泛的 provider adapter 与并行调度场景；
 - 持久化 Session、continue/resume、MCP bridge 与 host-specific 运行 target；
 - 完整 JSON Schema、重试、token 预算与消息压缩。
 
