@@ -117,9 +117,16 @@
 
 ### 本轮修正
 
-自有 Runtime 现在保留 allow/ask 返回的输入替换；ask 的审批处理器能查看策略预处理后的输入，也可以返回用户确认后的最终输入。只要输入被替换，就会再次运行 ToolRegistry 的输入校验。替换后的输入不符合 schema 时，Runtime 回填带 `is_error: true` 的 tool_result，并跳过工具执行。
+自有 Runtime 现在保留 allow/ask 返回的输入替换；ask 的审批处理器可以查看策略预处理后的输入，也可以返回新的候选输入。每次输入发生实质变化时，Runtime 都会：
 
-这实现了已确认的输入传递与 schema 校验契约，但**不等于完整实现新版权限系统**：新版 strict permission path 对 updatedInput 还有 deny-rule/权限收紧检查；本轮没有宣称复刻该策略。后续只有在确认自有 permission policy 的数据契约后，才应添加对应的重新授权检查。
+1. 重新运行 ToolRegistry 输入校验；不符合 schema 时返回带 `is_error: true` 的 `tool_result`，不执行工具。
+2. 以最终候选输入重新调用 permission policy（上下文中的 `phase` 为 `recheck`）；如果策略拒绝，拒绝是终态，不能由后续输入替换覆盖。
+3. 如果最终输入仍需要用户批准，则把该输入交给审批处理器。审批处理器再改动输入时，重新检查权限；若策略仍要求确认，就对新输入再次请求批准。
+4. 限制连续输入改写次数，避免非稳定策略无限循环；超限时 fail closed。
+
+测试覆盖策略更新后被拒绝、审批更新后被拒绝、deny 携带 `updatedInput`、schema 不合法、最终输入需要再次审批，以及策略不断改写输入的上限。
+
+这补上了自有 permission policy 的输入替换后二次授权检查，但**不等于完整复刻新版权限系统**。新版还包含专用的 deny/ask 规则匹配、命令解析和路径权限语义；这些能力必须逐项从源码与行为证据确认，不能用通用回调的二次调用来冒充完整兼容。
 
 ## 6. 对自有 Runtime 的设计启示
 
