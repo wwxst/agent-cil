@@ -129,6 +129,26 @@ export class AgentSessionManager {
     }
   }
 
+  async recoverInterruptedTurns(id) {
+    assertSessionId(id);
+    if (this.#activeSessionId === id) throw new Error('Cannot recover a session while its turn is running.');
+    let record = await this.#store.get(id);
+    if (!record) throw new SessionNotFoundError(id);
+    const interrupted = record.turns.filter(turn => turn.status === 'running');
+    if (interrupted.length === 0) return record;
+
+    for (const turn of interrupted) {
+      turn.status = 'interrupted';
+      turn.completedAt = timestamp(this.#clock);
+      turn.error = {
+        name: 'InterruptedTurnError',
+        message: 'The previous runtime ended before this turn was committed. Review side effects before retrying.',
+      };
+    }
+    record.updatedAt = timestamp(this.#clock);
+    return this.#store.save(record, { expectedRevision: record.revision });
+  }
+
   async close(id) {
     assertSessionId(id);
     if (this.#activeSessionId === id) throw new Error('Cannot close a session while its turn is running.');
