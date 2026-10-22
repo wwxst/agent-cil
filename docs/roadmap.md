@@ -27,6 +27,19 @@
 
 **验收：** 每项差异都有源位置、输入输出、调用关系、置信度和未确认项。
 
+## Phase 2A — 自有 CLI 入口与首个运行模式
+
+- [x] 在仓库根 package 声明 agent-cil 可执行入口与 npm run cli
+- [x] 实现 help/version 快速路径、参数解析和明确的未知参数报错
+- [x] 实现 --print 一次性输入，支持位置 prompt 与管道 stdin
+- [x] 实现文本增量输出、独立 stderr 诊断与单对象 JSON 结果
+- [x] 将 SIGINT/SIGTERM 转换为 AgentLoop 的 AbortSignal
+- [x] 用 fake model 覆盖参数、stdin、输出、凭证缺失和错误退出码
+- [ ] 实现与新版 SDK 真实契约一致的 stream-json 输入/输出子集
+- [ ] 接入经权限策略保护的 CLI 内置工具
+
+**验收：** help/version 不需要模型凭证；fake model 下可以运行一次性 prompt；CI 不访问网络。当前入口不宣称兼容 Desktop SDK stream-json 协议。
+
 ## Phase 2 — 协议基础与 CLI Transport
 
 - [x] 实现 JSONL 编码与分帧解析
@@ -83,14 +96,12 @@
 
 **验收：** fake MCP server 测试覆盖成功、错误、超时、取消和断开重连。
 
-## Phase 7 — 平台运行时与桌面集成
+## 当前范围之外 — Desktop / 前端 / 平台包装
 
-- [ ] 实现 Host 子进程适配
-- [ ] 单独评估 VM 的文件挂载、凭证通道和进程代理
-- [ ] 单独评估 SSH/WSL 的远端进程协议
-- [ ] 将 Renderer、IPC、Session manager 和 Runtime 接入自有客户端
-
-**验收：** 每种实际支持的 target 都有独立测试和清楚的能力边界；未实现的 target 不对外宣称支持。
+- 不实现 Renderer、聊天 UI、设置页面或 Desktop 窗口。
+- 不迁移 agent-desktop 前端代码。
+- 不实现 VM、SSH/WSL 等 target，除非后续 CLI 行为契约证明它们是当前命令行运行的必要条件。
+- 仅在解释新版 CLI 参数、环境变量、进程启动和宿主控制协议时研究 Desktop wrapper；这不构成开发 Desktop 本身的任务。
 
 ## Phase 8 — 回归与发布
 
@@ -103,4 +114,4 @@
 
 ## 当前下一步
 
-下一步实现最小 MCP client bridge：先定义 JSON-RPC request ID、initialize/initialized 握手、tools/list 与 tools/call，再用 fake stdio MCP server 覆盖成功、错误、超时、取消与断开。Anthropic adapter 当前不支持 server-side tools 或 pause_turn；在完整支持前不得静默忽略这类事件。
+先实现新版 SDK 所需的 stream-json 输入/输出子集：核实 initialize/control_request、user 消息、assistant/stream_event/result/system 状态帧的真实字段，保证协议 stdout 不混入普通日志，并把 interrupt 与进程 close 分开。然后将权限策略与实际工具调用接入 CLI。MCP 放在这条真实 CLI 主路径稳定之后；Desktop UI 不属于本项目范围。
