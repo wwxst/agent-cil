@@ -463,10 +463,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 
   const workspace = resolve(options.cwd);
+  // Do not attach a readline listener until configuration and runtime setup succeed.
+  // Otherwise a constructor/import error can leave a TTY handle open before the cleanup finally block.
   let rl;
-  if (process.stdin.isTTY && process.stdout.isTTY) {
-    rl = createInterface({ input: process.stdin, output: process.stdout });
-  }
 
   const { AgentLoop } = await import('../../runtime/src/agent-loop.js');
   const { AnthropicMessagesAdapter } = await import('../../runtime/src/anthropic-messages-adapter.js');
@@ -499,6 +498,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return { approved: /^(y|yes)$/i.test(answer.trim()), reason: 'User did not approve the tool call.' };
     },
   });
+
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    rl = createInterface({ input: process.stdin, output: process.stdout });
+  }
 
   let history = [];
   let activeController;
