@@ -432,6 +432,26 @@ test('built-in tools provide read, write and unique-match edit operations', asyn
   }
 });
 
+test('Read rejects binary files and text files above the 1 MiB limit', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-read-limits-'));
+  try {
+    await writeFile(join(workspace, 'binary.dat'), Buffer.from([65, 0, 66]));
+    await writeFile(join(workspace, 'large.txt'), Buffer.alloc(1024 * 1024 + 1, 65));
+    const tools = await createBuiltinTools({ workspace });
+
+    await assert.rejects(
+      tools.get('Read').execute({ file_path: 'binary.dat' }),
+      /binary file/,
+    );
+    await assert.rejects(
+      tools.get('Read').execute({ file_path: 'large.txt' }),
+      /1 MiB read limit/,
+    );
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('Bash tool executes a command in the workspace and captures its output', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-'));
   try {
