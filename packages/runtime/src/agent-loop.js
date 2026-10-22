@@ -169,6 +169,7 @@ export class AgentLoop extends EventEmitter {
           }
         } catch (error) {
           this.emit('modelError', { turn, error });
+          if (signal?.aborted) abortIfNeeded(signal);
           throw error;
         }
 
@@ -222,6 +223,7 @@ export class AgentLoop extends EventEmitter {
     }
 
     const validationErrors = await this.#tools.validateInput(toolUse.name, toolUse.input);
+    abortIfNeeded(signal);
     if (validationErrors.length > 0) {
       const result = toolError(toolUse, 'Invalid tool input: ' + validationErrors.join(' '));
       this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: toolUse.name, isError: true });
@@ -242,7 +244,9 @@ export class AgentLoop extends EventEmitter {
         messages: structuredClone(history),
         signal,
       });
+      abortIfNeeded(signal);
     } catch (error) {
+      if (signal?.aborted) abortIfNeeded(signal);
       this.emit('permissionError', { turn, toolUseId: toolUse.id, toolName: tool.name, error });
       const result = toolError(toolUse, 'Permission policy failed: ' + errorText(error));
       this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true });
@@ -270,10 +274,12 @@ export class AgentLoop extends EventEmitter {
             reason,
             signal,
           });
+          abortIfNeeded(signal);
           const approved = approval === true || approval?.approved === true;
           behavior = approved ? 'allow' : 'deny';
           if (!approved) reason = typeof approval?.reason === 'string' ? approval.reason : (reason || 'Approval was not granted.');
         } catch (error) {
+          if (signal?.aborted) abortIfNeeded(signal);
           behavior = 'deny';
           reason = 'Approval handler failed: ' + errorText(error);
         }
