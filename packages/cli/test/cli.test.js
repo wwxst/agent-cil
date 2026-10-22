@@ -161,6 +161,104 @@ test('AgentLoop rechecks CLI workspace permissions after Write input is replaced
   }
 });
 
+test('AgentLoop denies a rewritten Edit target outside the workspace before approval', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-edit-policy-'));
+  const escapedName = workspace.split(/[\\/]/).at(-1) + '-edit-escaped.txt';
+  const escapedPath = join(workspace, '..', escapedName);
+  let approvalCalls = 0;
+  try {
+    const tools = await createBuiltinTools({ workspace });
+    const cliPolicy = createCliPermissionPolicy({ workspace });
+    const model = {
+      async *stream() {
+        yield {
+          type: 'tool_use',
+          id: 'cli-policy-edit-1',
+          name: 'Edit',
+          input: { file_path: 'safe.txt', old_string: 'before', new_string: 'after' },
+        };
+        yield { type: 'message_end', stopReason: 'tool_use' };
+      },
+    };
+    const loop = new AgentLoop({
+      model,
+      tools,
+      permissionPolicy: async context => {
+        const decision = await cliPolicy(context);
+        if (context.phase === 'initial' && context.name === 'Edit' && decision.behavior === 'ask') {
+          return {
+            ...decision,
+            updatedInput: {
+              file_path: '../' + escapedName,
+              old_string: 'before',
+              new_string: 'must never be written',
+            },
+          };
+        }
+        return decision;
+      },
+      approvalHandler: async () => {
+        approvalCalls += 1;
+        return true;
+      },
+      maxTurns: 1,
+    });
+
+    const result = await loop.run({ input: 'Edit a file.' });
+    const toolResult = result.messages.at(-1).content[0];
+    assert.equal(approvalCalls, 0, 'an escaped Edit target must be denied before approval');
+    assert.equal(toolResult.is_error, true);
+    assert.match(toolResult.content, /File target is not authorized/);
+    await assert.rejects(readFile(escapedPath), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(workspace, 'safe.txt')), { code: 'ENOENT' });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(escapedPath, { force: true });
+  }
+});
+
+test('AgentLoop does not execute a Bash command when interactive approval is denied', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-denied-'));
+  const marker = join(workspace, 'must-not-exist.txt');
+  let approvalCalls = 0;
+  try {
+    const tools = await createBuiltinTools({ workspace });
+    const cliPolicy = createCliPermissionPolicy({ workspace });
+    const model = {
+      async *stream() {
+        yield {
+          type: 'tool_use',
+          id: 'cli-bash-denied-1',
+          name: 'Bash',
+          input: { command: process.execPath + ' -e "require(\\'node:fs\\').writeFileSync(' + JSON.stringify(marker) + ', \\'executed\\')" ' },
+        };
+        yield { type: 'message_end', stopReason: 'tool_use' };
+      },
+    };
+    const loop = new AgentLoop({
+      model,
+      tools,
+      permissionPolicy: cliPolicy,
+      approvalHandler: async ({ name, input }) => {
+        approvalCalls += 1;
+        assert.equal(name, 'Bash');
+        assert.match(input.command, /writeFileSync/);
+        return { approved: false, reason: 'User rejected the shell command.' };
+      },
+      maxTurns: 1,
+    });
+
+    const result = await loop.run({ input: 'Create a marker file.' });
+    const toolResult = result.messages.at(-1).content[0];
+    assert.equal(approvalCalls, 1);
+    assert.equal(toolResult.is_error, true);
+    assert.match(toolResult.content, /User rejected the shell command/);
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('AgentLoop requests approval for the final Bash command after policy input replacement', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-policy-'));
   const policyCalls = [];
