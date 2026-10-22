@@ -1,6 +1,6 @@
 # Agent CIL
 
-独立重建 Agent 客户端运行时。目标不是搬运旧客户端，也不是把逆向压缩包改造成另一个发行包，而是把已确认的行为契约转化为可测试、可维护的自有实现。
+**当前只开发自有 CLI，不开发前端 UI 或 Desktop 窗口。** 以 CLI 2.1.304 的静态逆向证据为主、2.1.88 旧版源码为行为参照，先逐模块确认新旧差异，再在 `agent-cil` 中独立实现必要行为。旧版恢复源码不是可复现构建工程，且没有证明其代码可按宽松开源许可证复用，因此不直接复制第三方代码。
 
 ## 当前基线
 
@@ -36,8 +36,12 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 - [x] 实现独立 Agent Loop、Tool Registry、schema 子集验证与 fail-closed 权限层
 - [x] 实现 warm Session、JSON 文件持久化与 interrupted-turn recovery
 - [x] 实现 Anthropic Messages SSE adapter 与 fake-fetch 契约测试
-- [ ] 完成真实凭证下的可选端到端验收与 MCP bridge
-- [ ] 接入桌面 UI 与平台运行 target
+- [x] 初步审计旧版恢复源码的可构建性、来源与授权限制
+- [x] 对照 CLI 入口、Agent Loop、工具调度和 permission updatedInput 的关键路径
+- [ ] 按真实源码证据继续核对权限、Session 和 Query 的剩余行为
+- [ ] 对真实 SDK stream-json 协议建立经源码确认的兼容子集
+
+Session manager、MCP 和平台包装当前只保留已有原型；新扩张暂停，直到新旧行为对照证明必要性。
 
 ## 代码入口
 
@@ -47,10 +51,12 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 - [agent-loop-runtime.md](docs/design/agent-loop-runtime.md)：运行时事件契约、工具权限边界、测试范围和未实现项。
 - [session-persistence.md](docs/design/session-persistence.md)：Session / Turn 数据模型、revision 检查、文件原子写入和中断恢复语义。
 - [agent-loop-comparison.md](docs/reverse-engineering/agent-loop-comparison.md)：旧版 2.1.88 与新版 2.1.304 的代码级对照。
+- [baseline.md](docs/reverse-engineering/baseline.md)：旧版源码完整性、可运行性与授权/复用边界。
 - [protocol-runtime-slice.md](docs/design/protocol-runtime-slice.md)：协议实现范围、证据对应和验收条件。
 - [process-transport.md](docs/design/process-transport.md)：子进程状态机、stdio 生命周期和测试边界。
 - [query-protocol-session.md](docs/design/query-protocol-session.md)：初始化、双向控制请求和 run-end 生命周期。
-- [baseline.md](docs/reverse-engineering/baseline.md)：样本版本、目录、完整性记录与证据等级。
+- [baseline.md](docs/reverse-engineering/baseline.md)：样本版本、目录、完整性记录与证据等级；旧版恢复源码的构建完整性和复用边界。
+- [cli-entry-comparison.md](docs/reverse-engineering/cli-entry-comparison.md)：CLI 2.1.88 / 2.1.304 的入口、启动分流与当前自有代码缺口。
 - [architecture.md](docs/reverse-engineering/architecture.md)：新版 Desktop、SDK、CLI 的组件职责。
 - [protocol-contracts.md](docs/reverse-engineering/protocol-contracts.md)：控制请求、权限、MCP 与生命周期契约。
 - [symbol-map.md](docs/reverse-engineering/symbol-map.md)：旧新版职责映射。
@@ -69,7 +75,7 @@ npm test
 
 ## 研究与实现边界
 
-新仓库只提交原创分析、接口契约、独立实现和测试。不要提交逆向压缩包、第三方二进制、提取的第三方源码/Source Map、凭证或运行时缓存。旧版源码只用于理解与对照；不把旧版函数直接复制成新版实现。静态代码中存在某分支，不代表某账号或某次运行一定启用；未经动态验证的结论会明确标记。
+新仓库只提交原创分析、接口契约、独立 CLI 实现和测试。不要提交逆向压缩包、第三方二进制、提取的第三方源码/Source Map、凭证或运行时缓存。旧版源码只用于理解与对照；当前没有证据证明恢复代码可合法复制，也没有完整的恢复源码构建工程。静态代码中存在某分支，不代表某账号或某次运行一定启用；未经动态验证的结论会明确标记。
 
 ## 参考仓库
 
