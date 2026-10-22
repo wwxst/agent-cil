@@ -205,7 +205,6 @@ export class QueryRunLifecycle extends EventEmitter {
     this.#runEndCeilingTimer = setTimeout(() => {
       this.endRun('ceiling');
     }, this.#runEndCeilingMs);
-    this.#runEndCeilingTimer.unref?.();
   }
 
   #clearRunEndCeiling() {
