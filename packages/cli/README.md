@@ -15,7 +15,7 @@ One-shot / script mode:
     agent-cil --print "Summarize the current repository"
     cat question.txt | agent-cil --print
 
-Configuration is environment-based for this first slice:
+Configuration is environment-based for this first slice. Remote API endpoints must use HTTPS; plain HTTP is accepted only for localhost/loopback development endpoints:
 
 - ANTHROPIC_API_KEY is required.
 - ANTHROPIC_MODEL selects the default model.
