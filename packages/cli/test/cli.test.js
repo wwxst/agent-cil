@@ -59,7 +59,7 @@ test('workspace path resolution rejects traversal outside the workspace', () => 
 test('built-in tools provide read, write and unique-match edit operations', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-cli-'));
   try {
-    const tools = createBuiltinTools({ workspace });
+    const tools = await createBuiltinTools({ workspace });
     assert.deepEqual(tools.list().map((tool) => tool.name), ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']);
 
     await tools.get('Write').execute({ file_path: 'src/example.js', content: 'const value = 1;\n' });
@@ -93,7 +93,7 @@ test('file tools reject symbolic links that resolve outside the workspace', asyn
     await writeFile(outsideFile, 'secret');
     await symlink(outsideFile, join(workspace, 'linked.txt'));
     await symlink(join(outside, 'missing.txt'), join(workspace, 'broken-link.txt'));
-    const tools = createBuiltinTools({ workspace });
+    const tools = await createBuiltinTools({ workspace });
     await assert.rejects(tools.get('Read').execute({ file_path: 'linked.txt' }), /Symbolic links are not allowed/);
     await assert.rejects(tools.get('Write').execute({ file_path: 'linked.txt', content: 'overwrite' }), /Symbolic links are not allowed/);
     await assert.rejects(tools.get('Write').execute({ file_path: 'broken-link.txt', content: 'create outside' }), /Symbolic links are not allowed/);
@@ -108,7 +108,7 @@ test('Glob and Grep search within the workspace and return relative paths', asyn
   try {
     await writeFile(join(workspace, 'alpha.js'), 'export const needle = true;\n');
     await writeFile(join(workspace, 'beta.txt'), 'nothing here\n');
-    const tools = createBuiltinTools({ workspace });
+    const tools = await createBuiltinTools({ workspace });
     const glob = await tools.get('Glob').execute({ pattern: '*.js' });
     assert.deepEqual(glob.matches, ['alpha.js']);
 
