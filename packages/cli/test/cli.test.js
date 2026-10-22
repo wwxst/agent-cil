@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import {
   CliArgumentError,
   createBuiltinTools,
+  createCliPermissionPolicy,
   main,
   parseArgs,
   resolveWorkspacePath,
@@ -65,6 +66,35 @@ test('workspace path resolution rejects traversal outside the workspace', () => 
   const root = resolve('/tmp/agent-cil-workspace');
   assert.equal(resolveWorkspacePath(root, 'src/index.js'), join(root, 'src', 'index.js'));
   assert.throws(() => resolveWorkspacePath(root, '../outside.txt'), /escapes the workspace/);
+});
+
+test('CLI permission policy checks final Write/Edit paths before asking for approval', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-policy-workspace-'));
+  const outside = await mkdtemp(join(tmpdir(), 'agent-cil-policy-outside-'));
+  try {
+    const outsideFile = join(outside, 'secret.txt');
+    await writeFile(outsideFile, 'secret');
+    await symlink(outsideFile, join(workspace, 'linked.txt'));
+    const policy = createCliPermissionPolicy({ workspace });
+
+    assert.equal((await policy({ name: 'Read', input: { file_path: 'linked.txt' } })).behavior, 'allow');
+    assert.equal((await policy({ name: 'Write', input: { file_path: 'safe/new.txt' } })).behavior, 'ask');
+    assert.equal((await policy({ name: 'Edit', input: { file_path: 'safe/new.txt' } })).behavior, 'ask');
+
+    const traversal = await policy({ name: 'Write', input: { file_path: '../outside.txt' } });
+    assert.equal(traversal.behavior, 'deny');
+    assert.match(traversal.reason, /escapes the workspace/);
+
+    const symlinkWrite = await policy({ name: 'Write', input: { file_path: 'linked.txt' } });
+    assert.equal(symlinkWrite.behavior, 'deny');
+    assert.match(symlinkWrite.reason, /Symbolic links are not allowed/);
+
+    assert.equal((await policy({ name: 'Bash', input: { command: 'echo hello' } })).behavior, 'ask');
+    assert.equal((await policy({ name: 'unexpected', input: {} })).behavior, 'deny');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
 });
 
 test('built-in tools provide read, write and unique-match edit operations', async () => {
