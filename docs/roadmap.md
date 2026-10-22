@@ -43,19 +43,21 @@
 
 ## Phase 3 — 最小独立 Agent Runtime
 
-- [ ] 建立 Model、Session、Tool、Turn 的最小契约
-- [ ] 实现模型流式输出与 tool_use 调度
-- [ ] 实现 tool_result 回填与 next-round 循环
-- [ ] 加入最大轮次、取消与明确错误传播
+- [x] 建立 provider-neutral Model stream 与 Tool registry 最小契约（Session 单独放在 Phase 5）
+- [x] 实现模型流式输出与 tool_use 调度
+- [x] 实现 tool_result 回填与 next-round 循环
+- [x] 加入最大轮次、取消与明确错误传播
+- [x] 使用 fake model + fake tool 覆盖至少两轮调用
 
-**验收：** 确定性 fake model + fake tool 能完成至少两轮调用并通过自动化测试，不需要真实凭证。
+**验收：** 确定性 fake model + fake tool 可完成多轮闭环，不需要真实凭证；新增运行时测试已由 Node.js 22 CI 验证。
 
 ## Phase 4 — 工具与权限
 
-- [ ] 定义 allow/deny/ask 与权限决策结果
-- [ ] 为工具输入输出建立 schema 契约
-- [ ] 将权限审批 UI 与 Runtime 解耦
-- [ ] 覆盖拒绝、校验失败、审批取消和执行错误
+- [x] 定义 allow/deny/ask 与权限决策结果
+- [x] 为工具输入建立受限 JSON Schema 契约
+- [x] 将审批逻辑隔离为 approvalHandler adapter
+- [x] 覆盖默认拒绝、无审批处理器、输入校验失败与策略异常
+- [x] 覆盖审批拒绝、审批期间取消与工具执行异常
 
 **验收：** 工具不会绕过权限层；失败和拒绝可以被会话记录并被模型看到。
 
@@ -97,4 +99,4 @@
 
 ## 当前下一步
 
-开始最小独立 Agent Runtime：先定义 Model、Tool、Turn 接口，再用 fake model 与 fake tool 实现至少两轮 tool_use → tool_result → next-round 闭环。权限必须是独立的 allow/deny/ask 决策层；没有实现权限策略的工具不得默认放行。
+下一步补齐 Session / Turn 的持久化契约，再开始真实模型 adapter 与 MCP bridge 的集成。权限必须是独立的 allow/deny/ask 决策层；没有实现权限策略的工具不得默认放行。

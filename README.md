@@ -31,14 +31,17 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 - [x] 实现 JSONL 编解码器与控制请求关联器
 - [x] 实现子进程 transport 与 fake child 生命周期测试
 - [x] 为协议基础添加确定性自动化测试
-- [ ] 实现 CLI Query 初始化屏障和完整双向控制请求生命周期
-- [ ] 实现独立 Agent Loop、Tool Registry 和权限决策
-- [ ] 实现 Session 恢复与 MCP bridge
+- [x] 实现 CLI Query 初始化屏障和双向控制回调分发
+- [x] 实现 result / idle / requires_action 生命周期跟踪
+- [x] 实现独立 Agent Loop、Tool Registry、schema 子集验证与 fail-closed 权限层
+- [ ] 接入真实模型 adapter、Session 恢复与 MCP bridge
 - [ ] 接入桌面 UI 与平台运行 target
 
 ## 代码入口
 
-- [@agent-cil/protocol](packages/protocol/README.md)：JSONL framing、控制请求关联和子进程 transport。
+- [@agent-cil/protocol](packages/protocol/README.md)：JSONL framing、控制请求关联、子进程 transport 与 Query 生命周期。
+- [@agent-cil/runtime](packages/runtime/README.md)：provider-neutral Agent Loop、工具注册、输入校验、权限决策和多轮 tool_result 回填。
+- [agent-loop-runtime.md](docs/design/agent-loop-runtime.md)：运行时事件契约、工具权限边界、测试范围和未实现项。
 - [agent-loop-comparison.md](docs/reverse-engineering/agent-loop-comparison.md)：旧版 2.1.88 与新版 2.1.304 的代码级对照。
 - [protocol-runtime-slice.md](docs/design/protocol-runtime-slice.md)：协议实现范围、证据对应和验收条件。
 - [process-transport.md](docs/design/process-transport.md)：子进程状态机、stdio 生命周期和测试边界。
