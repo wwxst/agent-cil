@@ -41,6 +41,7 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 
 - [@agent-cil/protocol](packages/protocol/README.md)：JSONL framing、控制请求关联、子进程 transport 与 Query 生命周期。
 - [@agent-cil/runtime](packages/runtime/README.md)：provider-neutral Agent Loop、工具注册、输入校验、权限决策和多轮 tool_result 回填。
+- [agent-loop-runtime.md](docs/design/agent-loop-runtime.md)：运行时事件契约、工具权限边界、测试范围和未实现项。
 - [agent-loop-comparison.md](docs/reverse-engineering/agent-loop-comparison.md)：旧版 2.1.88 与新版 2.1.304 的代码级对照。
 - [protocol-runtime-slice.md](docs/design/protocol-runtime-slice.md)：协议实现范围、证据对应和验收条件。
 - [process-transport.md](docs/design/process-transport.md)：子进程状态机、stdio 生命周期和测试边界。
