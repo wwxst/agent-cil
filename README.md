@@ -64,7 +64,7 @@ agent-cil --print "Summarize this repository"
 cat question.txt | agent-cil --print
 ```
 
-第一版通过 `ANTHROPIC_API_KEY`、`ANTHROPIC_MODEL` 和 `ANTHROPIC_BASE_URL` 配置模型；写文件、编辑文件和执行命令需要交互式批准，非交互模式默认拒绝这些操作。它还不支持官方 CLI 的 OAuth、完整配置系统、SDK stream-json、MCP、Session resume 或全部高级工具。
+第一版通过 `ANTHROPIC_API_KEY`、`ANTHROPIC_MODEL` 和 `ANTHROPIC_BASE_URL` 配置模型；写文件、编辑文件和执行命令需要交互式批准，非交互模式默认拒绝这些操作。文件工具会检查路径越界和符号链接目标，搜索工具不会遍历符号链接。它还不支持官方 CLI 的 OAuth、完整配置系统、SDK stream-json、MCP、Session resume 或全部高级工具。
 
 ## 开发与验证
 
