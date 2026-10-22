@@ -13,15 +13,20 @@
 - [x] 确认 Desktop、SDK wrapper、CLI 和旧版参考版本
 - [x] 确认新旧样本目录与可用证据类型
 - [x] 记录本地 Agent 调用链、JSONL 协议和运行 target
+- [x] 盘点旧版仓库：5,723 个 tree 条目；restored-src 下只有 src、node_modules、vendor，没有 package.json、tsconfig、lockfile、构建/测试配置
+- [x] 核实旧版发布包标记 2.1.88；package/LICENSE.md 声明 Anthropic 保留所有权利，使用受官方法律协议约束
+- [x] 确认恢复源码不等于可重建工程；在没有明确授权前，不将恢复出的第三方代码直接复制进 agent-cil
+- [ ] 对旧版发布包做安全的版本/帮助快速路径 smoke test，并保存原始退出码与输出；当前尚未在本环境实际运行旧版 CLI
 
-**验收：** 样本版本、组件职责、证据限制和后续任务有记录；没有提交样本二进制或提取源码。
+**验收：** 区分“可运行的发布 bundle”和“可复现构建的源工程”；记录来源、构建缺口和授权限制；没有提交样本二进制、提取源码或 Source Map。
 
 ## Phase 1 — 旧新版职责映射
 
 - [x] 建立 query/agent loop 的入口和状态初步映射
 - [x] 对照 streaming tool executor、tool routing、tool_result 回填
 - [x] 定位新版主模型请求的流式发送点，区分其他 API 调用
-- [ ] 完成权限决策顺序、输入修复和拒绝语义对照
+- [x] 确认 allow/ask 的 permission updatedInput 传递与新版 schema 复验要求
+- [ ] 完成权限决策顺序、输入修复、deny-rule 复验和取消/拒绝语义对照
 - [ ] 完成 Session ID、resume、continue、fork 与恢复策略对照
 - [ ] 完成 MCP 初始化、request ID 与取消语义的逐路径对照
 
@@ -63,34 +68,24 @@
 
 **验收：** 工具不会绕过权限层；失败和拒绝可以被会话记录并被模型看到。
 
-## Phase 5 — Session 与持久化
+## Phase 5 — Session 与持久化（已实现自有原型，暂停扩张）
 
-- [x] 支持多轮输入与 warm session
-- [x] 实现 JSON 文件存储，并用全新 manager 验证 cold resume
-- [x] 分离 Session ID、Turn ID、control request ID 与 tool-use ID；Query ID 的实际生成/恢复仍待接入真实 adapter
-- [x] 明确 result / idle / requires_action 生命周期与 user turn 生命周期是两层状态
-- [x] 实现 revision 检查、显式 interrupted-turn recovery、close 与 delete
-- [ ] 增加过期清理策略与跨进程锁/多写者存储
+- [x] 自有 Session manager、JSON journal、revision 与 interrupted-turn recovery 的单元测试
+- [ ] 对照 2.1.88/2.1.304 的真实 Session ID、resume、continue、fork 与恢复策略
+- [ ] 核实自有 journal 与官方 transcript/session 文件格式之间的差异
 
-**验收：** 新增测试覆盖 warm 多轮、文件冷恢复、失败 turn 记录、revision 冲突、中断 reconciliation 和关闭后的资源清理；文件存储当前按单写进程设计。
+**验收：** 现有实现只证明自有数据结构的行为，不代表兼容 Claude Code 的 session/transcript 格式。完成源码对照前不增加过期清理、多写者或新的持久化抽象。
 
-## Phase 6 — MCP 与扩展工具
+## Phase 6 — MCP 与扩展工具（暂缓）
 
-- [ ] 区分宿主内存 MCP bridge 与独立 stdio/HTTP server
-- [ ] 实现初始化握手、请求 ID、错误响应与取消
-- [ ] 将外部服务配置和密钥存储隔离在宿主层
-- [ ] 为每次工具调用保留审批和诊断事件
+只有在 CLI 主路径、权限契约和真实 SDK 输入输出得到证据验证后，才按具体调用链决定是否实现 MCP。当前不开发新的 MCP bridge。
 
-**验收：** fake MCP server 测试覆盖成功、错误、超时、取消和断开重连。
+## 当前范围之外 — Desktop / 前端 / 平台包装
 
-## Phase 7 — 平台运行时与桌面集成
-
-- [ ] 实现 Host 子进程适配
-- [ ] 单独评估 VM 的文件挂载、凭证通道和进程代理
-- [ ] 单独评估 SSH/WSL 的远端进程协议
-- [ ] 将 Renderer、IPC、Session manager 和 Runtime 接入自有客户端
-
-**验收：** 每种实际支持的 target 都有独立测试和清楚的能力边界；未实现的 target 不对外宣称支持。
+- 不开发 Renderer、聊天 UI、设置页面或 Desktop 窗口。
+- 不迁移 agent-desktop 前端代码。
+- 不实现 VM、SSH/WSL 等平台包装，除非后续证据证明它们是目标 CLI 本身的必要运行条件。
+- 可以研究 Desktop wrapper 的启动参数、环境变量、IPC/SDK 调用，只为解释 CLI 契约；不因此实现 Desktop。
 
 ## Phase 8 — 回归与发布
 
@@ -103,4 +98,4 @@
 
 ## 当前下一步
 
-下一步实现最小 MCP client bridge：先定义 JSON-RPC request ID、initialize/initialized 握手、tools/list 与 tools/call，再用 fake stdio MCP server 覆盖成功、错误、超时、取消与断开。Anthropic adapter 当前不支持 server-side tools 或 pause_turn；在完整支持前不得静默忽略这类事件。
+先完成旧版基线可运行性与授权边界记录，再按入口、Agent Loop、工具调度、权限四条链逐函数比对 2.1.88 与 2.1.304。当前首个代码级差异是 permission updatedInput：旧版允许权限/审批返回更新后的输入，新版明确在执行前重新校验该输入；agent-cil 原实现忽略该字段，本分支补齐传递与 schema 复验。Session、MCP 和平台包装暂停扩张，直到对应行为有源码证据。
