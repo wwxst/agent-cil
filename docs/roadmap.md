@@ -35,7 +35,9 @@
 - [x] 实现早到响应有限缓存、取消信号、超时和关闭清理
 - [x] 实现 spawn / stdin / stdout / stderr 的进程 transport
 - [x] 用 fake child process 验证启动、输出帧、输入写入、退出和资源清理
-- [ ] 实现 initialize 屏障、Query 状态和双向控制请求的集成
+- [x] 实现 initialize 屏障与双向 control request 分发
+- [x] 实现 result / idle / requires_action / end-ceiling 生命周期跟踪
+- [ ] 完成真实样本 schema 与完整 Query streaming 编排的适配
 
 **验收：** Transport 层测试覆盖进程启动、JSONL I/O、错误和关闭；普通日志不污染协议 stdout。Query 生命周期仍需单独验收。
 
@@ -95,4 +97,4 @@
 
 ## 当前下一步
 
-完成权限决策与会话恢复的代码级对照；随后在 ProcessTransport 之上实现 Query 初始化屏障、control request 分发与 session idle/requires_action 生命周期。用 fake child process 验证 result 到达后仍有待处理回调时不会过早关闭，再开始最小 Agent Loop。
+开始最小独立 Agent Runtime：先定义 Model、Tool、Turn 接口，再用 fake model 与 fake tool 实现至少两轮 tool_use → tool_result → next-round 闭环。权限必须是独立的 allow/deny/ask 决策层；没有实现权限策略的工具不得默认放行。
