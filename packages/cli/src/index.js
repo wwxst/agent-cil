@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { readFile, writeFile, stat, readdir, mkdir, realpath, lstat } from 'node:fs/promises';
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
@@ -13,7 +12,6 @@ const MAX_WALK_FILES = 5000;
 const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.cache']);
 const BACKSLASH = String.fromCharCode(92);
 const REGEX_META = new Set(['.', '+', '^', '$', '(', ')', '|', '[', ']', '{', '}', BACKSLASH]);
-const execAsync = promisify(exec);
 
 export const HELP = [
   'agent-cil ' + VERSION,
@@ -266,6 +264,112 @@ async function readTextFile(filePath) {
   return content;
 }
 
+function abortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error('Shell command was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function signalProcessTree(child, signalName) {
+  if (!child.pid) return;
+  if (process.platform !== 'win32') {
+    try {
+      // detached=true gives the shell and its descendants a private process group.
+      process.kill(-child.pid, signalName);
+      return;
+    } catch (error) {
+      if (error?.code !== 'ESRCH' && error?.code !== 'EPERM') throw error;
+    }
+  }
+  try {
+    child.kill(signalName);
+  } catch {
+    // The process may have exited between the state check and signal delivery.
+  }
+}
+
+function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      detached: process.platform !== 'win32',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdout = [];
+    const stderr = [];
+    let outputBytes = 0;
+    let timedOut = false;
+    let outputLimitHit = false;
+    let spawnError;
+    let forceKillTimer;
+
+    const terminate = () => {
+      signalProcessTree(child, 'SIGTERM');
+      if (!forceKillTimer) {
+        forceKillTimer = setTimeout(() => {
+          try {
+            signalProcessTree(child, 'SIGKILL');
+          } catch {
+            // Best-effort escalation; close/error handling reports the command outcome.
+          }
+        }, 250);
+        forceKillTimer.unref?.();
+      }
+    };
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, timeoutMs);
+    timeout.unref?.();
+
+    const onAbort = () => terminate();
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    const collect = (target, chunk) => {
+      const remaining = Math.max(0, maxOutputBytes - outputBytes);
+      if (remaining > 0) target.push(chunk.subarray(0, remaining));
+      outputBytes += chunk.length;
+      if (outputBytes > maxOutputBytes && !outputLimitHit) {
+        outputLimitHit = true;
+        terminate();
+      }
+    };
+
+    child.stdout.on('data', chunk => collect(stdout, chunk));
+    child.stderr.on('data', chunk => collect(stderr, chunk));
+    child.once('error', error => {
+      spawnError = error;
+    });
+    child.once('close', code => {
+      clearTimeout(timeout);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      signal?.removeEventListener('abort', onAbort);
+
+      if (signal?.aborted) {
+        rejectPromise(abortError(signal));
+        return;
+      }
+
+      const result = {
+        exit_code: Number.isInteger(code) && code >= 0 ? code : 1,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+      };
+      if (timedOut) result.error = 'Command was killed or timed out.';
+      else if (outputLimitHit) result.error = 'Command output exceeded the 1 MiB limit.';
+      else if (spawnError) result.error = spawnError.message;
+      else if (code !== 0) result.error = 'Command exited with status ' + String(code) + '.';
+      resolvePromise(result);
+    });
+  });
+}
+
 export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
   const { ToolRegistry } = await import('../../runtime/src/tool-registry.js');
   const root = resolve(workspace);
@@ -420,26 +524,12 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
       required: ['command'],
       additionalProperties: false,
     },
-    execute: async ({ command, timeout_ms = 30000 }, { signal } = {}) => {
-      try {
-        const result = await execAsync(command, {
-          cwd: root,
-          signal,
-          timeout: timeout_ms,
-          maxBuffer: MAX_TOOL_OUTPUT_BYTES,
-          windowsHide: true,
-        });
-        return { exit_code: 0, stdout: result.stdout, stderr: result.stderr };
-      } catch (error) {
-        if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : error;
-        return {
-          exit_code: Number.isInteger(error?.code) ? error.code : 1,
-          stdout: typeof error?.stdout === 'string' ? error.stdout : '',
-          stderr: typeof error?.stderr === 'string' ? error.stderr : '',
-          error: error?.killed ? 'Command was killed or timed out.' : (error?.message || String(error)),
-        };
-      }
-    },
+    execute: async ({ command, timeout_ms = 30000 }, { signal } = {}) => runShellCommand(command, {
+      cwd: root,
+      signal,
+      timeoutMs: timeout_ms,
+      maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
+    }),
   });
 
   return tools;
