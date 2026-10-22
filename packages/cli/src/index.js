@@ -5,7 +5,6 @@ import { promisify } from 'node:util';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
-import { AgentLoop, AnthropicMessagesAdapter, ToolRegistry } from '../../runtime/src/index.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
@@ -225,7 +224,8 @@ async function readTextFile(filePath) {
   return content;
 }
 
-export function createBuiltinTools({ workspace = process.cwd() } = {}) {
+export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
+  const { ToolRegistry } = await import('../../runtime/src/tool-registry.js');
   const root = resolve(workspace);
   const tools = new ToolRegistry();
 
@@ -468,6 +468,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     rl = createInterface({ input: process.stdin, output: process.stdout });
   }
 
+  const { AgentLoop } = await import('../../runtime/src/agent-loop.js');
+  const { AnthropicMessagesAdapter } = await import('../../runtime/src/anthropic-messages-adapter.js');
   const model = new AnthropicMessagesAdapter({
     apiKey,
     model: options.model || env.ANTHROPIC_MODEL || 'claude-sonnet-4-5',
@@ -475,7 +477,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     maxTokens: options.maxTokens,
     system: options.system,
   });
-  const tools = createBuiltinTools({ workspace });
+  const tools = await createBuiltinTools({ workspace });
   const loop = new AgentLoop({
     model,
     tools,
