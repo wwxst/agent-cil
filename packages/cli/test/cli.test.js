@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -13,6 +15,14 @@ import {
 test('version and help are handled before model credentials are needed', () => {
   assert.deepEqual(parseArgs(['--version']), { mode: 'version' });
   assert.deepEqual(parseArgs(['--help']), { mode: 'help' });
+});
+
+test('executable version fast path exits without credentials', () => {
+  const cliPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+  const result = spawnSync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, 'agent-cil 0.1.0\n');
+  assert.equal(result.stderr, '');
 });
 
 test('parses model, endpoint, token, system, cwd, print and prompt options', () => {
@@ -65,7 +75,7 @@ test('built-in tools provide read, write and unique-match edit operations', asyn
     await assert.rejects(
       tools.get('Edit').execute({
         file_path: 'src/example.js',
-        old_string: 'const',
+        old_string: 'value = 1',
         new_string: 'let',
       }),
       /old_string was not found|occurs more than once/,
