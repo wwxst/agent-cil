@@ -85,6 +85,17 @@ test('built-in tools provide read, write and unique-match edit operations', asyn
   }
 });
 
+test('Bash tool executes a command in the workspace and captures its output', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-'));
+  try {
+    const tools = await createBuiltinTools({ workspace });
+    const result = await tools.get('Bash').execute({ command: 'node -p 1+1' });
+    assert.equal(result.exit_code, 0);
+    assert.equal(result.stdout.trim(), '2');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
 test('file tools reject symbolic links that resolve outside the workspace', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-safe-workspace-'));
   const outside = await mkdtemp(join(tmpdir(), 'agent-cil-outside-'));
