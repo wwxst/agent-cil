@@ -158,6 +158,7 @@ test('CLI streams a model response, executes Read, and feeds tool_result into th
       '--cwd', workspace,
       '--base-url', 'http://127.0.0.1:' + address.port,
       '--model', 'claude-local-test',
+      '--system', 'Use concise responses.',
     ], {
       env: { ...process.env, ANTHROPIC_API_KEY: 'local-test-key' },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -179,6 +180,8 @@ test('CLI streams a model response, executes Read, and feeds tool_result into th
     assert.equal(stdout.trim(), 'I read it: hello from file.');
     assert.equal(requests.length, 2, 'the tool call should cause a second model request');
     assert.equal(requests[0].model, 'claude-local-test');
+    assert.equal(requests[0].system, 'Use concise responses.');
+    assert.equal(requests[1].system, 'Use concise responses.');
     assert.equal(requests[0].stream, true);
 
     const assistantToolMessage = requests[1].messages.find(message =>
