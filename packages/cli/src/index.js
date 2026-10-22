@@ -170,6 +170,39 @@ async function assertPathWithinWorkspace(workspace, target) {
 }
 
 
+/**
+ * Build the CLI's permission policy. File writes and edits are checked against
+ * the workspace before prompting; the Runtime repeats this check if a policy
+ * or approval handler changes the effective input.
+ */
+export function createCliPermissionPolicy({ workspace = process.cwd() } = {}) {
+  const root = resolve(workspace);
+  return async ({ name, input } = {}) => {
+    if (['Read', 'Glob', 'Grep'].includes(name)) {
+      return { behavior: 'allow', reason: 'Read-only workspace operation.' };
+    }
+
+    if (name === 'Write' || name === 'Edit') {
+      try {
+        const target = resolveWorkspacePath(root, input?.file_path);
+        await assertPathWithinWorkspace(root, target);
+      } catch (error) {
+        return {
+          behavior: 'deny',
+          reason: 'File target is not authorized: ' + (error instanceof Error ? error.message : String(error)),
+        };
+      }
+      return { behavior: 'ask', reason: 'This tool modifies workspace files.' };
+    }
+
+    if (name === 'Bash') {
+      return { behavior: 'ask', reason: 'This command executes a shell process.' };
+    }
+
+    return { behavior: 'deny', reason: 'No CLI permission rule exists for tool ' + String(name) + '.' };
+  };
+}
+
 async function walkFiles(start, output = []) {
   if (output.length >= MAX_WALK_FILES) return output;
   const entries = await readdir(start, { withFileTypes: true });
@@ -480,13 +513,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const loop = new AgentLoop({
     model,
     tools,
-    permissionPolicy: async ({ name }) => {
-      if (['Read', 'Glob', 'Grep'].includes(name)) return { behavior: 'allow' };
-      return {
-        behavior: 'ask',
-        reason: name === 'Bash' ? 'This command executes a shell process.' : 'This tool modifies workspace files.',
-      };
-    },
+    permissionPolicy: createCliPermissionPolicy({ workspace }),
     approvalHandler: async ({ name, input, reason, signal }) => {
       if (!rl || options.print || !process.stdin.isTTY) {
         process.stderr.write('[permission] denied ' + name + ': interactive approval is unavailable.\n');
