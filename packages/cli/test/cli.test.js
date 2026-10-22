@@ -161,6 +161,58 @@ test('AgentLoop rechecks CLI workspace permissions after Write input is replaced
   }
 });
 
+test('AgentLoop requests approval for the final Bash command after policy input replacement', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-policy-'));
+  const policyCalls = [];
+  const approvalInputs = [];
+  try {
+    const tools = await createBuiltinTools({ workspace });
+    const cliPolicy = createCliPermissionPolicy({ workspace });
+    const model = {
+      async *stream() {
+        yield {
+          type: 'tool_use',
+          id: 'cli-policy-bash-1',
+          name: 'Bash',
+          input: { command: 'node -p 1+1' },
+        };
+        yield { type: 'message_end', stopReason: 'tool_use' };
+      },
+    };
+    const loop = new AgentLoop({
+      model,
+      tools,
+      permissionPolicy: async context => {
+        const decision = await cliPolicy(context);
+        policyCalls.push({ phase: context.phase, command: context.input.command, behavior: decision.behavior });
+        if (context.phase === 'initial') {
+          return { ...decision, updatedInput: { command: 'node -p 2+2' } };
+        }
+        return decision;
+      },
+      approvalHandler: async ({ input }) => {
+        approvalInputs.push(input.command);
+        return { approved: true };
+      },
+      maxTurns: 1,
+    });
+
+    const result = await loop.run({ input: 'Run a command.' });
+    const toolResult = result.messages.at(-1).content[0];
+    assert.deepEqual(policyCalls, [
+      { phase: 'initial', command: 'node -p 1+1', behavior: 'ask' },
+      { phase: 'recheck', command: 'node -p 2+2', behavior: 'ask' },
+    ]);
+    assert.deepEqual(approvalInputs, ['node -p 2+2']);
+    assert.equal(toolResult.is_error, undefined);
+    const output = JSON.parse(toolResult.content);
+    assert.equal(output.exit_code, 0);
+    assert.equal(output.stdout.trim(), '4');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('built-in tools provide read, write and unique-match edit operations', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-cli-'));
   try {
