@@ -56,7 +56,28 @@
 
 这里引用的是样本资料包内的记录，不把报告中的签名/哈希检查扩大解释为“本仓库已独立重建或运行验证”。
 
-## 5. 证据等级
+## 5. 旧版源码完整性、可运行性与复用边界
+
+检查对象：公开仓库 `wwxst/-`，main 对应快照提交 `57d4d4d05121f84601af119091455832d37de5df`；该仓库 tree 为 5,723 个条目。
+
+### 完整性与可运行性
+
+- 仓库包含 `package/cli.js`、`package/cli.js.map`、`package/package.json` 和 `claude-code-2.1.88.tgz`，因此存在 2.1.88 发布产物与源码映射。
+- `package/package.json` 标记 `@anthropic-ai/claude-code@2.1.88`、入口 `cli.js`、Node.js `>=18`；这只能证明发布包的声明，不等于恢复源码可以独立构建。
+- `restored-src/` 下只有 `src/`、`node_modules/`、`vendor/` 三个顶层目录。没有 `package.json`、`tsconfig`、lockfile、构建脚本、lint/test 配置或可复现的发布流水线。
+- 恢复源码包含 1,902 个 src 文件（其中 1,884 个 TS/TSX，按资料包清单统计），直接从 Source Map 的 `sourcesContent` 提取；资料包 README 明确说明未整理成可独立构建的工程，且源码导入 `bun:bundle`、构建宏和路径别名。
+- **当前未在本环境运行旧版 CLI**，因此没有真实的 `--version`、`--help`、退出码或基准行为记录。下一步若要做发布产物 smoke test，应在隔离环境、无凭证、无网络业务调用的条件下执行，并保留原始 stdout/stderr/exit code。
+
+### 授权与可复用范围
+
+- GitHub 仓库 API 未返回明确的仓库级开源许可证。
+- `package/package.json` 的 license 字段为 `SEE LICENSE IN README.md`；同仓库 `package/LICENSE.md` 写明 Anthropic PBC 保留所有权利，使用受官方 Legal Agreements 约束。
+- 因此，不能把恢复出来的第三方源码视为 MIT/Apache 等宽松许可证代码，也不能因为它公开可读就默认有权复制、修改、再发布或用于商业产品。
+- 在取得明确授权/法务确认前，`agent-cil` 只记录路径、调用关系、数据结构、行为差异和测试结果；自有实现以独立代码重建已确认的行为契约，不提交旧版源码、Source Map、打包 CLI 或其依赖。
+
+**结论：** 旧版是高价值的静态行为参照，并存在可执行的官方发布 bundle；但恢复出的 `restored-src` 不是可复现构建的完整源工程。其代码复用授权也未被证明。当前应采用“行为基线 + 独立实现”，而不是把恢复源码直接当作可合法复制的开发基线。
+
+## 6. 证据等级
 
 后续文档统一使用以下标签：
 
@@ -66,6 +87,6 @@
 - **待动态验证**：需要在授权测试环境中实际运行才能确定。
 - **未知**：现有样本不足以回答。
 
-## 6. 样本处理原则
+## 7. 样本处理原则
 
 不要把逆向 ZIP、CLI/桌面二进制、提取后的第三方源码、Source Map 或 native addon 直接提交到公开仓库。Git 中优先保存原创的结构分析、证据索引、独立实现与测试。任何外部源码或资源如需使用，先确认其许可证与再分发条件。
