@@ -51,11 +51,10 @@ Session manager、MCP 和平台包装当前只保留已有原型；新扩张暂�
 - [agent-loop-runtime.md](docs/design/agent-loop-runtime.md)：运行时事件契约、工具权限边界、测试范围和未实现项。
 - [session-persistence.md](docs/design/session-persistence.md)：Session / Turn 数据模型、revision 检查、文件原子写入和中断恢复语义。
 - [agent-loop-comparison.md](docs/reverse-engineering/agent-loop-comparison.md)：旧版 2.1.88 与新版 2.1.304 的代码级对照。
-- [baseline.md](docs/reverse-engineering/baseline.md)：旧版源码完整性、可运行性与授权/复用边界。
 - [protocol-runtime-slice.md](docs/design/protocol-runtime-slice.md)：协议实现范围、证据对应和验收条件。
 - [process-transport.md](docs/design/process-transport.md)：子进程状态机、stdio 生命周期和测试边界。
 - [query-protocol-session.md](docs/design/query-protocol-session.md)：初始化、双向控制请求和 run-end 生命周期。
-- [baseline.md](docs/reverse-engineering/baseline.md)：样本版本、目录、完整性记录与证据等级；旧版恢复源码的构建完整性和复用边界。
+- [baseline.md](docs/reverse-engineering/baseline.md)：样本版本、完整性、旧版恢复源码的构建完整性与授权/复用边界。
 - [cli-entry-comparison.md](docs/reverse-engineering/cli-entry-comparison.md)：CLI 2.1.88 / 2.1.304 的入口、启动分流与当前自有代码缺口。
 - [architecture.md](docs/reverse-engineering/architecture.md)：新版 Desktop、SDK、CLI 的组件职责。
 - [protocol-contracts.md](docs/reverse-engineering/protocol-contracts.md)：控制请求、权限、MCP 与生命周期契约。
