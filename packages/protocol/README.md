@@ -1,57 +1,41 @@
 # @agent-cil/protocol
 
-A dependency-free protocol foundation for the independent Agent CIL runtime. Requires Node.js 22 or newer.
+Dependency-free protocol primitives for the independent Agent CIL runtime. Requires Node.js 22 or newer.
 
 ## JSONL framing
 
-~~~js
-import { JsonlParser, encodeJsonlFrame } from '@agent-cil/protocol';
-
-const parser = new JsonlParser({ maxFrameBytes: 8 * 1024 * 1024 });
-parser.on('data', frame => handleFrame(frame));
-parser.on('frameError', error => diagnostics.warn(error.message));
-process.stdin.pipe(parser);
-process.stdout.write(encodeJsonlFrame({ type: 'user', message: { role: 'user', content: 'Hello' } }));
-~~~
-
-The **frameError** event is recoverable and malformed frames are skipped. An oversized frame is fatal and errors the stream. Do not write human-readable logs to a protocol stdout stream.
+Use JsonlParser to turn a byte stream into JSON object frames and encodeJsonlFrame to serialize one object per line. Malformed frames emit frameError and are skipped; oversized frames are fatal. Never write human-readable logs to protocol stdout.
 
 ## Process transport
 
+ProcessTransport owns one child process and exposes stdout frames, stderr chunks, a bounded stderr tail, and an exit result. It supports explicit stdin writes and controlled shutdown. Raw stderr can contain sensitive data, so it is not logged automatically and should be redacted before persistence. The env option passes the supplied environment object to the child; it does not merge it with the parent environment.
+
+## Query session
+
+QueryProtocolSession provides an initialize write barrier, request/response correlation, and host-side control callback dispatch. The initialize frame being written and its control_response arriving are distinct facts. sendInput waits for the write barrier; callers that require initialization success should also await the initialize response.
+
+Register only host callback handlers that the application can safely fulfill. A handler can return NO_CONTROL_RESPONSE when another execution host truly owns the response. This package does not implement permission policy, tool execution, authentication, or a full SDK Query lifecycle.
+
+## Run lifecycle
+
+QueryRunLifecycle distinguishes the CLI result frame from completion of host-side interactions. It observes result and session_state_changed frames, waits for idle when bidirectional callbacks are configured, pauses the end ceiling during requires_action, and can use a bounded ceiling when the session never becomes idle.
+
 ~~~js
-import { ProcessTransport } from '@agent-cil/protocol';
+import { QueryRunLifecycle } from '@agent-cil/protocol';
 
-const transport = new ProcessTransport({
-  command: '/path/to/agent-cli',
-  args: ['--output-format', 'stream-json', '--input-format', 'stream-json'],
-  cwd: '/workspace',
-  env: process.env,
+const lifecycle = new QueryRunLifecycle({
+  session: querySession,
+  hasBidirectionalNeeds: true,
+  runEndCeilingMs: 30_000,
 });
-transport.on('frame', frame => handleFrame(frame));
-transport.on('frameError', error => diagnostics.warn(error.message));
-transport.on('transportError', error => diagnostics.error(error.message));
-await transport.start();
-await transport.writeFrame({ type: 'user', message: { role: 'user', content: 'Hello' } });
-// End the input stream or close the child when the owner is done.
-await transport.close();
+lifecycle.beginRun();
+const ended = lifecycle.waitForRunEnd();
+// Send input using querySession; incoming frames are observed automatically.
+const endResult = await ended;
 ~~~
-
-The transport owns one child process and exposes stdout frames, stderr chunks, a bounded stderr tail, and an exit result. Closing ends stdin, then sends SIGTERM after the grace period and SIGKILL if the child still does not exit. Raw stderr may contain sensitive data; it is not logged automatically, and callers must redact before persisting it. Supplying **env** passes that environment object to the child; construct it deliberately rather than assuming inherited variables are merged.
 
 ## Control response correlation
 
-~~~js
-import { ControlRequestRegistry, createControlCancelFrame } from '@agent-cil/protocol';
+ControlRequestRegistry correlates responses by response.request_id, supports out-of-order responses, and provides abort, timeout, and close cleanup. createControlCancelFrame builds a separate cancellation frame for a single pending control request.
 
-const pending = new ControlRequestRegistry();
-const response = pending.waitFor('request-42', { signal, timeoutMs: 30_000 });
-writeFrame({ type: 'control_request', request_id: 'request-42', request: { subtype: 'initialize' } });
-// In the transport's frame handler:
-if (frame.type === 'control_response') pending.accept(frame);
-// On cancellation, write the separate control-cancel frame when appropriate:
-writeFrame(createControlCancelFrame('request-42'));
-~~~
-
-The registry correlates by **response.request_id**; it does not infer response order. **waitFor()** resolves with the control-response envelope (**frame.response**), rejects peer **subtype: "error"** responses, and supports abort, timeout and close. The bounded early-response cache exists for races where a response arrives before a waiter is registered; it is not a message queue for arbitrary protocol events.
-
-This package implements generic transport primitives only. Version-specific schema validation, SDK Query initialization, session lifecycle, permission UI, MCP server execution, authentication and retries remain in higher layers.
+The package implements generic transport primitives only. Version-specific schema validation, session persistence, permission UI, MCP bridge, authentication, and retries remain higher-layer responsibilities.
