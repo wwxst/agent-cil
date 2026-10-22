@@ -211,20 +211,29 @@ export function createCliPermissionPolicy({ workspace = process.cwd() } = {}) {
   };
 }
 
-async function walkFiles(start, output = []) {
-  if (output.length >= MAX_WALK_FILES) return output;
+async function walkFiles(start, state = { files: [], truncated: false }) {
+  if (state.files.length >= MAX_WALK_FILES) {
+    state.truncated = true;
+    return state;
+  }
   const entries = await readdir(start, { withFileTypes: true });
   for (const entry of entries) {
-    if (output.length >= MAX_WALK_FILES) break;
+    if (state.files.length >= MAX_WALK_FILES) {
+      state.truncated = true;
+      break;
+    }
     if (entry.isSymbolicLink()) continue;
     const fullPath = join(start, entry.name);
     if (entry.isDirectory()) {
-      if (!IGNORED_DIRECTORIES.has(entry.name)) await walkFiles(fullPath, output);
+      if (!IGNORED_DIRECTORIES.has(entry.name)) await walkFiles(fullPath, state);
     } else if (entry.isFile()) {
-      output.push(fullPath);
+      state.files.push(fullPath);
     }
   }
-  return output;
+  // Conservatively report truncation at the cap: callers must not mistake a
+  // bounded walk for an exhaustive search when the exact total is unknown.
+  if (state.files.length >= MAX_WALK_FILES) state.truncated = true;
+  return state;
 }
 
 function globToRegExp(pattern) {
@@ -562,12 +571,12 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
         throw new Error('Glob pattern must stay within the workspace.');
       }
       const matcher = globToRegExp(pattern);
-      const files = await walkFiles(root);
-      const matches = files
+      const walked = await walkFiles(root);
+      const matches = walked.files
         .map((file) => relative(root, file).split(sep).join('/'))
         .filter((file) => matcher.test(file))
         .slice(0, 500);
-      return { matches, truncated: files.length >= MAX_WALK_FILES || matches.length >= 500 };
+      return { matches, truncated: walked.truncated || matches.length >= 500 };
     },
   });
 
@@ -588,10 +597,11 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
       const start = resolveWorkspacePath(root, path);
       await assertPathWithinWorkspace(root, start);
       const info = await stat(start);
-      const files = info.isFile() ? [start] : await walkFiles(start);
+      const walked = info.isFile() ? { files: [start], truncated: false } : await walkFiles(start);
+      const files = walked.files;
       const matcher = new RegExp(pattern, ignore_case ? 'i' : '');
       const matches = [];
-      let truncated = false;
+      let truncated = walked.truncated;
       for (const file of files) {
         if (matches.length >= 200) { truncated = true; break; }
         let content;
