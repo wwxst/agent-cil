@@ -259,14 +259,18 @@ export class AnthropicMessagesAdapter {
         if (block.type === 'server_tool_use') {
           throw new ModelAdapterError('Server-side tool use is not supported by this client-tool adapter.');
         }
+        if (blocks.has(payload.index)) throw new ModelAdapterError('Messages API reused an active content block index.');
         const state = { type: block.type };
         if (block.type === 'tool_use') {
           if (typeof block.id !== 'string' || typeof block.name !== 'string') {
             throw new ModelAdapterError('Messages API sent a malformed tool_use block.');
           }
+          if (block.input !== undefined && !isRecord(block.input)) {
+            throw new ModelAdapterError('Messages API sent non-object initial tool input.');
+          }
           state.id = block.id;
           state.name = block.name;
-          state.input = isRecord(block.input) ? structuredClone(block.input) : {};
+          state.input = block.input === undefined ? {} : structuredClone(block.input);
           state.partialJson = '';
         }
         blocks.set(payload.index, state);
@@ -307,6 +311,7 @@ export class AnthropicMessagesAdapter {
         }
       } else if (type === 'message_stop') {
         if (!messageStarted) throw new ModelAdapterError('Messages API stopped before message_start.');
+        if (blocks.size > 0) throw new ModelAdapterError('Messages API stopped with unfinished content blocks.');
         if (typeof stopReason !== 'string') throw new ModelAdapterError('Messages API stopped without a stop reason.');
         messageStopped = true;
         yield { type: 'message_end', stopReason: mapStopReason(stopReason) };
