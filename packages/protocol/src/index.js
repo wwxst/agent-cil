@@ -6,3 +6,4 @@ export {
   ControlRequestTimeoutError,
   createControlCancelFrame,
 } from './control-requests.js';
+export { ProcessTransport } from './process-transport.js';
