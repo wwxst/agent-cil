@@ -64,7 +64,7 @@ agent-cil --print "Summarize this repository"
 cat question.txt | agent-cil --print
 ```
 
-第一版通过 `ANTHROPIC_API_KEY`、`ANTHROPIC_MODEL` 和 `ANTHROPIC_BASE_URL` 配置模型；写文件、编辑文件和执行命令需要交互式批准，非交互模式默认拒绝这些操作。文件工具会检查路径越界和符号链接目标，搜索工具不会遍历符号链接。它还不支持官方 CLI 的 OAuth、完整配置系统、SDK stream-json、MCP、Session resume 或全部高级工具。
+第一版通过 `ANTHROPIC_API_KEY`、`ANTHROPIC_MODEL` 和 `ANTHROPIC_BASE_URL` 配置模型；写文件、编辑文件和执行命令需要交互式批准，非交互模式默认拒绝这些操作。文件工具会检查路径越界及真实路径解析结果，直接指向符号链接的目标会被拒绝，搜索工具不会遍历符号链接条目。它还不支持官方 CLI 的 OAuth、完整配置系统、SDK stream-json、MCP、Session resume 或全部高级工具。
 
 ## 开发与验证
 
@@ -72,7 +72,7 @@ cat question.txt | agent-cil --print
 npm test
 ```
 
-测试包含协议帧、流式 SSE、Agent Loop 多轮工具回填、权限与 schema、Session 原型，以及 CLI 参数、版本快路径、文件读写/编辑、搜索和符号链接越界保护。
+测试包含协议帧、流式 SSE、Agent Loop 多轮工具回填、权限与 schema、Session 原型，以及 CLI 参数、版本快路径、文件操作、搜索、符号链接越界保护和基于本地 SSE 服务的 CLI 端到端工具回填/非交互权限拒绝验证。
 
 模拟模型与模拟工具只能证明对应的确定性行为。真实模型请求仍需配置有效凭证；没有执行真实请求时，不宣称完成端到端兼容验证。
 
