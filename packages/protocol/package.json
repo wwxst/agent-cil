@@ -6,7 +6,10 @@
   "exports": {
     ".": "./src/index.js",
     "./jsonl": "./src/jsonl.js",
-    "./control-requests": "./src/control-requests.js"
+    "./control-requests": "./src/control-requests.js",
+    "./process-transport": "./src/process-transport.js",
+    "./query-session": "./src/query-session.js",
+    "./query-lifecycle": "./src/query-lifecycle.js"
   },
   "scripts": {
     "test": "node --test"
