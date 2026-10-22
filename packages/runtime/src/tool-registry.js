@@ -76,6 +76,9 @@ export class ToolRegistry {
     if (!tool) return ['Tool is not registered: ' + name];
     if (!isRecord(input)) return ['Tool input must be a JSON object.'];
 
+    const schemaErrors = validateJsonSchema(input, tool.inputSchema);
+    if (schemaErrors.length > 0) return schemaErrors;
+
     if (tool.validateInput) {
       let result;
       try {
@@ -89,6 +92,6 @@ export class ToolRegistry {
       return ['Custom input validator rejected the input.'];
     }
 
-    return validateJsonSchema(input, tool.inputSchema);
+    return [];
   }
 }
