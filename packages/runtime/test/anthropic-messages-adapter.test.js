@@ -183,6 +183,19 @@ test('honors cancellation before starting a request', async () => {
 test('rejects invalid constructor configuration and API-key provider output', async () => {
   assert.throws(() => new AnthropicMessagesAdapter({ model: 'x' }), /Provide apiKey or apiKeyProvider/);
   assert.throws(() => new AnthropicMessagesAdapter({ apiKey: 'key', model: 'x', baseUrl: 'file:///tmp' }), /HTTP or HTTPS/);
+  assert.throws(
+    () => new AnthropicMessagesAdapter({ apiKey: 'key', model: 'x', baseUrl: 'http://api.example.test' }),
+    /must use HTTPS unless it targets localhost or a loopback address/,
+  );
+  assert.doesNotThrow(() => new AnthropicMessagesAdapter({
+    apiKey: 'key', model: 'x', baseUrl: 'http://127.0.0.1:4312',
+  }));
+  assert.doesNotThrow(() => new AnthropicMessagesAdapter({
+    apiKey: 'key', model: 'x', baseUrl: 'http://localhost:4312',
+  }));
+  assert.doesNotThrow(() => new AnthropicMessagesAdapter({
+    apiKey: 'key', model: 'x', baseUrl: 'http://[::1]:4312',
+  }));
 
   const adapter = new AnthropicMessagesAdapter({
     apiKeyProvider: async () => '',
