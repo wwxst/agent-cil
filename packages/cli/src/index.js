@@ -274,20 +274,36 @@ async function assertOpenedFileWithinWorkspace(workspace, target, handle) {
   }
 }
 
-async function openWorkspaceFile(workspace, target, flags, mode) {
-  await assertPathWithinWorkspace(workspace, target);
-  // O_NOFOLLOW closes the final-component symlink race on platforms that support it.
-  // Post-open identity and realpath checks also run on platforms without that flag.
+async function openWithNoFollow(target, flags, mode) {
   const noFollow = constants.O_NOFOLLOW ?? 0;
-  let handle;
   try {
-    handle = await open(target, flags | noFollow, mode);
+    return await open(target, flags | noFollow, mode);
   } catch (error) {
     // Some platforms expose O_NOFOLLOW in constants but do not implement it for open().
-    // Fall back to the post-open path/inode checks rather than failing all file access.
+    // O_EXCL still protects create-if-absent operations when this fallback is needed.
     if (!noFollow || !['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) throw error;
-    handle = await open(target, flags, mode);
+    return open(target, flags, mode);
   }
+}
+
+async function openWorkspaceFile(workspace, target, flags, mode) {
+  await assertPathWithinWorkspace(workspace, target);
+  let openFlags = flags;
+  if ((flags & constants.O_CREAT) !== 0) {
+    try {
+      await lstat(target);
+      // Existing files must already exist at open time; don't silently recreate a
+      // target that disappears after the check.
+      openFlags &= ~constants.O_CREAT;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      // Atomic O_EXCL prevents a final-component symlink appearing after lstat()
+      // from being followed to a target outside the workspace.
+      openFlags |= constants.O_EXCL;
+    }
+  }
+
+  const handle = await openWithNoFollow(target, openFlags, mode);
   try {
     await assertOpenedFileWithinWorkspace(workspace, target, handle);
     return handle;
@@ -296,7 +312,6 @@ async function openWorkspaceFile(workspace, target, flags, mode) {
     throw error;
   }
 }
-
 async function readTextHandle(handle, filePath) {
   const info = await handle.stat();
   if (!info.isFile()) throw new Error('Not a regular file: ' + filePath);
