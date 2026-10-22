@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  protocol-tests:
+  runtime-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,5 +17,5 @@ jobs:
         with:
           node-version: 22
       - run: npm test
-      - name: Syntax-check protocol source
-        run: find packages/protocol/src packages/protocol/test -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Syntax-check source and tests
+        run: find packages -name '*.js' -print0 | xargs -0 -n1 node --check
