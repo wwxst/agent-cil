@@ -191,15 +191,15 @@ export class FileSessionStore {
     await mkdir(this.#directory, { recursive: true, mode: 0o700 });
     const target = this.#filePath(record.id);
     const temporary = path.join(this.#directory, '.' + record.id + '.' + randomUUID() + '.tmp');
-    const handle = await open(temporary, 'wx', 0o600);
     try {
-      await handle.writeFile(serialized, 'utf8');
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+      const handle = await open(temporary, 'wx', 0o600);
+      try {
+        await handle.writeFile(serialized, 'utf8');
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
 
-    try {
       if (exclusive) {
         await link(temporary, target);
       } else {
