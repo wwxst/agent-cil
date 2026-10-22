@@ -58,7 +58,10 @@ test('runs two model rounds and feeds tool_result back before the final answer',
   const loop = new AgentLoop({
     model,
     tools: makeRegistry(async input => ({ value: input.value })),
-    permissionPolicy: async () => ({ behavior: 'allow', reason: 'test policy' }),
+    permissionPolicy: async ({ tool }) => {
+      assert.equal(Object.hasOwn(tool, 'execute'), false, 'policy receives metadata, not an executable tool');
+      return { behavior: 'allow', reason: 'test policy' };
+    },
   });
   const deltas = [];
   loop.on('textDelta', event => deltas.push(event.text));
