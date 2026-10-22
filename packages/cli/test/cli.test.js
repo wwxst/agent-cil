@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -85,6 +85,24 @@ test('built-in tools provide read, write and unique-match edit operations', asyn
   }
 });
 
+test('file tools reject symbolic links that resolve outside the workspace', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-safe-workspace-'));
+  const outside = await mkdtemp(join(tmpdir(), 'agent-cil-outside-'));
+  try {
+    const outsideFile = join(outside, 'secret.txt');
+    await writeFile(outsideFile, 'secret');
+    await symlink(outsideFile, join(workspace, 'linked.txt'));
+    await symlink(join(outside, 'missing.txt'), join(workspace, 'broken-link.txt'));
+    const tools = createBuiltinTools({ workspace });
+    await assert.rejects(tools.get('Read').execute({ file_path: 'linked.txt' }), /Symbolic links are not allowed/);
+    await assert.rejects(tools.get('Write').execute({ file_path: 'linked.txt', content: 'overwrite' }), /Symbolic links are not allowed/);
+    await assert.rejects(tools.get('Write').execute({ file_path: 'broken-link.txt', content: 'create outside' }), /Symbolic links are not allowed/);
+    assert.equal(await readFile(outsideFile, 'utf8'), 'secret');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
 test('Glob and Grep search within the workspace and return relative paths', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-search-'));
   try {
