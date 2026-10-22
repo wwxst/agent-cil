@@ -58,3 +58,29 @@ The default permission policy is **deny**. Tools execute only when the configure
 The loop emits `runStarted`, `turnStarted`, `textDelta`, `assistantMessage`, `toolCallStarted`, `toolCallFinished`, `permissionRequired`, `turnFinished`, `finished`, and diagnostic error events. Pass an `AbortSignal` to cancel between model events and tool boundaries; provider and tool adapters should also honor that signal while doing I/O.
 
 This is the minimum independent runtime slice. Persistent sessions, provider-specific model adapters, parallel tool execution, MCP, streaming recovery, and desktop/VM/SSH host integration are not included yet.
+
+## Sessions and persistence
+
+`AgentSessionManager` stores user-turn history and a separate turn journal. The default `InMemorySessionStore` is useful for tests and warm sessions. `FileSessionStore` persists one JSON file per session and uses atomic file replacement, restrictive file creation modes, and revision checks.
+
+~~~js
+import { AgentLoop, AgentSessionManager, FileSessionStore } from '@agent-cil/runtime';
+
+const sessions = new AgentSessionManager({
+  loop: providerNeutralLoop,
+  store: new FileSessionStore({ directory: '/private/app-data/sessions' }),
+});
+const session = await sessions.create({ metadata: { label: 'example' } });
+const first = await sessions.run(session.id, 'Start a task.');
+const second = await sessions.run(session.id, 'Continue the same task.');
+~~~
+
+A fresh manager can load the same session from the same file directory and continue with the persisted message history. Successful user turns commit their full message history; failed or cancelled turns remain in the journal and do not append an incomplete conversation to the committed history. `recoverInterruptedTurns(id)` marks stale `running` journal entries as `interrupted`; call it only after confirming that the prior runtime is no longer running.
+
+Important limits:
+
+- FileSessionStore is designed for a **single writer process** per session directory. Revision checks protect against stale writes within that store instance, not arbitrary cross-process races.
+- Session JSON is plaintext and can contain prompts, tool results, and other sensitive data. Choose a private directory and add host-level encryption or redaction where required.
+- Tool side effects may happen before a turn fails. The manager does not automatically replay failed/interrupted turns and cannot guarantee exactly-once tool execution.
+- Parallel turns through one AgentSessionManager are rejected. Use a separate loop/manager for independently scheduled sessions.
+- Expiry policies, encryption keys, distributed locking, session migration, and automatic crash recovery are host responsibilities.
