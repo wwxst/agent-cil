@@ -40,7 +40,7 @@ SDK 与 CLI 通过 stdin/stdout 上的 JSON Lines 消息交互。CLI 内部承�
 
 ## 参考资料
 
-- [新版逆向资料包的来源仓库](https://github.com/wwxst/agent-cil)（本仓库）
+- [Agent CIL 目标实现仓库](https://github.com/wwxst/agent-cil)（本仓库）
 - [旧版 CLI 2.1.88 参考源码](https://github.com/wwxst/-)
 - [既有 Agent Desktop 项目](https://github.com/wwxst/agent-desktop)
 
