@@ -217,6 +217,91 @@ test('AgentLoop denies a rewritten Edit target outside the workspace before appr
   }
 });
 
+test('Write refuses a symlink installed during the approval window', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-write-race-'));
+  const outside = await mkdtemp(join(tmpdir(), 'agent-cil-write-race-outside-'));
+  const outsideFile = join(outside, 'secret.txt');
+  const target = join(workspace, 'race.txt');
+  try {
+    await writeFile(outsideFile, 'keep this secret');
+    const tools = await createBuiltinTools({ workspace });
+    const model = {
+      async *stream() {
+        yield {
+          type: 'tool_use',
+          id: 'cli-write-race-1',
+          name: 'Write',
+          input: { file_path: 'race.txt', content: 'must not overwrite outside data' },
+        };
+        yield { type: 'message_end', stopReason: 'tool_use' };
+      },
+    };
+    const loop = new AgentLoop({
+      model,
+      tools,
+      permissionPolicy: createCliPermissionPolicy({ workspace }),
+      approvalHandler: async () => {
+        // Simulate the target changing after the policy check but before tool execution.
+        await symlink(outsideFile, target);
+        return { approved: true };
+      },
+      maxTurns: 1,
+    });
+
+    const result = await loop.run({ input: 'Write a file.' });
+    const toolResult = result.messages.at(-1).content[0];
+    assert.equal(toolResult.is_error, true);
+    assert.match(toolResult.content, /Symbolic links are not allowed/);
+    assert.equal(await readFile(outsideFile, 'utf8'), 'keep this secret');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test('Edit refuses a symlink installed during the approval window', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-edit-race-'));
+  const outside = await mkdtemp(join(tmpdir(), 'agent-cil-edit-race-outside-'));
+  const outsideFile = join(outside, 'secret.txt');
+  const target = join(workspace, 'race.txt');
+  try {
+    await writeFile(outsideFile, 'keep this secret');
+    await writeFile(target, 'before');
+    const tools = await createBuiltinTools({ workspace });
+    const model = {
+      async *stream() {
+        yield {
+          type: 'tool_use',
+          id: 'cli-edit-race-1',
+          name: 'Edit',
+          input: { file_path: 'race.txt', old_string: 'before', new_string: 'must not overwrite outside data' },
+        };
+        yield { type: 'message_end', stopReason: 'tool_use' };
+      },
+    };
+    const loop = new AgentLoop({
+      model,
+      tools,
+      permissionPolicy: createCliPermissionPolicy({ workspace }),
+      approvalHandler: async () => {
+        await rm(target);
+        await symlink(outsideFile, target);
+        return { approved: true };
+      },
+      maxTurns: 1,
+    });
+
+    const result = await loop.run({ input: 'Edit a file.' });
+    const toolResult = result.messages.at(-1).content[0];
+    assert.equal(toolResult.is_error, true);
+    assert.match(toolResult.content, /Symbolic links are not allowed/);
+    assert.equal(await readFile(outsideFile, 'utf8'), 'keep this secret');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 test('AgentLoop does not execute a Bash command when interactive approval is denied', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-denied-'));
   const marker = join(workspace, 'must-not-exist.txt');
