@@ -444,6 +444,43 @@ test('Bash tool executes a command in the workspace and captures its output', as
   }
 });
 
+
+test('Bash enforces the combined stdout and stderr output limit', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-output-limit-'));
+  const script = 'process.stdout.write("x".repeat(1100000))';
+  const encodedScript = Buffer.from(script).toString('base64');
+  const command = JSON.stringify(process.execPath) + " -e \\"eval(Buffer.from('" + encodedScript + "', 'base64').toString())\\"";
+  try {
+    const tools = await createBuiltinTools({ workspace });
+    const result = await tools.get('Bash').execute({ command, timeout_ms: 5000 });
+    assert.match(result.error, /output exceeded the 1 MiB limit/);
+    assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= 1024 * 1024);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('Bash timeout kills a SIGTERM-resistant descendant before its delayed side effect', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-timeout-'));
+  const marker = join(workspace, 'late-timeout-side-effect.txt');
+  const script = 'process.on("SIGTERM", () => {}); setTimeout(() => require("node:fs").writeFileSync(' + JSON.stringify(marker) + ', "late"), 1800)';
+  const encodedScript = Buffer.from(script).toString('base64');
+  const command = JSON.stringify(process.execPath) + " -e \\"eval(Buffer.from('" + encodedScript + "', 'base64').toString())\\" >/dev/null 2>&1 & wait";
+  try {
+    const tools = await createBuiltinTools({ workspace });
+    const result = await tools.get('Bash').execute({ command, timeout_ms: 1000 });
+    assert.match(result.error, /killed or timed out/);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('Bash cancellation terminates a background descendant before its delayed side effect', {
   skip: process.platform === 'win32',
 }, async () => {
