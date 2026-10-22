@@ -48,8 +48,10 @@
 - [x] 实现 tool_result 回填与 next-round 循环
 - [x] 加入最大轮次、取消与明确错误传播
 - [x] 使用 fake model + fake tool 覆盖至少两轮调用
+- [x] 实现 Anthropic Messages SSE adapter，并用 fake fetch 覆盖文本、tool JSON、usage、错误与取消
+- [ ] 完成真实凭证下的可选端到端 smoke test
 
-**验收：** 确定性 fake model + fake tool 可完成多轮闭环，不需要真实凭证；新增运行时测试已由 Node.js 22 CI 验证。
+**验收：** 确定性 fake model + fake tool 可完成多轮闭环；adapter 的 HTTP/SSE 契约由 fake-fetch 测试覆盖。CI 通过不等于真实 API 端到端已验证。
 
 ## Phase 4 — 工具与权限
 
@@ -101,4 +103,4 @@
 
 ## 当前下一步
 
-下一步建立 provider-specific model adapter 的测试契约，再实现 MCP bridge；Query ID 与真实模型事件需要在 adapter 层明确映射。权限必须是独立的 allow/deny/ask 决策层；没有实现权限策略的工具不得默认放行。
+下一步实现最小 MCP client bridge：先定义 JSON-RPC request ID、initialize/initialized 握手、tools/list 与 tools/call，再用 fake stdio MCP server 覆盖成功、错误、超时、取消与断开。Anthropic adapter 当前不支持 server-side tools 或 pause_turn；在完整支持前不得静默忽略这类事件。
