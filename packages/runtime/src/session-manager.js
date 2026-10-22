@@ -67,6 +67,7 @@ export class AgentSessionManager {
   async run(id, input, { signal } = {}) {
     assertSessionId(id);
     if (input === undefined) throw new TypeError('input must be provided.');
+    const turnInput = structuredClone(input);
     if (this.#activeSessionId !== undefined) {
       throw new Error('AgentSessionManager already has an active turn for session ' + this.#activeSessionId + '.');
     }
@@ -80,7 +81,7 @@ export class AgentSessionManager {
       const turn = {
         id: assertSessionId(this.#idFactory()),
         status: 'running',
-        input: structuredClone(input),
+        input: turnInput,
         startedAt: timestamp(this.#clock),
         completedAt: null,
         result: null,
@@ -92,7 +93,7 @@ export class AgentSessionManager {
 
       let result;
       try {
-        result = await this.#loop.run({ messages: record.messages, input, signal });
+        result = await this.#loop.run({ messages: record.messages, input: turnInput, signal });
       } catch (error) {
         const failedTurn = record.turns.find(item => item.id === turn.id);
         failedTurn.status = signal?.aborted || error?.name === 'AbortError' ? 'cancelled' : 'failed';
