@@ -2,52 +2,53 @@
 
 ## 工作方式
 
-- 每个阶段先提交分析证据，再实现对应的独立代码。
-- 一个提交只完成一个可审查的变化；提交信息使用 docs(reverse):、feat(runtime):、test(protocol): 等前缀。
+- 每个阶段先提交可复核的分析证据，再实现对应的独立代码。
+- 一个提交聚焦一个可审查变化；提交信息使用 docs(reverse):、feat(protocol):、feat(runtime):、test(protocol): 等前缀。
 - 不把“静态找到符号”视为“行为已验证”；每个结论标注证据等级。
 - 不将逆向样本、第三方提取源码、二进制、Source Map 或凭证推送到公开仓库。
 - 旧版源码只作为理解和比对资料。产品实现采用独立命名、独立接口和可验证测试。
 
-## 阶段
-
-### Phase 0 — 基线与范围（当前）
+## Phase 0 — 基线与范围
 
 - [x] 确认 Desktop、SDK wrapper、CLI 和旧版参考版本
 - [x] 确认新旧样本目录与可用证据类型
 - [x] 记录本地 Agent 调用链、JSONL 协议和运行 target
-- [ ] 核对仓库许可证、来源和第三方组件再分发边界
 
-**验收：** 仓库文档能解释样本版本、组件职责、证据限制和下一步任务；没有提交样本二进制或提取源码。
+**验收：** 样本版本、组件职责、证据限制和后续任务有记录；没有提交样本二进制或提取源码。
 
-### Phase 1 — 旧新版职责映射
+## Phase 1 — 旧新版职责映射
 
-- [ ] 建立 CLI 入口、参数和环境变量映射
-- [ ] 对照旧版与新版 Agent loop、模型请求、tool_use/tool_result
-- [ ] 对照权限规则、审批回调、拒绝与中断行为
-- [ ] 对照 Session ID、resume、continue、fork 与恢复策略
-- [ ] 对照 MCP 初始化、工具路由和宿主桥接
+- [x] 建立 query/agent loop 的入口和状态初步映射
+- [x] 对照 streaming tool executor、tool routing、tool_result 回填
+- [x] 定位新版主模型请求的流式发送点，区分其他 API 调用
+- [ ] 完成权限决策顺序、输入修复和拒绝语义对照
+- [ ] 完成 Session ID、resume、continue、fork 与恢复策略对照
+- [ ] 完成 MCP 初始化、request ID 与取消语义的逐路径对照
 
 **验收：** 每项差异都有源位置、输入输出、调用关系、置信度和未确认项。
 
-### Phase 2 — Desktop 启动与 SDK 协议
+## Phase 2 — 协议基础与 CLI Transport
 
-- [ ] 定义独立的会话状态和生命周期接口
-- [ ] 定义 JSONL 编解码、消息关联、取消和关闭行为
-- [ ] 定义事件转发、错误分类和待处理回调处理
-- [ ] 分离 Host、VM、SSH/WSL 的运行适配接口
+- [x] 实现 JSONL 编码与分帧解析
+- [x] 实现坏帧诊断、最大帧限制与 UTF-8 分块处理
+- [x] 实现按 response.request_id 关联控制响应
+- [x] 实现早到响应有限缓存、取消信号、超时和关闭清理
+- [ ] 实现 spawn / stdin / stdout / stderr 的进程 transport
+- [ ] 实现 initialize 屏障、Query 状态和双向控制请求的集成
+- [ ] 用 fake child process 验证启动、退出、错误和资源清理
 
-**验收：** 使用本地 fake CLI/transport 的测试能覆盖初始化、流式事件、控制请求、取消、result 和关闭。
+**验收：** 测试覆盖初始化、流式事件、控制请求、取消、result、进程退出和关闭；普通日志不污染协议 stdout。
 
-### Phase 3 — 最小独立 Agent Runtime
+## Phase 3 — 最小独立 Agent Runtime
 
 - [ ] 建立 Model、Session、Tool、Turn 的最小契约
-- [ ] 实现模型流式输出与 tool_use 的调度
+- [ ] 实现模型流式输出与 tool_use 调度
 - [ ] 实现 tool_result 回填与 next-round 循环
 - [ ] 加入最大轮次、取消与明确错误传播
 
-**验收：** 确定性 fake model + fake tool 能完成至少两轮调用，并通过自动化测试；不需要真实凭证。
+**验收：** 确定性 fake model + fake tool 能完成至少两轮调用并通过自动化测试，不需要真实凭证。
 
-### Phase 4 — 工具与权限
+## Phase 4 — 工具与权限
 
 - [ ] 定义 allow/deny/ask 与权限决策结果
 - [ ] 为工具输入输出建立 schema 契约
@@ -56,16 +57,16 @@
 
 **验收：** 工具不会绕过权限层；失败和拒绝可以被会话记录并被模型看到。
 
-### Phase 5 — Session 与持久化
+## Phase 5 — Session 与持久化
 
 - [ ] 支持多轮输入、warm session 和 cold resume
-- [ ] 区分会话 ID、CLI 进程 ID 与回合 ID
+- [ ] 区分会话 ID、Query ID、回合 ID、control request ID 与 tool-use ID
 - [ ] 明确 result、idle、待处理控制请求之间的关系
 - [ ] 定义重启恢复、清理与过期策略
 
 **验收：** 测试覆盖新会话、多轮发送、中断、恢复和关闭后的资源清理。
 
-### Phase 6 — MCP 与扩展工具
+## Phase 6 — MCP 与扩展工具
 
 - [ ] 区分宿主内存 MCP bridge 与独立 stdio/HTTP server
 - [ ] 实现初始化握手、请求 ID、错误响应与取消
@@ -74,7 +75,7 @@
 
 **验收：** fake MCP server 测试覆盖成功、错误、超时、取消和断开重连。
 
-### Phase 7 — 平台运行时与桌面集成
+## Phase 7 — 平台运行时与桌面集成
 
 - [ ] 实现 Host 子进程适配
 - [ ] 单独评估 VM 的文件挂载、凭证通道和进程代理
@@ -83,7 +84,7 @@
 
 **验收：** 每种实际支持的 target 都有独立测试和清楚的能力边界；未实现的 target 不对外宣称支持。
 
-### Phase 8 — 回归与发布
+## Phase 8 — 回归与发布
 
 - [ ] 对照旧版与新版的行为矩阵补充契约测试
 - [ ] 增加端到端任务、权限与会话恢复验收
@@ -94,4 +95,4 @@
 
 ## 当前下一步
 
-从 Phase 1 的 P0 项开始：先把旧版 2.1.88 的 CLI 入口/Query/Agent loop，与新版 2.1.304 的 CLI 模块、Desktop SDK wrapper 和会话管理器建立职责映射；在完成证据表之前不进行大规模实现。
+完成权限决策与会话恢复的代码级对照；随后实现 spawn-based transport，并用 fake child process 验证 JSONL、控制请求和关闭语义，再开始最小 Agent Loop。不要在进程 transport 和协议生命周期尚未验证前直接连接真实模型或桌面 UI。

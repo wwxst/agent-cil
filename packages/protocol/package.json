@@ -1,0 +1,17 @@
+{
+  "name": "@agent-cil/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./jsonl": "./src/jsonl.js",
+    "./control-requests": "./src/control-requests.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

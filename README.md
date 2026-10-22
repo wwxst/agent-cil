@@ -1,57 +1,67 @@
 # Agent CIL
 
-独立重建通用 Agent 客户端的研究与实现仓库。当前阶段以 **静态证据整理、旧新版映射和最小可验证实现** 为主；不把逆向样本直接当成可构建的产品工程。
+独立重建 Agent 客户端运行时。目标不是搬运旧客户端，也不是把逆向压缩包改造成另一个发行包，而是把已确认的行为契约转化为可测试、可维护的自有实现。
 
-## 目标
+## 当前基线
 
-- 以 Claude Desktop 3.1623.1 / Claude Code CLI 2.1.304 的逆向资料为新版主要证据。
-- 以旧版 CLI 2.1.88 的恢复源码和 Source Map 辅助理解模块职责与演进。
-- 参考既有项目 [agent-desktop](https://github.com/wwxst/agent-desktop) 的产品需求和工程经验，但不把旧客户端架构当作新客户端的硬性约束。
-- 通过独立设计实现会话生命周期、流式事件、工具调用、权限审批、MCP 和本地运行时。
-- 每个阶段有清晰的文档、代码、测试和可审查的 Git 提交。
-
-## 逆向基线
-
-| Component | Version / scope |
+| 样本 | 版本 / 范围 |
 | --- | --- |
-| Claude Desktop sample | 3.1623.1 |
-| Embedded SDK wrapper | 0.3.304 |
+| Claude Desktop | 3.1623.1 |
+| 内嵌 SDK wrapper | 0.3.304 |
 | CLI build pin | 2.1.304 (win32-x64) |
-| Reference CLI | 2.1.88 |
-| Current phase | Static baseline; no standalone rebuild yet |
+| 旧版参考 | CLI 2.1.88 |
 
-新版资料包报告的主要调用链为：
+新版静态调用链：
 
 ~~~text
-Desktop UI / IPC → local session manager → SDK Query → process transport → CLI
+Desktop IPC / session manager
+  → SDK Query / JSONL process transport
+  → CLI agent loop
+  → streaming model request
+  → tool_use → permission / tool dispatch
+  → tool_result → next round
 ~~~
 
-SDK 与 CLI 通过 stdin/stdout 上的 JSON Lines 消息交互。CLI 内部承担 Agent 循环、模型请求、工具调度和上下文处理；桌面层负责会话管理、权限回调、凭证刷新和运行环境适配。Host、VM、SSH/WSL 是需要分别验证的运行分支，不能混为单一路径。
+CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进程与会话生命周期、双向控制回调、权限宿主桥接以及运行 target。Host、VM、SSH/WSL 是不同执行路径，不能假定它们共享相同启动方式。
 
-## 文档导航
+## 仓库状态
 
-- [逆向基线与样本清单](docs/reverse-engineering/baseline.md)
-- [新版架构与协议摘要](docs/reverse-engineering/architecture.md)
-- [SDK ↔ CLI 协议契约](docs/reverse-engineering/protocol-contracts.md)
-- [旧新版职责映射](docs/reverse-engineering/symbol-map.md)
-- [工具执行路径对照](docs/reverse-engineering/tool-execution-comparison.md)
-- [旧新版对照矩阵](docs/reverse-engineering/old-new-comparison.md)
-- [阶段计划与验收标准](docs/roadmap.md)
+- [x] 建立样本版本、架构、协议与阶段计划文档
+- [x] 初步对照旧版与新版 Agent Loop、工具执行和模型请求路径
+- [x] 实现 JSONL 编解码器与控制请求关联器
+- [x] 为协议基础添加确定性自动化测试
+- [ ] 实现 CLI 子进程 transport 与完整 Query 生命周期
+- [ ] 实现独立 Agent Loop、Tool Registry 和权限决策
+- [ ] 实现 Session 恢复与 MCP bridge
+- [ ] 接入桌面 UI 与平台运行 target
 
-## 参考资料
+## 代码入口
 
-- [Agent CIL 目标实现仓库](https://github.com/wwxst/agent-cil)（本仓库）
+- [@agent-cil/protocol](packages/protocol/README.md)：无第三方运行依赖的 JSONL framing 与控制请求关联原语。
+- [agent-loop-comparison.md](docs/reverse-engineering/agent-loop-comparison.md)：旧版 2.1.88 与新版 2.1.304 的代码级对照。
+- [protocol-runtime-slice.md](docs/design/protocol-runtime-slice.md)：协议实现范围、证据对应和验收条件。
+- [baseline.md](docs/reverse-engineering/baseline.md)：样本版本、目录、完整性记录与证据等级。
+- [architecture.md](docs/reverse-engineering/architecture.md)：新版 Desktop、SDK、CLI 的组件职责。
+- [protocol-contracts.md](docs/reverse-engineering/protocol-contracts.md)：控制请求、权限、MCP 与生命周期契约。
+- [symbol-map.md](docs/reverse-engineering/symbol-map.md)：旧新版职责映射。
+- [tool-execution-comparison.md](docs/reverse-engineering/tool-execution-comparison.md)：工具调度、取消、输入校验和 MCP 发现路径。
+- [roadmap.md](docs/roadmap.md)：分阶段实现和验收标准。
+
+## 开发与测试
+
+要求 Node.js 22 或更高版本；协议包不需要第三方运行依赖。
+
+~~~bash
+npm test
+~~~
+
+测试覆盖 JSONL 分块输入、UTF-8、CRLF、末尾无换行、空行、坏帧恢复、帧大小限制、响应乱序、早到响应、peer error、取消、超时和清理。
+
+## 研究与实现边界
+
+新仓库只提交原创分析、接口契约、独立实现和测试。不要提交逆向压缩包、第三方二进制、提取的第三方源码/Source Map、凭证或运行时缓存。旧版源码只用于理解与对照；不把旧版函数直接复制成新版实现。静态代码中存在某分支，不代表某账号或某次运行一定启用；未经动态验证的结论会明确标记。
+
+## 参考仓库
+
 - [旧版 CLI 2.1.88 参考源码](https://github.com/wwxst/-)
-- [既有 Agent Desktop 项目](https://github.com/wwxst/agent-desktop)
-
-## 研究边界
-
-本仓库只提交原创分析、接口契约、独立实现与测试。不要提交整份逆向压缩包、第三方可执行文件、提取的第三方源码/Source Map、凭证、个人数据或运行时缓存。引用样本时记录版本、路径、哈希和证据等级；遵守适用的软件许可、服务条款和法律要求。对静态代码只能陈述静态证据支持的结论，未经动态验证的分支必须标记为“待验证”。
-
-## 当前状态
-
-- [x] 确认新旧样本版本与资料包结构
-- [x] 整理新版本地 Agent 调用链的首轮结论
-- [ ] 完成旧版与新版的符号/职责映射
-- [ ] 定义独立 Runtime 与 Session 契约
-- [ ] 实现并测试最小流式 Agent 闭环
+- [既有 Agent Desktop 项目（仅作产品/工程参考）](https://github.com/wwxst/agent-desktop)
