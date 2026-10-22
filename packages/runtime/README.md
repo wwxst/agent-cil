@@ -53,6 +53,8 @@ Tool definitions require a stable name, description, JSON input schema, and exec
 
 The default permission policy is **deny**. Tools execute only when the configured policy returns `{ behavior: 'allow' }`, or when it returns `ask` and an approval handler explicitly approves the request. Missing approval handlers, invalid decisions, policy exceptions, unknown tools, and invalid inputs fail closed. Tool failures are returned to the model as error `tool_result` blocks so the model can recover.
 
+A permission policy receives `phase: 'initial'` for the first decision and `phase: 'recheck'` when a policy or approval handler changes the proposed input. Each changed input must pass the registered JSON Schema and is re-authorized before execution; a denial is terminal. If the final input still requires approval, the approval handler receives that exact input. Policies should evaluate the supplied input on every call and avoid non-idempotent rewrites. When a custom `validateInput` function is registered, it supplements rather than replaces JSON Schema validation.
+
 ## Events and cancellation
 
 The loop emits `runStarted`, `turnStarted`, `textDelta`, `assistantMessage`, `toolCallStarted`, `toolCallFinished`, `permissionRequired`, `turnFinished`, `finished`, and diagnostic error events. Pass an `AbortSignal` to cancel between model events and tool boundaries; provider and tool adapters should also honor that signal while doing I/O.
