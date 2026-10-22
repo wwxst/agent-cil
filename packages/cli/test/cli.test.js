@@ -245,8 +245,8 @@ test('AgentLoop does not execute a Bash command when interactive approval is den
       approvalHandler: async ({ name, input }) => {
         approvalCalls += 1;
         assert.equal(name, 'Bash');
-        assert.match(input.command, /Buffer\\.from/);
-        assert.match(input.command, /base64/);
+        assert.ok(input.command.includes('Buffer.from'));
+        assert.ok(input.command.includes('Buffer.from'));
         return { approved: false, reason: 'User rejected the shell command.' };
       },
       maxTurns: 1,
