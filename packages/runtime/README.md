@@ -84,3 +84,27 @@ Important limits:
 - Tool side effects may happen before a turn fails. The manager does not automatically replay failed/interrupted turns and cannot guarantee exactly-once tool execution.
 - Parallel turns through one AgentSessionManager are rejected. Use a separate loop/manager for independently scheduled sessions.
 - Expiry policies, encryption keys, distributed locking, session migration, and automatic crash recovery are host responsibilities.
+
+## Anthropic Messages API adapter
+
+`AnthropicMessagesAdapter` implements the runtime's Model contract using the public Messages API and SSE streaming, without adding an SDK dependency.
+
+~~~js
+import { AgentLoop, AnthropicMessagesAdapter, ToolRegistry } from '@agent-cil/runtime';
+
+const model = new AnthropicMessagesAdapter({
+  apiKeyProvider: async () => secretStore.getAnthropicApiKey(),
+  model: 'claude-sonnet-4-6',
+  maxTokens: 2048,
+  system: 'Follow the application policy.',
+});
+const loop = new AgentLoop({
+  model,
+  tools: new ToolRegistry(),
+  permissionPolicy: applicationPermissionPolicy,
+});
+~~~
+
+The host supplies the credential through `apiKey` or `apiKeyProvider`; the adapter does not read environment variables, write credentials to disk, or log them. It maps text deltas, client-side tool JSON deltas, usage, and supported stop reasons into the AgentLoop event contract. Server-side tools and unsupported stop reasons are rejected rather than silently ignored.
+
+The adapter uses the Messages API stream event contract documented in the [Anthropic streaming guide](https://docs.anthropic.com/en/api/messages-streaming). This implementation is a small compatibility slice, not a complete replacement for Anthropic's SDK: retries, timeout policy, extended-thinking round trips, citations, images/documents, server-side tools, prompt caching options, and every provider-specific error type remain out of scope.
