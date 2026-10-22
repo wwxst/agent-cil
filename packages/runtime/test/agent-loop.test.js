@@ -228,3 +228,46 @@ test('permission policy errors become denied tool results', async () => {
   await loop.run({ input: 'Try action.' });
   assert.equal(executions, 0);
 });
+
+
+test('approval rejection prevents tool execution and is returned to the model', async () => {
+  let executions = 0;
+  const model = new ScriptedModel([
+    toolEnd('tool-rejected', 'echo', { value: 'no' }),
+    context => {
+      const result = context.messages.at(-1).content[0];
+      assert.equal(result.is_error, true);
+      assert.match(result.content, /Approval declined/);
+      return textEnd('Approval was declined.');
+    },
+  ]);
+  const loop = new AgentLoop({
+    model,
+    tools: makeRegistry(async input => { executions += 1; return input; }),
+    permissionPolicy: async () => ({ behavior: 'ask' }),
+    approvalHandler: async () => ({ approved: false, reason: 'Approval declined by user.' }),
+  });
+  await loop.run({ input: 'Ask before using a tool.' });
+  assert.equal(executions, 0);
+});
+
+test('tool execution errors become error tool_result blocks and allow recovery', async () => {
+  const model = new ScriptedModel([
+    toolEnd('tool-exception', 'echo', { value: 'break' }),
+    context => {
+      const result = context.messages.at(-1).content[0];
+      assert.equal(result.tool_use_id, 'tool-exception');
+      assert.equal(result.is_error, true);
+      assert.match(result.content, /Tool execution failed: simulated tool failure/);
+      return textEnd('Recovered from the tool error.');
+    },
+  ]);
+  const loop = new AgentLoop({
+    model,
+    tools: makeRegistry(async () => { throw new Error('simulated tool failure'); }),
+    permissionPolicy: async () => ({ behavior: 'allow' }),
+  });
+  const result = await loop.run({ input: 'Call a failing tool.' });
+  assert.equal(result.turns, 2);
+  assert.equal(result.finalMessage.content[0].text, 'Recovered from the tool error.');
+});
