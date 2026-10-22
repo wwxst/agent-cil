@@ -3,12 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Independent Agent client runtime and protocol research",
+  "description": "Agent CLI built incrementally from the 2.1.88 source baseline toward 2.1.304",
   "engines": {
     "node": ">=22.0.0"
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --test"
+    "check": "node --test",
+    "start": "node packages/cli/src/index.js"
+  },
+  "bin": {
+    "agent-cil": "./packages/cli/src/index.js"
   }
 }
