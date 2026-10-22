@@ -446,9 +446,9 @@ test('Bash cancellation terminates a background descendant before its delayed si
 }, async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-abort-'));
   const marker = join(workspace, 'late-side-effect.txt');
-  const script = 'setTimeout(() => require("node:fs").writeFileSync(' + JSON.stringify(marker) + ', "late"), 700)';
+  const script = 'process.on("SIGTERM", () => {}); setTimeout(() => require("node:fs").writeFileSync(' + JSON.stringify(marker) + ', "late"), 700)';
   const encodedScript = Buffer.from(script).toString('base64');
-  const command = `${JSON.stringify(process.execPath)} -e "eval(Buffer.from('${encodedScript}', 'base64').toString())" &`;
+  const command = `${JSON.stringify(process.execPath)} -e "eval(Buffer.from('${encodedScript}', 'base64').toString())" >/dev/null 2>&1 & wait`;
   const controller = new AbortController();
   const tools = await createBuiltinTools({ workspace });
   const execution = tools.get('Bash').execute(
