@@ -232,7 +232,11 @@ export class AgentLoop extends EventEmitter {
     try {
       decision = await this.#permissionPolicy({
         name: tool.name,
-        tool,
+        tool: {
+          name: tool.name,
+          description: tool.description,
+          inputSchema: structuredClone(tool.inputSchema),
+        },
         input: structuredClone(toolUse.input),
         toolUseId: toolUse.id,
         messages: structuredClone(history),
