@@ -58,22 +58,32 @@ export async function* parseSseStream(body, { signal } = {}) {
     return undefined;
   };
 
+  const drainLines = final => {
+    const events = [];
+    while (buffer.length > 0) {
+      const newline = buffer.search(/[\r\n]/);
+      if (newline < 0) break;
+      const terminator = buffer[newline];
+      if (terminator === '\r' && newline === buffer.length - 1 && !final) break;
+      let width = 1;
+      if (terminator === '\r' && buffer[newline + 1] === '\n') width = 2;
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + width);
+      const event = consumeLine(line);
+      if (event) events.push(event);
+    }
+    return events;
+  };
+
   for await (const chunk of body) {
     abortIfNeeded(signal);
     buffer += decoder.decode(chunk, { stream: true });
-    let newline;
-    while ((newline = buffer.indexOf('\n')) !== -1) {
-      let line = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      if (line.endsWith('\r')) line = line.slice(0, -1);
-      const event = consumeLine(line);
-      if (event) yield event;
-    }
+    for (const event of drainLines(false)) yield event;
   }
 
   buffer += decoder.decode();
+  for (const event of drainLines(true)) yield event;
   if (buffer.length > 0) {
-    if (buffer.endsWith('\r')) buffer = buffer.slice(0, -1);
     const event = consumeLine(buffer);
     if (event) yield event;
   }
@@ -215,6 +225,7 @@ export class AnthropicMessagesAdapter {
         },
         body: JSON.stringify(body),
         signal,
+        redirect: 'error',
       });
     } catch (error) {
       if (signal?.aborted) abortIfNeeded(signal);
