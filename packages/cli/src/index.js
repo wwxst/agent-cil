@@ -296,7 +296,7 @@ async function readTextHandle(handle, filePath) {
     throw new Error('File exceeds the 1 MiB read limit: ' + filePath);
   }
   const content = await handle.readFile({ encoding: 'utf8' });
-  if (content.includes('\\0')) throw new Error('Refusing to read a binary file as text: ' + filePath);
+  if (content.includes(String.fromCharCode(0))) throw new Error('Refusing to read a binary file as text: ' + filePath);
   return content;
 }
 
