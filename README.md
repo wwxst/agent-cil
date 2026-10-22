@@ -32,6 +32,8 @@ SDK 与 CLI 通过 stdin/stdout 上的 JSON Lines 消息交互。CLI 内部承�
 
 - [逆向基线与样本清单](docs/reverse-engineering/baseline.md)
 - [新版架构与协议摘要](docs/reverse-engineering/architecture.md)
+- [SDK ↔ CLI 协议契约](docs/reverse-engineering/protocol-contracts.md)
+- [旧新版职责映射](docs/reverse-engineering/symbol-map.md)
 - [旧新版对照矩阵](docs/reverse-engineering/old-new-comparison.md)
 - [阶段计划与验收标准](docs/roadmap.md)
 
