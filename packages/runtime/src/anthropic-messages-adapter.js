@@ -139,6 +139,16 @@ export class AnthropicMessagesAdapter {
       throw new TypeError('baseUrl must be a valid HTTP(S) URL.');
     }
     if (!['http:', 'https:'].includes(parsedBaseUrl.protocol)) throw new TypeError('baseUrl must use HTTP or HTTPS.');
+    if (parsedBaseUrl.protocol === 'http:') {
+      const hostname = parsedBaseUrl.hostname.toLowerCase().replace(/^\\[|\\]$/g, '');
+      const isLoopback = hostname === 'localhost'
+        || hostname.endsWith('.localhost')
+        || hostname === '::1'
+        || /^127(?:\\.\\d{1,3}){3}$/.test(hostname);
+      if (!isLoopback) {
+        throw new TypeError('baseUrl must use HTTPS unless it targets localhost or a loopback address.');
+      }
+    }
     if (typeof apiVersion !== 'string' || apiVersion.trim().length === 0) throw new TypeError('apiVersion must be a non-empty string.');
     if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a fetch-compatible function.');
 
