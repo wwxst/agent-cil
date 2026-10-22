@@ -701,6 +701,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 
   const workspace = resolve(options.cwd);
+  try {
+    const workspaceInfo = await stat(workspace);
+    if (!workspaceInfo.isDirectory()) {
+      throw new Error('Path is not a directory.');
+    }
+  } catch (error) {
+    printError('Workspace directory is unavailable: ' + workspace + ' (' +
+      (error instanceof Error ? error.message : String(error)) + ')');
+    return 2;
+  }
+
   // Do not attach a readline listener until configuration and runtime setup succeed.
   // Otherwise a constructor/import error can leave a TTY handle open before the cleanup finally block.
   let rl;
