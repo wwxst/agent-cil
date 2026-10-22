@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { AgentLoop } from '../src/agent-loop.js';
+import { ToolRegistry } from '../src/tool-registry.js';
 import {
   AnthropicMessagesAdapter,
   ModelAdapterError,
@@ -190,4 +192,57 @@ test('rejects invalid constructor configuration and API-key provider output', as
   await assert.rejects(async () => {
     for await (const event of adapter.stream({ messages: [{ role: 'user', content: 'hi' }] })) void event;
   }, /did not return a non-empty key/);
+});
+
+
+test('integrates with AgentLoop across tool_result and the next API request', async () => {
+  const requests = [];
+  const toolResponse = [
+    sse('message_start', { message: { usage: { input_tokens: 2 } } }),
+    sse('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 'api-tool-1', name: 'echo', input: {} } }),
+    sse('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: '{"value":"from api"}' } }),
+    sse('content_block_stop', { index: 0 }),
+    sse('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 3 } }),
+    sse('message_stop', {}),
+  ].join('');
+  const finalResponse = [
+    sse('message_start', { message: { usage: { input_tokens: 7 } } }),
+    sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+    sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'tool result received' } }),
+    sse('content_block_stop', { index: 0 }),
+    sse('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 4 } }),
+    sse('message_stop', {}),
+  ].join('');
+
+  const model = new AnthropicMessagesAdapter({
+    apiKey: 'fake-key',
+    model: 'claude-test',
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      const responseBody = requests.length === 1 ? toolResponse : finalResponse;
+      return { ok: true, status: 200, body: makeSseBody(responseBody, 19) };
+    },
+  });
+  const tools = new ToolRegistry();
+  tools.register({
+    name: 'echo',
+    description: 'Echo a value.',
+    inputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+    execute: async ({ value }) => 'tool says: ' + value,
+  });
+  const loop = new AgentLoop({
+    model,
+    tools,
+    permissionPolicy: async () => ({ behavior: 'allow' }),
+  });
+
+  const result = await loop.run({ input: 'Use the echo tool.' });
+  assert.equal(result.turns, 2);
+  assert.equal(result.finalMessage.content[0].text, 'tool result received');
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].messages[1].content[0].type, 'tool_use');
+  assert.equal(requests[1].messages[1].content[0].id, 'api-tool-1');
+  assert.equal(requests[1].messages[2].content[0].type, 'tool_result');
+  assert.equal(requests[1].messages[2].content[0].content, 'tool says: from api');
+  assert.equal(Object.hasOwn(requests[1].messages[1], 'stop_reason'), false);
 });
