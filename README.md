@@ -34,7 +34,8 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 - [x] 实现 CLI Query 初始化屏障和双向控制回调分发
 - [x] 实现 result / idle / requires_action 生命周期跟踪
 - [x] 实现独立 Agent Loop、Tool Registry、schema 子集验证与 fail-closed 权限层
-- [ ] 接入真实模型 adapter、Session 恢复与 MCP bridge
+- [x] 实现 warm Session、JSON 文件持久化与 interrupted-turn recovery
+- [ ] 接入真实模型 adapter 与 MCP bridge
 - [ ] 接入桌面 UI 与平台运行 target
 
 ## 代码入口
@@ -42,6 +43,7 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 - [@agent-cil/protocol](packages/protocol/README.md)：JSONL framing、控制请求关联、子进程 transport 与 Query 生命周期。
 - [@agent-cil/runtime](packages/runtime/README.md)：provider-neutral Agent Loop、工具注册、输入校验、权限决策和多轮 tool_result 回填。
 - [agent-loop-runtime.md](docs/design/agent-loop-runtime.md)：运行时事件契约、工具权限边界、测试范围和未实现项。
+- [session-persistence.md](docs/design/session-persistence.md)：Session / Turn 数据模型、revision 检查、文件原子写入和中断恢复语义。
 - [agent-loop-comparison.md](docs/reverse-engineering/agent-loop-comparison.md)：旧版 2.1.88 与新版 2.1.304 的代码级对照。
 - [protocol-runtime-slice.md](docs/design/protocol-runtime-slice.md)：协议实现范围、证据对应和验收条件。
 - [process-transport.md](docs/design/process-transport.md)：子进程状态机、stdio 生命周期和测试边界。
@@ -61,7 +63,7 @@ CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进
 npm test
 ~~~
 
-测试覆盖 JSONL 分块输入、UTF-8、CRLF、末尾无换行、空行、坏帧恢复、帧大小限制、响应乱序、早到响应、peer error、取消、超时、进程启动、stdin/stdout、stderr 尾部和关闭清理。
+测试覆盖 JSONL 分块输入、UTF-8、CRLF、坏帧恢复、帧大小限制、控制响应关联、进程与 Query 生命周期、多轮工具调用、权限拒绝/批准/取消、schema 校验、Session 持久化、冷恢复、revision 冲突与 interrupted-turn reconciliation。
 
 ## 研究与实现边界
 
