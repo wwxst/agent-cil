@@ -29,6 +29,29 @@ test('executable version fast path exits without credentials', () => {
   assert.equal(result.stderr, '');
 });
 
+test('CLI rejects missing and non-directory workspaces before model requests', async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'agent-cil-invalid-cwd-'));
+  const notDirectory = join(parent, 'not-a-directory');
+  const missing = join(parent, 'missing');
+  const cliPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+  try {
+    await writeFile(notDirectory, 'file, not a directory');
+    for (const workspace of [missing, notDirectory]) {
+      const result = spawnSync(process.execPath, [
+        cliPath, '--print', 'hello', '--cwd', workspace,
+      ], {
+        encoding: 'utf8',
+        env: { ...process.env, ANTHROPIC_API_KEY: 'test-key' },
+      });
+      assert.equal(result.status, 2);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /Workspace directory is unavailable/);
+    }
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test('parses model, endpoint, token, system, cwd, print and prompt options', () => {
   const options = parseArgs([
     '--print',
