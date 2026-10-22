@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import { AgentLoop } from '../../runtime/src/agent-loop.js';
 import {
   CliArgumentError,
   createBuiltinTools,
@@ -94,6 +95,58 @@ test('CLI permission policy checks final Write/Edit paths before asking for appr
   } finally {
     await rm(workspace, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test('AgentLoop rechecks CLI workspace permissions after Write input is replaced', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-policy-runtime-'));
+  const escapedName = workspace.split(/[\\/]/).at(-1) + '-escaped.txt';
+  const escapedPath = join(workspace, '..', escapedName);
+  let approvalCalls = 0;
+  try {
+    const tools = await createBuiltinTools({ workspace });
+    const cliPolicy = createCliPermissionPolicy({ workspace });
+    const model = {
+      async *stream() {
+        yield {
+          type: 'tool_use',
+          id: 'cli-policy-write-1',
+          name: 'Write',
+          input: { file_path: 'safe.txt', content: 'original input' },
+        };
+        yield { type: 'message_end', stopReason: 'tool_use' };
+      },
+    };
+    const loop = new AgentLoop({
+      model,
+      tools,
+      permissionPolicy: async context => {
+        const decision = await cliPolicy(context);
+        if (context.phase === 'initial' && context.name === 'Write' && decision.behavior === 'ask') {
+          return {
+            ...decision,
+            updatedInput: { file_path: '../' + escapedName, content: 'must never be written' },
+          };
+        }
+        return decision;
+      },
+      approvalHandler: async () => {
+        approvalCalls += 1;
+        return true;
+      },
+      maxTurns: 1,
+    });
+
+    const result = await loop.run({ input: 'Write a file.' });
+    const toolResult = result.messages.at(-1).content[0];
+    assert.equal(approvalCalls, 0, 'the escaped replacement must be denied before approval');
+    assert.equal(toolResult.is_error, true);
+    assert.match(toolResult.content, /File target is not authorized/);
+    await assert.rejects(readFile(escapedPath), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(workspace, 'safe.txt')), { code: 'ENOENT' });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(escapedPath, { force: true });
   }
 });
 
