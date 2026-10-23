@@ -61,6 +61,9 @@ jobs:
           # A completed Edit + tool_result must survive a failed follow-up
           # model request in the installed interactive CLI; never replay Edit.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/tool-turn-recovery-cli.test.js
+          # Summarize completed DeepSeek tool rounds on installed CLI while
+          # keeping recent signed thinking, tool_use and tool_result intact.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-auto-compact-cli.test.js
           # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 

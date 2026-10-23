@@ -33,6 +33,7 @@ export const HELP = [
   '      --provider <name>   anthropic (default), deepseek, or openai',
   '      --max-tokens <n>    Maximum output tokens (default: 4096)',
   '      --max-turns <n>     Maximum model rounds per prompt (default: 8)',
+  '      --compact-threshold <n>  Auto-compact above approximate input tokens (0 disables)',
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
   '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
   '      --system <text>     System prompt',
@@ -46,6 +47,7 @@ export const HELP = [
   '  OPENAI_API_KEY          OpenAI key for --provider openai',
   '  OPENAI_MODEL            Default OpenAI model ID',
   '  OPENAI_BASE_URL         Optional OpenAI Chat API base URL',
+  '  AGENT_CIL_COMPACT_THRESHOLD  Override auto-compact trigger in tokens',
   '',
   'Built-in tools:',
   '  Read, Glob, Grep       Read-only workspace tools',
@@ -79,6 +81,7 @@ export function parseArgs(argv) {
     provider: 'anthropic',
     maxTokens: 4096,
     maxTurns: 8,
+    compactThreshold: undefined,
     maxRetries: 2,
     allowEdits: false,
     system: undefined,
@@ -133,6 +136,13 @@ export function parseArgs(argv) {
       options.maxTurns = Number(raw);
       if (!Number.isSafeInteger(options.maxTurns) || options.maxTurns < 1 || options.maxTurns > 100) {
         throw new CliArgumentError('--max-turns must be an integer between 1 and 100.');
+      }
+    } else if (arg === '--compact-threshold' || arg.startsWith('--compact-threshold=')) {
+      const raw = arg === '--compact-threshold' ? takeValue(arg, i++) : arg.slice('--compact-threshold='.length);
+      options.compactThreshold = Number(raw);
+      if (!Number.isSafeInteger(options.compactThreshold) ||
+        options.compactThreshold < 0 || options.compactThreshold > 2000000) {
+        throw new CliArgumentError('--compact-threshold must be an integer from 0 to 2000000.');
       }
     } else if (arg === '--max-retries' || arg.startsWith('--max-retries=')) {
       const raw = arg === '--max-retries' ? takeValue(arg, i++) : arg.slice('--max-retries='.length);
@@ -936,9 +946,25 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     });
   }
   const tools = await createBuiltinTools({ workspace });
+  // DeepSeek V4.1 Flash advertises a 1M-token context window; reserve ample
+  // headroom for system/tools/output. Other providers remain opt-in until
+  // their model-specific context windows can be determined accurately.
+  let compactThreshold = options.compactThreshold;
+  if (compactThreshold === undefined && env.AGENT_CIL_COMPACT_THRESHOLD !== undefined) {
+    compactThreshold = Number(env.AGENT_CIL_COMPACT_THRESHOLD);
+    if (!Number.isSafeInteger(compactThreshold) || compactThreshold < 0 ||
+      compactThreshold > 2000000) {
+      printError('AGENT_CIL_COMPACT_THRESHOLD must be an integer from 0 to 2000000.');
+      return 2;
+    }
+  }
+  compactThreshold ??= provider === 'deepseek' ? 850000 : 0;
+  const { createAutoCompact } = await import('../../runtime/src/legacy-compact/auto-compact.js');
+  const autoCompact = createAutoCompact({ thresholdTokens: compactThreshold });
   const loop = new AgentLoop({
     model,
     tools,
+    compactContext: context => autoCompact.compact(context),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
       permissionContext: createCliPermissionContext({ allowEdits: options.allowEdits }),
@@ -994,8 +1020,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const onTurnFinished = ({ committedMessages }) => {
       if (committedMessages) committedHistory = committedMessages;
     };
+    const onContextCompacted = ({ committedMessages, beforeCount, afterCount }) => {
+      committedHistory = committedMessages;
+      process.stderr.write('[context] compacted ' + beforeCount + ' → ' + afterCount +
+        ' messages; recent tool turns preserved.\n');
+    };
     loop.on('textDelta', onTextDelta);
     loop.on('turnFinished', onTurnFinished);
+    loop.on('contextCompacted', onContextCompacted);
     try {
       const result = await loop.run({ messages: history, input: text, signal: activeController.signal });
       history = result.messages;
@@ -1025,6 +1057,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     } finally {
       loop.off('textDelta', onTextDelta);
       loop.off('turnFinished', onTurnFinished);
+      loop.off('contextCompacted', onContextCompacted);
       activeController = undefined;
     }
   };

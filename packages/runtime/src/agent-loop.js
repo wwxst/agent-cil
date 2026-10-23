@@ -74,6 +74,7 @@ export class AgentLoop extends EventEmitter {
   #permissionPolicy;
   #approvalHandler;
   #maxTurns;
+  #compactContext;
   #active = false;
 
   constructor({
@@ -82,6 +83,7 @@ export class AgentLoop extends EventEmitter {
     permissionPolicy = defaultDenyPermission,
     approvalHandler,
     maxTurns = 8,
+    compactContext,
   } = {}) {
     super();
     if (!model || typeof model.stream !== 'function') {
@@ -99,7 +101,11 @@ export class AgentLoop extends EventEmitter {
     this.#tools = tools;
     this.#permissionPolicy = permissionPolicy;
     this.#approvalHandler = approvalHandler;
+    if (compactContext !== undefined && typeof compactContext !== 'function') {
+      throw new TypeError('compactContext must be a function.');
+    }
     this.#maxTurns = maxTurns;
+    this.#compactContext = compactContext;
   }
 
   get active() {
@@ -115,6 +121,7 @@ export class AgentLoop extends EventEmitter {
         model: this.#model,
         tools: this.#tools,
         maxTurns: this.#maxTurns,
+        compactContext: this.#compactContext,
         canStartToolDuringStream: (toolUse, context) =>
           this.#canStartToolDuringStream(toolUse, context),
         executeTool: (toolUse, context) => this.#executeTool(toolUse, context),
