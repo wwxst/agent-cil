@@ -194,8 +194,12 @@ export class StreamingToolExecutor {
       }
       let selfErrored = false;
       try {
-        tool.callStarted = true;
-        const source = this.#execute(tool.block, { signal: controller.signal });
+        // Admission/permission checks are not a side effect. Only the
+        // validated tool.call()/execute() boundary marks a real invocation.
+        const source = this.#execute(tool.block, {
+          signal: controller.signal,
+          onToolExecutionStarted: () => { tool.callStarted = true; },
+        });
         // runToolUse in 2.1.88 yields messages; the active AgentLoop adapter
         // returns its existing validated tool_result via a Promise.
         const iterator = source && typeof source[Symbol.asyncIterator] === 'function'
