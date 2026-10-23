@@ -412,12 +412,12 @@ export class AnthropicMessagesAdapter {
         } else if (delta.type === 'input_json_delta' && state.type === 'tool_use'
           && typeof delta.partial_json === 'string') {
           state.partialJson += delta.partial_json;
-        } else if (delta.type === 'thinking_delta' &&
-          (state.type === 'thinking' || state.type === 'redacted_thinking') &&
+        } else if (delta.type === 'thinking_delta' && state.type === 'redacted_thinking') {
+          // 2.1.304 treats redaction as opaque: ignore this known delta type,
+          // even if it contains no printable thinking. Never edit the data.
+        } else if (delta.type === 'thinking_delta' && state.type === 'thinking' &&
           typeof delta.thinking === 'string') {
-          // CLI 2.1.304 ignores thinking_delta on a redacted block; it has
-          // opaque data only. Ordinary thinking remains private model content.
-          if (state.type === 'thinking') state.thinking += delta.thinking;
+          state.thinking += delta.thinking;
         } else if (delta.type === 'signature_delta' && state.type === 'thinking' &&
           typeof delta.signature === 'string') {
           // The signature is opaque and must be returned unchanged on tool use.
