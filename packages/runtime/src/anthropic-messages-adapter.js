@@ -199,12 +199,34 @@ export class AnthropicMessagesAdapter {
       throw new ModelAdapterError('API key provider did not return a non-empty key.');
     }
 
+    // DeepSeek's Anthropic-compatible endpoint accepts thinking, but unlike
+    // Anthropic it does not accept redacted_thinking in request history.
+    // Never silently drop or invent protected blocks during tool continuation.
+    const deepSeekEndpoint = new URL(this.#baseUrl).hostname.toLowerCase() === 'api.deepseek.com';
     const requestMessages = messages.map((message, index) => {
       if (!isRecord(message) || !['user', 'assistant'].includes(message.role)) {
         throw new TypeError('messages[' + index + '] must have role user or assistant.');
       }
       if (typeof message.content !== 'string' && !Array.isArray(message.content)) {
         throw new TypeError('messages[' + index + '].content must be a string or content-block array.');
+      }
+      if (Array.isArray(message.content)) {
+        for (const block of message.content) {
+          if (block?.type === 'thinking') {
+            if (message.role !== 'assistant' || typeof block.thinking !== 'string' ||
+              (block.signature !== undefined && typeof block.signature !== 'string')) {
+              throw new TypeError('Malformed protected thinking block in assistant history.');
+            }
+          } else if (block?.type === 'redacted_thinking') {
+            if (message.role !== 'assistant' || typeof block.data !== 'string') {
+              throw new TypeError('Malformed redacted_thinking block in assistant history.');
+            }
+            if (deepSeekEndpoint) {
+              throw new ModelAdapterError(
+                'DeepSeek Anthropic-compatible API does not accept redacted_thinking history; cannot replay it without modifying protected content.');
+            }
+          }
+        }
       }
       return { role: message.role, content: structuredClone(message.content) };
     });
@@ -332,12 +354,30 @@ export class AnthropicMessagesAdapter {
         if (block.type === 'server_tool_use') {
           throw new ModelAdapterError('Server-side tool use is not supported by this client-tool adapter.');
         }
-        if (block.type !== 'text' && block.type !== 'tool_use') {
+        if (!['text', 'tool_use', 'thinking', 'redacted_thinking'].includes(block.type)) {
           throw new ModelAdapterError('Messages API sent unsupported content block type: ' + String(block.type));
         }
         if (blocks.has(payload.index)) throw new ModelAdapterError('Messages API reused an active content block index.');
         const state = { type: block.type };
-        if (block.type === 'tool_use') {
+        if (block.type === 'thinking') {
+          // Ported from 2.1.88 claude.ts: start with an independent accumulator,
+          // append thinking_delta, then attach opaque signature_delta at stop.
+          // Unlike old signature: '' initialization, do not forge a signature
+          // when the compatible provider sends none.
+          if (block.thinking !== undefined && typeof block.thinking !== 'string') {
+            throw new ModelAdapterError('Messages API sent malformed thinking block.');
+          }
+          if (block.signature !== undefined && typeof block.signature !== 'string') {
+            throw new ModelAdapterError('Messages API sent malformed thinking signature.');
+          }
+          state.thinking = '';
+          if (block.signature !== undefined) state.signature = block.signature;
+        } else if (block.type === 'redacted_thinking') {
+          if (typeof block.data !== 'string') {
+            throw new ModelAdapterError('Messages API sent malformed redacted_thinking data.');
+          }
+          state.data = block.data;
+        } else if (block.type === 'tool_use') {
           if (typeof block.id !== 'string' || typeof block.name !== 'string') {
             throw new ModelAdapterError('Messages API sent a malformed tool_use block.');
           }
@@ -365,6 +405,16 @@ export class AnthropicMessagesAdapter {
         } else if (delta.type === 'input_json_delta' && state.type === 'tool_use'
           && typeof delta.partial_json === 'string') {
           state.partialJson += delta.partial_json;
+        } else if (delta.type === 'thinking_delta' &&
+          (state.type === 'thinking' || state.type === 'redacted_thinking') &&
+          typeof delta.thinking === 'string') {
+          // CLI 2.1.304 ignores thinking_delta on a redacted block; it has
+          // opaque data only. Ordinary thinking remains private model content.
+          if (state.type === 'thinking') state.thinking += delta.thinking;
+        } else if (delta.type === 'signature_delta' && state.type === 'thinking' &&
+          typeof delta.signature === 'string') {
+          // The signature is opaque and must be returned unchanged on tool use.
+          state.signature = delta.signature;
         } else {
           throw new ModelAdapterError('Messages API sent an incompatible content_block_delta for ' + state.type + '.');
         }
@@ -374,7 +424,15 @@ export class AnthropicMessagesAdapter {
         }
         const state = blocks.get(payload.index);
         if (!state) throw new ModelAdapterError('Messages API stopped an unknown content block.');
-        if (state.type === 'tool_use') {
+        if (state.type === 'thinking') {
+          yield {
+            type: 'thinking',
+            thinking: state.thinking,
+            ...(state.signature !== undefined ? { signature: state.signature } : {}),
+          };
+        } else if (state.type === 'redacted_thinking') {
+          yield { type: 'redacted_thinking', data: state.data };
+        } else if (state.type === 'tool_use') {
           let input = state.input;
           if (state.partialJson.length > 0) {
             try {
