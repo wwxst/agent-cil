@@ -14,6 +14,8 @@ import { ModelContextLengthError } from '../anthropic-messages-adapter.js';
 const MIN_SUMMARY_CHARS = 12;
 const MAX_SUMMARY_CHARS = 16000;
 const MAX_CONSECUTIVE_FAILURES = 3;
+// 2.1.88 compact.ts MAX_PTL_RETRIES means retries AFTER initial request.
+const MAX_PTL_RETRIES = 3;
 const RAPID_REFILL_TURN_LIMIT = 3;
 const RAPID_REFILL_MAX_CONSECUTIVE = 3;
 
@@ -34,6 +36,20 @@ function aborted(signal) {
 }
 function isRecord(x) {
   return x !== null && typeof x === 'object' && !Array.isArray(x);
+}
+
+// Direct port of 2.1.88 services/api/errors.ts:
+ // parsePromptTooLongTokenCounts() + getPromptTooLongTokenGap().
+export function getPromptTooLongTokenGap(error) {
+  const rawMessage = error?.message;
+  if (!(error instanceof ModelContextLengthError) || typeof rawMessage !== 'string') {
+    return undefined;
+  }
+  const match = rawMessage.match(/prompt is too long[^0-9]*(\\d+)\\s*tokens?\\s*>\\s*(\\d+)/i);
+  if (!match) return undefined;
+  const actual = Number(match[1]), limit = Number(match[2]);
+  const gap = actual - limit;
+  return Number.isSafeInteger(gap) && gap > 0 ? gap : undefined;
 }
 
 function approximateTokens(text) {
@@ -209,7 +225,7 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
         // if truncation made the first request message an assistant.
         let summarize = structuredClone(prefix);
         let text = '', completed = false, stopReason;
-        for (let summaryAttempt = 0; summaryAttempt < 3; summaryAttempt++) {
+        for (let summaryAttempt = 0; summaryAttempt <= MAX_PTL_RETRIES; summaryAttempt++) {
           text = '';
           completed = false;
           stopReason = undefined;
@@ -247,7 +263,7 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
           } catch (error) {
             aborted(signal);
             if (!(error instanceof ModelContextLengthError) ||
-              sawSummaryEvent || summaryAttempt === 2) throw error;
+              sawSummaryEvent || summaryAttempt === MAX_PTL_RETRIES) throw error;
             // Remove our own synthetic marker before regrouping. Otherwise
             // the next overflow would drop only that marker and make no
             // forward progress (the same bug guarded by 2.1.88 compact.ts).
@@ -257,7 +273,22 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
               ? summarize.slice(1) : summarize;
             const groups = groupMessagesByApiRound(source);
             if (groups.length < 2) throw error;
-            const removed = Math.max(1, Math.floor(groups.length * 0.2));
+            // 2.1.88 truncateHeadForPTLRetry: remove whole API rounds
+            // until the *reported excess* tokens are covered. When provider
+            // omits this detail, fall back to 20% of the groups.
+            const gap = getPromptTooLongTokenGap(error);
+            let removed = 0;
+            if (gap !== undefined) {
+              let freed = 0;
+              for (const group of groups) {
+                freed += estimateMessageTokens(group);
+                removed++;
+                if (freed >= gap) break;
+              }
+            } else {
+              removed = Math.max(1, Math.floor(groups.length * 0.2));
+            }
+            removed = Math.min(removed, groups.length - 1);
             summarize = groups.slice(removed).flat();
             if (!validToolPairing(summarize)) throw error;
             if (summarize[0]?.role === 'assistant') {
