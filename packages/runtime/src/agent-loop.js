@@ -4,6 +4,7 @@ import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
 import { StreamingToolExecutor } from './legacy-tools/streaming-tool-executor.js';
 import { runToolUse } from './legacy-tools/tool-execution.js';
+import { resolveToolSpecificPermission } from './legacy-permissions/tool-specific-permission.js';
 
 const STOP_REASONS = new Set(['end_turn', 'tool_use', 'max_tokens']);
 const MAX_PERMISSION_INPUT_REWRITES = 8;
@@ -303,7 +304,7 @@ export class AgentLoop extends EventEmitter {
 
     const requestPermissionDecision = async (input, phase) => {
       try {
-        const decision = await this.#permissionPolicy({
+        const baseDecision = await this.#permissionPolicy({
           name: tool.name,
           tool: {
             name: tool.name,
@@ -315,6 +316,23 @@ export class AgentLoop extends EventEmitter {
           messages: structuredClone(history),
           signal,
           phase,
+        });
+        abortIfNeeded(signal);
+        // 2.1.88 permissions.ts asks the tool for its input-specific
+        // permission decision after global rules. Deny/ask may tighten the
+        // global decision; an allow cannot bypass a global ask or deny.
+        // A tool-supplied updatedInput returns to the existing PR #9
+        // schema-recheck + reauthorization loop before execution.
+        const decision = await resolveToolSpecificPermission({
+          tool,
+          input,
+          baseDecision,
+          context: {
+            toolUseId: toolUse.id,
+            messages: structuredClone(history),
+            signal,
+            phase,
+          },
         });
         abortIfNeeded(signal);
         return { decision };
