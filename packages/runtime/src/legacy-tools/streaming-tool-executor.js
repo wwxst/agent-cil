@@ -313,15 +313,15 @@ export class StreamingToolExecutor {
   #hasUnfinishedTools() { return this.#tools.some(t => t.status !== 'yielded'); }
 
   async *getRemainingResults() {
-    if (this.#discarded) return;
-    while (!this.#discarded && this.#hasUnfinishedTools()) {
+    if (this.#discarded || this.#signal?.aborted) return;
+    while (!this.#discarded && !this.#signal?.aborted && this.#hasUnfinishedTools()) {
       this.#processQueue();
       let producedUpdate = false;
       for (const update of this.getCompletedResults()) {
         producedUpdate = true;
         yield update;
       }
-      if (this.#discarded) return;
+      if (this.#discarded || this.#signal?.aborted) return;
       // A later safe tool can already be completed but blocked on an earlier
       // result. Await the unfinished worker rather than spinning synchronously.
       if (this.#hasExecutingTools() && !producedUpdate) {
@@ -341,7 +341,7 @@ export class StreamingToolExecutor {
         }
       }
     }
-    if (!this.#discarded) {
+    if (!this.#discarded && !this.#signal?.aborted) {
       for (const update of this.getCompletedResults()) yield update;
     }
   }
