@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
@@ -922,7 +922,18 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// npm installs the bin as a symlink. Node resolves import.meta.url to its
+// real path while process.argv[1] may retain the symlink path.
+const isDirectInvocation = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirectInvocation) {
   main().then((code) => {
     if (Number.isInteger(code) && code !== 0) process.exitCode = code;
   }).catch((error) => {
