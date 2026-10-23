@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
+import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
@@ -222,7 +223,8 @@ export function createCliPermissionPolicy({
       if (!pattern || pattern.startsWith('/') || pattern.split('/').includes('..')) {
         return { behavior: 'deny', reason: 'Glob pattern must stay within the workspace.' };
       }
-      return { behavior: 'allow', reason: 'Read-only workspace search.' };
+      return checkWholeToolPermissionRules(permissionContext, { name }) ||
+        { behavior: 'allow', reason: 'Read-only workspace search.' };
     }
 
     if (['Read', 'Write', 'Edit', 'Grep'].includes(name)) {
@@ -237,6 +239,11 @@ export function createCliPermissionPolicy({
         };
       }
 
+      // Run original 2.1.88 whole-tool rules only AFTER the mandatory
+      // workspace/symlink checks. An allow rule must never permit escape.
+      const explicitRule = checkWholeToolPermissionRules(permissionContext, { name });
+      if (explicitRule) return explicitRule;
+
       if (name === 'Read' || name === 'Grep') {
         return { behavior: 'allow', reason: 'Read-only workspace operation.' };
       }
@@ -246,7 +253,8 @@ export function createCliPermissionPolicy({
     }
 
     if (name === 'Bash') {
-      return { behavior: 'ask', reason: 'This command executes a shell process.' };
+      return checkWholeToolPermissionRules(permissionContext, { name }) ||
+        { behavior: 'ask', reason: 'This command executes a shell process.' };
     }
 
     return { behavior: 'deny', reason: 'No CLI permission rule exists for tool ' + String(name) + '.' };
