@@ -91,6 +91,39 @@ export function estimateMessageTokens(messages) {
  * message per API round, not a separate message for each streaming block.
  * Each group starts at a fresh assistant and includes its matching tool_result.
  */
+/**
+ * Port of CLI 2.1.88 utils/tokens.ts:
+ * getTokenCountFromUsage() + tokenCountWithEstimation().
+ * The Anthropic/DeepSeek Messages API emits cumulative snapshots. Take the
+ * latest complete response, including cache input and output only ONCE, and
+ * estimate only messages appended after that assistant response.
+ */
+export function getTokenCountFromUsage(usage) {
+  if (!isRecord(usage) || !Number.isFinite(usage.input_tokens) ||
+    usage.input_tokens < 0) return undefined;
+  const fields = ['input_tokens', 'cache_creation_input_tokens',
+    'cache_read_input_tokens', 'output_tokens'];
+  let total = 0;
+  for (const field of fields) {
+    const value = usage[field] ?? 0;
+    if (!Number.isFinite(value) || value < 0) return undefined;
+    total += value;
+  }
+  return Number.isSafeInteger(total) ? total : undefined;
+}
+
+export function tokenCountWithEstimation(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== 'assistant' || !message.usage) continue;
+    const measured = getTokenCountFromUsage(message.usage);
+    if (measured !== undefined) {
+      return measured + estimateMessageTokens(messages.slice(i + 1));
+    }
+  }
+  return estimateMessageTokens(messages);
+}
+
 export function groupMessagesByApiRound(messages) {
   const groups = [];
   let current = [];
@@ -162,10 +195,21 @@ export function formatCompactSummary(summary) {
  * Not a second Agent Runtime. Uses the same model.stream interface, but no
  * tool schemas, tool loop, tool permissions or user-facing deltas.
  */
-export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}) {
+export function createAutoCompact({
+  thresholdTokens, keepRecentRounds = 2,
+  contextWindowTokens, reservedOutputTokens = 0, contextSafetyTokens = 13000,
+} = {}) {
   if (!Number.isSafeInteger(thresholdTokens) || thresholdTokens < 0) {
     throw new RangeError('Compact threshold must be a non-negative integer.');
   }
+  // Original getAutoCompactThreshold = effective context window minus buffer;
+  // 2.1.304 additionally reserves output tokens. Respect explicit low test
+  // thresholds, while limiting excessively high thresholds to model capacity.
+  const effectiveThreshold = Number.isSafeInteger(contextWindowTokens) &&
+    contextWindowTokens > 0
+    ? Math.min(thresholdTokens,
+      Math.max(1, contextWindowTokens - reservedOutputTokens - contextSafetyTokens))
+    : thresholdTokens;
   let consecutiveFailures = 0;
   // 2.1.304 XYo/ySr/kfo state: only rapid SUCCESSFUL compactions in the
   // same query chain count; separate user prompts start a fresh chain.
@@ -185,11 +229,11 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
       if (thresholdTokens === 0 || (!force && consecutiveFailures >= MAX_CONSECUTIVE_FAILURES)) {
         return { messages, compacted: false };
       }
-      const estimatedTokens = estimateMessageTokens(messages);
+      const estimatedTokens = tokenCountWithEstimation(messages);
       // 2.1.88 reactive recovery bypasses proactive threshold after the
       // server itself reports that the request cannot fit. Disabling compact
       // explicitly (threshold 0) remains authoritative.
-      if (!force && estimatedTokens < thresholdTokens) {
+      if (!force && estimatedTokens < effectiveThreshold) {
         return { messages, compacted: false, estimatedTokens };
       }
       const selection = selectCompletedPrefix(messages, keepRecentRounds);
@@ -306,7 +350,14 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
           { role: 'user', content:
             'This conversation continues after context compaction. Earlier completed work:\n' +
             summary + '\nRecent messages follow unchanged.' },
-          ...structuredClone(recent),
+          ...structuredClone(recent).map(message => {
+            // Precompact response usage describes the OLD context size. Keep
+            // all protected content/signatures byte-for-byte but clear only
+            // stale accounting metadata; the next completed response will
+            // establish a fresh authoritative usage anchor.
+            if (message.usage) delete message.usage;
+            return message;
+          }),
         ];
         const nextTokens = estimateMessageTokens(next);
         if (nextTokens >= estimatedTokens * 0.8) {
