@@ -913,3 +913,78 @@ test('TTY positional prompt remains interactive and preserves history for the ne
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+
+test('CLI SIGINT aborts an in-flight streaming model request and exits with 130', {
+  skip: process.platform === 'win32',
+  timeout: 12000,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-sigint-'));
+  let requests = 0;
+  let connectionClosed = false;
+  const sse = (type, fields = {}) => 'event: ' + type + '\ndata: ' + JSON.stringify({ type, ...fields }) + '\n\n';
+  const server = createServer(async (req, res) => {
+    requests += 1;
+    for await (const _chunk of req) { /* drain the request before replying */ }
+    res.on('close', () => { connectionClosed = true; });
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' });
+    res.write(sse('message_start', { message: { usage: { input_tokens: 2 } } }));
+    res.write(sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }));
+    res.write(sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'INTERRUPT_READY' } }));
+    // Deliberately hold the SSE stream open until the CLI aborts fetch().
+  });
+
+  let child;
+  let watchdog;
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const cliPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+    child = spawn(process.execPath, [
+      cliPath, '--print', 'stream a message',
+      '--cwd', workspace,
+      '--model', 'local-cancel-fixture',
+      '--base-url', 'http://127.0.0.1:' + address.port,
+    ], {
+      env: { ...process.env, ANTHROPIC_API_KEY: 'local-cancel-key' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let interrupted = false;
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      if (!interrupted && stdout.includes('INTERRUPT_READY')) {
+        interrupted = true;
+        child.kill('SIGINT');
+      }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    watchdog = setTimeout(() => { child.kill('SIGKILL'); }, 7500);
+
+    const [exitCode, exitSignal] = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, signal) => resolve([code, signal]));
+    });
+    assert.equal(requests, 1);
+    assert.equal(interrupted, true, 'model text was never streamed: ' + stderr);
+    assert.equal(exitSignal, null, 'CLI did not stop cleanly: ' + stderr);
+    assert.equal(exitCode, 130, 'SIGINT should exit 130, got stderr: ' + stderr);
+    assert.match(stdout, /INTERRUPT_READY/);
+    assert.match(stderr, /Interrupted by user/);
+    assert.equal(connectionClosed, true, 'stream transport was not closed after cancellation');
+  } finally {
+    if (watchdog) clearTimeout(watchdog);
+    if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
+    server.closeAllConnections?.();
+    await new Promise(resolve => server.close(resolve));
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
