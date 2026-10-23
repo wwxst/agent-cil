@@ -49,7 +49,7 @@ function abortIfNeeded(signal) {
  */
 export async function query({
   messages = [], input, signal, model, tools, maxTurns,
-  executeTool, emit, canStartToolDuringStream,
+  executeTool, emit, canStartToolDuringStream, compactContext,
 } = {}) {
   if (!Array.isArray(messages)) throw new TypeError('messages must be an array.');
   if (messages.some(message => !isRecord(message))) {
@@ -70,6 +70,9 @@ export async function query({
   if (canStartToolDuringStream !== undefined && typeof canStartToolDuringStream !== 'function') {
     throw new TypeError('canStartToolDuringStream must be a function.');
   }
+  if (compactContext !== undefined && typeof compactContext !== 'function') {
+    throw new TypeError('compactContext must be a function.');
+  }
   if (!Number.isSafeInteger(maxTurns) || maxTurns < 1) {
     throw new RangeError('maxTurns must be a positive safe integer.');
   }
@@ -83,8 +86,36 @@ export async function query({
       // Node CLI subset is active; compaction/Hook/session fields are gated.
       let state = { messages: initialHistory, turnCount: 1, transition: undefined };
       while (true) {
-        const { messages: history, turnCount: turn } = state;
+        let { messages: history, turnCount: turn } = state;
         abortIfNeeded(signal);
+        // Original 2.1.88 query.ts performs microcompact/autocompact before
+        // each model call. Our Node subset only summarizes fully completed
+        // API rounds. No tool starts until this transaction has succeeded.
+        if (compactContext) {
+          const before = history;
+          try {
+            const result = await compactContext({ messages: history, model, signal });
+            abortIfNeeded(signal);
+            if (!result || !Array.isArray(result.messages)) {
+              throw new ModelProtocolError('Compaction returned invalid messages.');
+            }
+            if (result.compacted) {
+              history = structuredClone(result.messages);
+              state.messages = history;
+              emit('contextCompacted', {
+                turn, beforeCount: before.length, afterCount: history.length,
+                estimatedTokens: result.estimatedTokens,
+                compactedTokens: result.compactedTokens,
+                // A successful compact is a committed context transition.
+                committedMessages: structuredClone(history),
+              });
+            }
+          } catch (error) {
+            emit('contextCompactError', { turn, error });
+            if (signal?.aborted) abortIfNeeded(signal);
+            throw error;
+          }
+        }
         emit('turnStarted', { turn, messageCount: history.length });
 
         const content = [];
