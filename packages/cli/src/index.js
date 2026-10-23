@@ -229,7 +229,7 @@ export function createCliPermissionPolicy({
   permissionContext = createCliPermissionContext(),
 } = {}) {
   const root = resolve(workspace);
-  return async ({ name, input } = {}) => {
+  const policy = async ({ name, input } = {}) => {
     if (name === 'Glob') {
       const pattern = typeof input?.pattern === 'string' ? input.pattern.replaceAll(BACKSLASH, '/') : '';
       if (!pattern || pattern.startsWith('/') || pattern.split('/').includes('..')) {
@@ -271,6 +271,11 @@ export function createCliPermissionPolicy({
 
     return { behavior: 'deny', reason: 'No CLI permission rule exists for tool ' + String(name) + '.' };
   };
+  // This built-in policy makes its decision from tool identity, input and
+  // the immutable workspace/rule context, never the evolving assistant text.
+  // Custom policies do not receive this opt-in and are always deferred.
+  Object.defineProperty(policy, 'supportsStreamingPreflight', { value: true });
+  return policy;
 }
 
 async function walkFiles(start, state = { files: [], truncated: false }) {
