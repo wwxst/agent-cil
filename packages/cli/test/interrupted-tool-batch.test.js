@@ -110,3 +110,60 @@ test('queued tool never starts after cancellation; creates one not-started resul
   assert.equal(outcome[1].is_error, true);
   assert.match(outcome[1].content, /not started/);
 });
+
+
+test('abort during Edit permission wait checkpoints a never-started result without editing', {
+  timeout: 10000,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-pending-approval-'));
+  const controller = new AbortController();
+  let releasePermission;
+  const pendingApproval = new Promise(resolve => { releasePermission = resolve; });
+  let signalApprovalReached;
+  const approvalReached = new Promise(resolve => { signalApprovalReached = resolve; });
+  try {
+    await writeFile(join(workspace, 'target.txt'), 'unchanged\n');
+    const tools = await createBuiltinTools({ workspace });
+    let editInvocations = 0;
+    const edit = tools.get('Edit');
+    const execute = edit.execute;
+    edit.execute = (...args) => { editInvocations++; return execute(...args); };
+    const model = { async *stream() {
+      yield {
+        type: 'tool_use', id: 'permission-pending', name: 'Edit',
+        input: { file_path: 'target.txt', old_string: 'unchanged', new_string: 'edited' },
+      };
+      yield { type: 'message_end', stopReason: 'tool_use' };
+    } };
+    const checkpoints = [], started = [];
+    const loop = new AgentLoop({
+      model, tools,
+      permissionPolicy: async () => {
+        signalApprovalReached();
+        await pendingApproval;
+        return { behavior: 'allow' };
+      },
+    });
+    loop.on('turnFinished', event => {
+      if (event.committedMessages) checkpoints.push(event);
+    });
+    loop.on('toolCallStarted', event => started.push(event));
+    const request = loop.run({ input: 'edit', signal: controller.signal });
+    await approvalReached;
+    controller.abort(new Error('cancel pending permission'));
+    releasePermission();
+    await assert.rejects(request, /cancel pending permission/);
+    assert.equal(editInvocations, 0);
+    assert.equal(started.length, 0);
+    assert.equal(await readFile(join(workspace, 'target.txt'), 'utf8'), 'unchanged\n');
+    assert.equal(checkpoints.length, 1);
+    const result = checkpoints[0].committedMessages.at(-1).content[0];
+    assert.equal(result.tool_use_id, 'permission-pending');
+    assert.equal(result.is_error, true);
+    assert.match(result.content, /not started/);
+  } finally {
+    controller.abort();
+    releasePermission?.();
+    await rm(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
