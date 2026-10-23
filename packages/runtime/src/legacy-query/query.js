@@ -49,7 +49,7 @@ function abortIfNeeded(signal) {
  */
 export async function query({
   messages = [], input, signal, model, tools, maxTurns,
-  executeTool, emit,
+  executeTool, emit, canStartToolDuringStream,
 } = {}) {
   if (!Array.isArray(messages)) throw new TypeError('messages must be an array.');
   if (messages.some(message => !isRecord(message))) {
@@ -66,6 +66,9 @@ export async function query({
   }
   if (typeof emit !== 'function' || typeof executeTool !== 'function') {
     throw new TypeError('Query event and tool execution callbacks are required.');
+  }
+  if (canStartToolDuringStream !== undefined && typeof canStartToolDuringStream !== 'function') {
+    throw new TypeError('canStartToolDuringStream must be a function.');
   }
   if (!Number.isSafeInteger(maxTurns) || maxTurns < 1) {
     throw new RangeError('maxTurns must be a positive safe integer.');
@@ -88,6 +91,44 @@ export async function query({
         const toolUses = [];
         let stopReason;
         let messageEnded = false;
+        // Original 2.1.88 query.ts starts its StreamingToolExecutor before
+        // the model response is finished. Keep this existing port and its
+        // ordered queue; do not create another dispatch system.
+        const assistantMessage = { role: 'assistant', content };
+        const earlyIds = new Set();
+        let scheduledCount = 0;
+        let deferredBarrier = false;
+        const executor = new StreamingToolExecutor({
+          getTool: name => tools.get(name),
+          signal,
+          execute: (block, { signal: toolSignal }) =>
+            runToolUse(
+              block,
+              assistantMessage,
+              (toolUse, { signal: verifiedSignal, tool: validatedTool, toolUseContext, onToolProgress }) =>
+                executeTool(toolUse, {
+                  history, turn, signal: verifiedSignal,
+                  validatedTool, validatorContext: toolUseContext,
+                  assistantMessage, onToolProgress,
+                  speculative: earlyIds.has(block.id),
+                }),
+              {
+                getTool: name => tools.get(name),
+                signal: toolSignal,
+                onUnknownTool: unknown => {
+                  emit('toolCallFinished', {
+                    turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
+                  });
+                },
+                onInputValidationFailed: () => {
+                  emit('toolCallFinished', {
+                    turn, toolUseId: block.id, toolName: block.name,
+                    isError: true, inputValidationFailed: true,
+                  });
+                },
+              },
+            ),
+        });
 
         try {
           const stream = model.stream({
@@ -144,6 +185,25 @@ export async function query({
               const toolUse = { type: 'tool_use', id: event.id, name: event.name, input: structuredClone(event.input) };
               content.push(toolUse);
               toolUses.push(toolUse);
+              // Only a trusted, explicitly read-only, concurrency-safe tool
+              // with a non-interactive permission preflight can start before
+              // message_end. An unsafe or approval-requiring tool forms a
+              // strict queue barrier for every subsequent tool in this turn.
+              if (!deferredBarrier && canStartToolDuringStream) {
+                const mayStart = await canStartToolDuringStream(toolUse, {
+                  history, turn, signal,
+                });
+                abortIfNeeded(signal);
+                if (mayStart) {
+                  earlyIds.add(toolUse.id);
+                  executor.addTool(toolUse);
+                  scheduledCount++;
+                } else {
+                  deferredBarrier = true;
+                }
+              } else {
+                deferredBarrier = true;
+              }
             } else if (event.type === 'message_end') {
               const reason = event.stopReason ?? event.stop_reason;
               if (!STOP_REASONS.has(reason)) {
@@ -157,20 +217,26 @@ export async function query({
               throw new ModelProtocolError('Unsupported model stream event: ' + event.type);
             }
           }
+          if (!messageEnded) {
+            throw new ModelProtocolError('Model stream ended without message_end.');
+          }
         } catch (error) {
+          // A failed/aborted model response is not a valid assistant message.
+          // Discard speculative results and abort in-flight read/search tasks.
+          // No Write/Edit/Bash has been admitted before message_end.
+          executor.discard();
           emit('modelError', { turn, error });
           if (signal?.aborted) abortIfNeeded(signal);
           throw error;
         }
 
-        if (!messageEnded) throw new ModelProtocolError('Model stream ended without message_end.');
         // CLI 2.1.88 query.ts:535-539, 833-843: stop_reason === tool_use
         // is unreliable. Seeing an actual tool_use block is the sole
         // follow-up signal; do NOT drop a real tool call on end_turn, and
         // do NOT perform a tool round if there are no tool_use blocks.
         const needsFollowUp = toolUses.length > 0;
 
-        const assistantMessage = { role: 'assistant', content, stop_reason: stopReason };
+        assistantMessage.stop_reason = stopReason;
         history.push(assistantMessage);
         emit('assistantMessage', { turn, message: structuredClone(assistantMessage) });
 
@@ -185,58 +251,31 @@ export async function query({
           return result;
         }
 
-        // 2.1.88 StreamingToolExecutor: queue safe tools concurrently, keep
-        // Write/Edit/Bash exclusive, and preserve the existing PR #9 permission
-        // chain through #executeTool as the runToolUse adapter. No tool begins
-        // before message_end and protocol validation have completed.
-        const executor = new StreamingToolExecutor({
-          getTool: name => tools.get(name),
-          signal,
-          execute: (block, { signal: toolSignal }) =>
-            runToolUse(
-              block,
-              assistantMessage,
-              (toolUse, { signal: verifiedSignal, tool: validatedTool, toolUseContext, onToolProgress }) =>
-                executeTool(toolUse, {
-                  history, turn, signal: verifiedSignal,
-                  validatedTool, validatorContext: toolUseContext,
-                  assistantMessage, onToolProgress,
-                }),
-              {
-                getTool: name => tools.get(name),
-                signal: toolSignal,
-                onUnknownTool: unknown => {
-                  emit('toolCallFinished', {
-                    turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
-                  });
-                },
-                onInputValidationFailed: () => {
-                  emit('toolCallFinished', {
-                    turn, toolUseId: block.id, toolName: block.name,
-                    isError: true, inputValidationFailed: true,
-                  });
-                },
-              },
-            ),
-        });
-        for (const toolUse of toolUses) {
+        // Resume deferred tools after the complete model message has passed
+        // protocol validation. Preserve model order and exclusive barriers.
+        for (const toolUse of toolUses.slice(scheduledCount)) {
           abortIfNeeded(signal);
           executor.addTool(toolUse);
         }
         const toolResults = [];
-        for await (const update of executor.getRemainingResults()) {
-          abortIfNeeded(signal);
-          if (update.progress !== undefined) emit('toolProgress', { turn, progress: update.progress });
-          if (update.message) {
-            const blocks = update.message.content;
-            if (!Array.isArray(blocks)) throw new ModelProtocolError('Legacy scheduler emitted an invalid tool result.');
-            for (const block of blocks) {
-              if (block?.type !== 'tool_result') {
-                throw new ModelProtocolError('Legacy scheduler emitted an unexpected message.');
+        try {
+          for await (const update of executor.getRemainingResults()) {
+            abortIfNeeded(signal);
+            if (update.progress !== undefined) emit('toolProgress', { turn, progress: update.progress });
+            if (update.message) {
+              const blocks = update.message.content;
+              if (!Array.isArray(blocks)) throw new ModelProtocolError('Legacy scheduler emitted an invalid tool result.');
+              for (const block of blocks) {
+                if (block?.type !== 'tool_result') {
+                  throw new ModelProtocolError('Legacy scheduler emitted an unexpected message.');
+                }
+                toolResults.push(block);
               }
-              toolResults.push(block);
             }
           }
+        } catch (error) {
+          executor.discard();
+          throw error;
         }
         abortIfNeeded(signal);
         if (toolResults.length !== toolUses.length) {
