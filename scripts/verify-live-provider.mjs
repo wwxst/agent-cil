@@ -46,9 +46,17 @@ async function runCli({ workspace, prompt, label }) {
     '--max-tokens', '1024', '--model', model,
     '--base-url', baseUrl, '--cwd', workspace, prompt,
   ];
-  const child = spawn(executable, args, {
+  // Windows cannot spawn .js entrypoints as executable programs (EFTYPE).
+  // Also use Node explicitly on POSIX so this acceptance runs with the same
+  // interpreter as the caller, regardless of executable bits or shebangs.
+  // Do not use shell:true: the free-form model prompt is an argument.
+  const isNodeScript = /\.(?:c|m)?js$/i.test(executable);
+  const command = isNodeScript ? process.execPath : executable;
+  const launchArgs = isNodeScript ? [executable, ...args] : args;
+  const child = spawn(command, launchArgs, {
     env: { ...process.env, ANTHROPIC_API_KEY: apiKey },
     stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
   });
   let stdout = '';
   let stderr = '';
