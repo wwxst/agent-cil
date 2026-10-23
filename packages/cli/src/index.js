@@ -538,9 +538,12 @@ function signalProcessTree(child, signalName) {
     });
     // taskkill may race a process exit or fail on a restricted host. Make a
     // best-effort direct-child fallback while retaining the caller's abort.
-    killer.once('error', () => {
+    const fallback = () => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
       try { child.kill(signalName); } catch { /* already exited */ }
-    });
+    };
+    killer.once('error', fallback);
+    killer.once('exit', code => { if (code !== 0) fallback(); });
     return;
   }
   try {
@@ -611,6 +614,9 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     });
     child.once('close', code => {
       clearTimeout(timeout);
+      // Escalation must never signal a PID after this child has exited: on
+      // Windows a reused PID could otherwise target an unrelated process.
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       signal?.removeEventListener('abort', onAbort);
 
       if (signal?.aborted) {
