@@ -139,3 +139,88 @@ test('OpenAI Chat end-to-end: Read, failing Bash test, Edit, passing Bash test, 
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+
+test('DeepSeek provider selects official Anthropic protocol and returns Read tool output', {
+  timeout: 16000,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-deepseek-provider-'));
+  const incoming = [];
+  const sse = (type, value = {}) => 'event: ' + type + '\n' +
+    'data: ' + JSON.stringify({ type, ...value }) + '\n\n';
+  const first = [
+    sse('message_start', { message: { usage: { input_tokens: 5 } } }),
+    sse('content_block_start', { index: 0, content_block: {
+      type: 'tool_use', id: 'ds-read', name: 'Read', input: {},
+    } }),
+    sse('content_block_delta', { index: 0, delta: {
+      type: 'input_json_delta', partial_json: '{"file_path":"test.txt"}',
+    } }),
+    sse('content_block_stop', { index: 0 }),
+    sse('message_delta', { delta: { stop_reason: 'tool_use' } }),
+    sse('message_stop'),
+  ].join('');
+  const final = [
+    sse('message_start', { message: { usage: { input_tokens: 7 } } }),
+    sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+    sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'DeepSeek reading completed.' } }),
+    sse('content_block_stop', { index: 0 }),
+    sse('message_delta', { delta: { stop_reason: 'end_turn' } }),
+    sse('message_stop'),
+  ].join('');
+  const server = createServer(async (req, res) => {
+    const pieces = [];
+    for await (const piece of req) pieces.push(piece);
+    incoming.push({
+      url: req.url, key: req.headers['x-api-key'],
+      body: JSON.parse(Buffer.concat(pieces).toString('utf8')),
+    });
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(incoming.length === 1 ? first : final);
+  });
+  let child;
+  let kill;
+  try {
+    await writeFile(join(workspace, 'test.txt'), 'DeepSeek workspace data\n');
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const a = server.address();
+    child = spawn(process.execPath, [
+      cli, '--provider', 'deepseek', '--print', '--cwd', workspace,
+      '--base-url', 'http://127.0.0.1:' + a.port + '/anthropic',
+      '--max-retries', '0', 'Read test.txt',
+    ], { env: { ...process.env,
+      DEEPSEEK_API_KEY: 'local-deepseek-fixture',
+      ANTHROPIC_API_KEY: '',
+    }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', x => { out += x; });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', x => { err += x; });
+    kill = setTimeout(() => child.kill('SIGKILL'), 12000);
+    const [code, sig] = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, sig) => resolve([code, sig]));
+    });
+    assert.equal(sig, null, err);
+    assert.equal(code, 0, err);
+    assert.equal(out.trim(), 'DeepSeek reading completed.');
+    assert.equal(incoming.length, 2);
+    assert.equal(incoming[0].url, '/anthropic/v1/messages');
+    assert.equal(incoming[0].key, 'local-deepseek-fixture');
+    assert.equal(incoming[0].body.model, 'deepseek-flash');
+    assert.equal(incoming[1].body.messages.at(-1).content[0].content,
+      'DeepSeek workspace data\n');
+    assert.equal(out.includes('local-deepseek-fixture'), false);
+  } finally {
+    if (kill) clearTimeout(kill);
+    if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
+    server.closeAllConnections?.();
+    await new Promise(resolve => server.close(resolve));
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
