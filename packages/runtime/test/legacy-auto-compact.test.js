@@ -89,7 +89,7 @@ test('successful tool-free summary replaces only completed prefix and preserves 
   assert.deepEqual(input, raw, 'original history is immutable');
 });
 
-test('summary rejects tool calls and malformed end without altering messages', async () => {
+test('2.1.88 proactive fallback ignores unsafe or incomplete summaries without altering messages', async () => {
   const src = structuredClone(raw);
   for (const events of [
     [{ type: 'tool_use', id: 'illegal', name: 'Write', input: { file_path: 'a' } },
@@ -99,9 +99,12 @@ test('summary rejects tool calls and malformed end without altering messages', a
       { type: 'message_end', stopReason: 'max_tokens' }],
   ]) {
     const compact = createAutoCompact({ thresholdTokens: 350 });
-    await assert.rejects(compact.compact({ messages: src, model: {
+    const outcome = await compact.compact({ messages: src, model: {
       async *stream() { for (const e of events) yield e; },
-    } }), /summary|Summary|Unexpected/);
+    } });
+    assert.equal(outcome.compacted, false);
+    assert.equal(outcome.messages, src);
+    assert.match(outcome.error.message, /summary|Summary|Unexpected/);
     assert.deepEqual(src, raw);
     assert.equal(compact.consecutiveFailures, 1);
   }
@@ -112,7 +115,9 @@ test('compact failure circuit breaker stops repeated API calls after three failu
   const compact = createAutoCompact({ thresholdTokens: 350 });
   const model = { async *stream() { requests++; throw new Error('provider rejected summary'); } };
   for (let i = 0; i < 3; i++) {
-    await assert.rejects(compact.compact({ messages: raw, model }), /provider rejected summary/);
+    const outcome = await compact.compact({ messages: raw, model });
+    assert.equal(outcome.compacted, false);
+    assert.match(outcome.error.message, /provider rejected summary/);
   }
   const skipped = await compact.compact({ messages: raw, model });
   assert.equal(skipped.compacted, false);
