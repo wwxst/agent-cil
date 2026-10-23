@@ -1356,3 +1356,20 @@ test('Read offset/limit selects lines from files larger than the whole-file cap'
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+test('npm-style symlink executable invokes CLI main rather than exiting silently', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'agent-cil-symlink-bin-'));
+  try {
+    const target = fileURLToPath(new URL('../src/index.js', import.meta.url));
+    const linkPath = join(folder, 'agent-cil');
+    await symlink(target, linkPath);
+    const run = spawnSync(linkPath, ['--version'], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, 'agent-cil 0.1.0\n');
+    assert.equal(run.stderr, '');
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
