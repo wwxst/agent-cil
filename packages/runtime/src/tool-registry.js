@@ -17,7 +17,7 @@ export class ToolRegistryError extends Error {
 export class ToolRegistry {
   #tools = new Map();
 
-  register({ name, description, inputSchema = { type: 'object' }, validateInput, checkPermissions, isConcurrencySafe, interruptBehavior, execute, call, mapToolResultToToolResultBlockParam } = {}) {
+  register({ name, description, inputSchema = { type: 'object' }, validateInput, checkPermissions, isConcurrencySafe, canRunDuringStream = false, interruptBehavior, execute, call, mapToolResultToToolResultBlockParam } = {}) {
     if (typeof name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(name)) {
       throw new ToolRegistryError('Tool name must contain 1-128 letters, digits, underscores or hyphens.');
     }
@@ -34,6 +34,12 @@ export class ToolRegistry {
     }
     if (isConcurrencySafe !== undefined && typeof isConcurrencySafe !== 'function') {
       throw new ToolRegistryError('isConcurrencySafe must be a function when provided.');
+    }
+    // Trusted explicit opt-in. Concurrency-safety alone does not imply
+    // read-only: Bash, Write and Edit must never be speculatively executed.
+    if (typeof canRunDuringStream !== 'boolean' ||
+      (canRunDuringStream && typeof isConcurrencySafe !== 'function')) {
+      throw new ToolRegistryError('canRunDuringStream requires a boolean and isConcurrencySafe.');
     }
     if (interruptBehavior !== undefined && typeof interruptBehavior !== 'function') {
       throw new ToolRegistryError('interruptBehavior must be a function when provided.');
@@ -74,6 +80,7 @@ export class ToolRegistry {
       validateInput,
       checkPermissions,
       isConcurrencySafe,
+      canRunDuringStream,
       interruptBehavior,
       execute,
       call,
