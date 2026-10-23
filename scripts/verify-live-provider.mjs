@@ -17,7 +17,7 @@ import { join } from 'node:path';
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 const baseUrl = process.env.ANTHROPIC_BASE_URL;
-const model = process.env.ANTHROPIC_MODEL || 'deepseek4.1flsh';
+const model = process.env.ANTHROPIC_MODEL || 'deepseek-flash';
 const executable = process.argv[2] || process.env.AGENT_CIL_TEST_EXECUTABLE || 'agent-cil';
 
 function redact(text) {
