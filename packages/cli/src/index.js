@@ -999,6 +999,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     }
   };
   process.on('SIGINT', onSigint);
+  // readline owns raw-mode Ctrl+C on a TTY (including Windows ConPTY).
+  // It emits SIGINT on the interface instead of the process. Without this
+  // listener Ctrl+C closes input while the active model keeps streaming.
+  rl?.on('SIGINT', onSigint);
   loop.on('toolCallStarted', ({ toolName }) => {
     if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
       process.stderr.write('[permission] auto-approved ' + toolName + ' (--allow-edits)\n');
@@ -1090,6 +1094,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 0;
   } finally {
     process.off('SIGINT', onSigint);
+    rl?.off('SIGINT', onSigint);
     rl?.close();
   }
 }

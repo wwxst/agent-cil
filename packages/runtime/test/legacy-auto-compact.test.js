@@ -22,6 +22,24 @@ const raw = [
   assistant('read-3', 'sig-3'), result('read-3', 'latest tool result'),
   user('continue repair'),
 ];
+
+test('proactive compact waits when protected recent rounds dominate the context', async () => {
+  const messages = [user('task'), assistant('old', 'sig-old'), result('old', 'done'),
+    assistant('recent1', 'sig1'), result('recent1', 'large output '.repeat(3000)),
+    assistant('recent2', 'sig2'), result('recent2', 'fresh result')];
+  const snapshot = structuredClone(messages);
+  const compact = createAutoCompact({ thresholdTokens: 100 });
+  let calls = 0;
+  const model = { async *stream() { calls++; throw new Error('must not sample'); } };
+  const output = await compact.compact({ messages, model });
+  assert.equal(output.compacted, false);
+  assert.deepEqual(output.messages, snapshot);
+  assert.equal(calls, 0);
+  assert.equal(compact.consecutiveFailures, 0);
+  // Genuine overflow must still attempt the bounded recovery path.
+  await assert.rejects(compact.compact({ messages, model, force: true }), /must not sample/);
+  assert.equal(calls, 1);
+});
 function successModel(calls) {
   return { async *stream({ messages, tools, purpose }) {
     calls.push({ messages, tools, purpose });

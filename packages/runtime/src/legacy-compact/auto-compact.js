@@ -159,6 +159,12 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
       const selection = selectCompletedPrefix(messages, keepRecentRounds);
       if (!selection) return { messages, compacted: false, estimatedTokens };
       const { prefix, recent } = selection;
+      // Proactive compaction cannot shrink protected recent rounds. Wait for
+      // those rounds to age out rather than aborting a healthy conversation.
+      // Forced server-overflow recovery still follows its bounded failure path.
+      if (!force && estimateMessageTokens(recent) >= estimatedTokens * 0.8) {
+        return { messages, compacted: false, estimatedTokens };
+      }
       try {
         // Port 2.1.88 compact.ts truncateHeadForPTLRetry: when the summary
         // request is also too long, discard oldest WHOLE API-round groups,

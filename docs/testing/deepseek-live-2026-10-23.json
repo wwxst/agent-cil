@@ -1,0 +1,423 @@
+{
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com/anthropic",
+  "node": "v24.20.0",
+  "platform": "win32",
+  "requests": [
+    {
+      "status": 200,
+      "messages": 1,
+      "bytes": 2078,
+      "tools": 6,
+      "thinkingBlocks": 0
+    },
+    {
+      "status": 200,
+      "messages": 3,
+      "bytes": 74366,
+      "tools": 6,
+      "thinkingBlocks": 1
+    },
+    {
+      "status": 200,
+      "messages": 5,
+      "bytes": 75394,
+      "tools": 6,
+      "thinkingBlocks": 2
+    },
+    {
+      "status": 200,
+      "messages": 4,
+      "bytes": 73034,
+      "tools": 0,
+      "thinkingBlocks": 1
+    },
+    {
+      "status": 200,
+      "messages": 5,
+      "bytes": 76064,
+      "tools": 6,
+      "thinkingBlocks": 2
+    },
+    {
+      "status": 200,
+      "messages": 7,
+      "bytes": 76840,
+      "tools": 6,
+      "thinkingBlocks": 3
+    },
+    {
+      "status": 200,
+      "messages": 6,
+      "bytes": 74732,
+      "tools": 0,
+      "thinkingBlocks": 2
+    },
+    {
+      "status": 200,
+      "messages": 5,
+      "bytes": 76346,
+      "tools": 6,
+      "thinkingBlocks": 2
+    },
+    {
+      "status": 200,
+      "messages": 7,
+      "bytes": 77189,
+      "tools": 6,
+      "thinkingBlocks": 3
+    },
+    {
+      "status": 200,
+      "messages": 6,
+      "bytes": 75014,
+      "tools": 0,
+      "thinkingBlocks": 2
+    },
+    {
+      "status": 200,
+      "messages": 5,
+      "bytes": 76583,
+      "tools": 6,
+      "thinkingBlocks": 2
+    },
+    {
+      "status": 200,
+      "messages": 7,
+      "bytes": 77512,
+      "tools": 6,
+      "thinkingBlocks": 3
+    },
+    {
+      "status": 200,
+      "messages": 6,
+      "bytes": 75251,
+      "tools": 0,
+      "thinkingBlocks": 2
+    },
+    {
+      "status": 200,
+      "messages": 5,
+      "bytes": 5071,
+      "tools": 6,
+      "thinkingBlocks": 2
+    },
+    {
+      "status": 200,
+      "messages": 7,
+      "bytes": 5519,
+      "tools": 6,
+      "thinkingBlocks": 3
+    },
+    {
+      "status": 200,
+      "messages": 9,
+      "bytes": 5895,
+      "tools": 6,
+      "thinkingBlocks": 4
+    },
+    {
+      "status": 200,
+      "messages": 11,
+      "bytes": 6304,
+      "tools": 6,
+      "thinkingBlocks": 5
+    }
+  ],
+  "usage": [
+    {
+      "input_tokens": 154,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 640,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 154,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 640,
+      "output_tokens": 40,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 15393,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 768,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 15393,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 768,
+      "output_tokens": 173,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 239,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 16128,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 239,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 16128,
+      "output_tokens": 40,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 15870,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 640,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 15870,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 640,
+      "output_tokens": 121,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 152,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 16512,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 152,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 16512,
+      "output_tokens": 40,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 15935,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 640,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 15935,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 640,
+      "output_tokens": 134,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 230,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 16512,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 230,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 16512,
+      "output_tokens": 40,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 15978,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 640,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 15978,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 640,
+      "output_tokens": 123,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 160,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 16640,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 160,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 16640,
+      "output_tokens": 52,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 767,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 640,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 767,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 640,
+      "output_tokens": 86,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 235,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 1280,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 235,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 1280,
+      "output_tokens": 40,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 170,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 1408,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 170,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 1408,
+      "output_tokens": 41,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 240,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 1408,
+      "output_tokens": 0,
+      "service_tier": "standard"
+    },
+    {
+      "input_tokens": 240,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 1408,
+      "output_tokens": 141,
+      "service_tier": "standard"
+    }
+  ],
+  "tools": [
+    "Read",
+    "Read",
+    "Read",
+    "Read",
+    "Read",
+    "Edit",
+    "Read",
+    "Bash"
+  ],
+  "compactions": [
+    {
+      "before": 7,
+      "after": 5,
+      "estimatedTokens": 47824,
+      "compactedTokens": 24315
+    },
+    {
+      "before": 9,
+      "after": 5,
+      "estimatedTokens": 48274,
+      "compactedTokens": 24404
+    },
+    {
+      "before": 9,
+      "after": 5,
+      "estimatedTokens": 48387,
+      "compactedTokens": 24482
+    },
+    {
+      "before": 9,
+      "after": 5,
+      "estimatedTokens": 24838,
+      "compactedTokens": 944
+    }
+  ],
+  "thinking": [
+    {
+      "chars": 0,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 187,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 0,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 0,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 0,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 42,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 0,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 0,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 49,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 33,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 0,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 0,
+      "signaturePresent": true,
+      "signatureChars": 36
+    },
+    {
+      "chars": 0,
+      "signaturePresent": true,
+      "signatureChars": 36
+    }
+  ],
+  "approvals": [
+    {
+      "name": "Bash",
+      "approved": true
+    }
+  ],
+  "result": "PASS",
+  "context400": "UNVERIFIED: no genuine provider context overflow triggered",
+  "retryReplay": "UNVERIFIED live: no transport/context retry occurred; see deterministic suite"
+}
