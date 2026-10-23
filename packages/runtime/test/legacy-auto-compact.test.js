@@ -341,3 +341,65 @@ test('forced provider overflow can still compact after the proactive failure cir
   assert.equal(forced.compacted, true);
   assert.equal(attempts, 4);
 });
+
+
+test('2.1.88 measured usage counts cache input/output once and estimates only trailing tool messages', async () => {
+  const { tokenCountWithEstimation, getTokenCountFromUsage } =
+    await import('../src/legacy-compact/auto-compact.js');
+  const measured = { input_tokens: 100, cache_read_input_tokens: 250,
+    cache_creation_input_tokens: 50, output_tokens: 17 };
+  assert.equal(getTokenCountFromUsage(measured), 417);
+  const transcript = [
+    user('an extremely long old conversation '.repeat(100)),
+    { ...assistant('call', 'opaque'), usage: measured },
+    result('call', 'new tool result'),
+  ];
+  assert.equal(tokenCountWithEstimation(transcript),
+    417 + estimateMessageTokens(transcript.slice(2)));
+  assert.ok(tokenCountWithEstimation(transcript) < estimateMessageTokens(transcript));
+});
+
+test('compaction clears only stale usage anchor, preserving signed recent content', async () => {
+  const { tokenCountWithEstimation } =
+    await import('../src/legacy-compact/auto-compact.js');
+  const input = structuredClone(raw);
+  input[4].usage = { input_tokens: 125000, output_tokens: 200 };
+  const controller = createAutoCompact({ thresholdTokens: 60000 });
+  let summaryCalls = 0;
+  const model = { async *stream() {
+    summaryCalls++;
+    yield { type: 'text_delta', text: 'Earlier project reads finished without errors.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const answer = await controller.compact({ messages: input, model });
+  assert.equal(answer.compacted, true);
+  assert.equal(summaryCalls, 1);
+  assert.equal(answer.contextTokens, tokenCountWithEstimation(input));
+  assert.equal(answer.messages[2].usage, undefined,
+    'retained pre-compact usage must not be reused');
+  assert.equal(answer.messages[2].content[0].signature, 'sig-2');
+  assert.equal(answer.messages[4].content[0].signature, 'sig-3');
+  assert.equal(input[4].usage.input_tokens, 125000, 'source transcript is unchanged');
+  assert.equal(tokenCountWithEstimation(answer.messages),
+    estimateMessageTokens(answer.messages));
+});
+
+test('context-window and output reservation limit high configured compact threshold', async () => {
+  const input = structuredClone(raw);
+  input[4].usage = { input_tokens: 950, output_tokens: 5 };
+  const controller = createAutoCompact({
+    thresholdTokens: 2000,
+    contextWindowTokens: 1100,
+    reservedOutputTokens: 100,
+    contextSafetyTokens: 25,
+  });
+  let summaries = 0;
+  const model = { async *stream() {
+    summaries++;
+    yield { type: 'text_delta', text: 'Historical read operations completed successfully.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const result = await controller.compact({ messages: input, model });
+  assert.equal(result.compacted, true);
+  assert.equal(summaries, 1);
+});
