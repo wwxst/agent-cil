@@ -523,37 +523,53 @@ function abortError(signal) {
 }
 
 function signalProcessTree(child, signalName) {
-  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) return;
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) return Promise.resolve();
   if (process.platform === 'win32') {
-    // Port of CLI 2.1.88 ShellCommand.#doKill() / bundled tree-kill and
-    // CLI 2.1.304 bS: Windows child.kill() only terminates cmd.exe, leaving
-    // descendants alive to write files after cancellation. Use taskkill's
-    // /T (descendants) /F (force) with a PID passed as a separate argument.
-    // The built-in Node child handle remains open until exit; unlike Bun's
-    // native process handle we cannot implement its PID pin/unpin API.
-    const root = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
-    const exe = join(root, 'System32', 'taskkill.exe');
-    const killer = spawn(exe, ['/PID', String(child.pid), '/T', '/F'], {
-      windowsHide: true, shell: false, stdio: 'ignore',
+    // CLI 2.1.88 ShellCommand.#doKill uses tree-kill; its Windows branch
+    // executes taskkill /PID ... /T /F. Wait for that subprocess before
+    // completing Bash: cmd.exe exit alone does not prove descendant cleanup.
+    return new Promise(resolveKill => {
+      const root = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+      const exe = join(root, 'System32', 'taskkill.exe');
+      const fallback = () => {
+        try { child.kill(signalName); } catch { /* process already exited */ }
+      };
+      let killer;
+      try {
+        killer = spawn(exe, ['/PID', String(child.pid), '/T', '/F'], {
+          windowsHide: true, shell: false, stdio: 'ignore',
+        });
+      } catch {
+        fallback();
+        resolveKill(false);
+        return;
+      }
+      let settled = false;
+      const finish = succeeded => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        if (!succeeded) fallback();
+        resolveKill(succeeded);
+      };
+      // Failure of taskkill must not wedge an interrupted interactive CLI.
+      // Direct-child fallback is best effort, not proof of tree termination.
+      const watchdog = setTimeout(() => {
+        try { killer.kill(); } catch { /* best effort */ }
+        finish(false);
+      }, 4000);
+      watchdog.unref?.();
+      killer.once('error', () => finish(false));
+      killer.once('close', code => finish(code === 0));
     });
-    // taskkill may race a process exit or fail on a restricted host. Make a
-    // best-effort direct-child fallback while retaining the caller's abort.
-    const fallback = () => {
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      try { child.kill(signalName); } catch { /* already exited */ }
-    };
-    killer.once('error', fallback);
-    killer.once('exit', code => { if (code !== 0) fallback(); });
-    return;
   }
   try {
-    // detached=true gives the shell and its descendants a private process group.
+    // Detached Unix shells and descendants share a private process group.
     process.kill(-child.pid, signalName);
-    return;
   } catch {
-    // Fall back to signaling the direct child if the process group is unavailable.
+    try { child.kill(signalName); } catch { /* process already exited */ }
   }
-  try { child.kill(signalName); } catch { /* already exited */ }
+  return Promise.resolve();
 }
 
 function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
@@ -574,18 +590,20 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     let outputLimitHit = false;
     let spawnError;
     let forceKillTimer;
+    let terminationPromise;
 
     const terminate = () => {
-      signalProcessTree(child, 'SIGTERM');
-      if (!forceKillTimer) {
+      if (terminationPromise) return terminationPromise;
+      terminationPromise = signalProcessTree(child, 'SIGTERM');
+      // Windows taskkill /T /F already forces the entire process tree.
+      // Retain Unix's separate process-group escalation.
+      if (process.platform !== 'win32') {
         forceKillTimer = setTimeout(() => {
-          try {
-            signalProcessTree(child, 'SIGKILL');
-          } catch {
-            // Best-effort escalation; close/error handling reports the command outcome.
-          }
+          void signalProcessTree(child, 'SIGKILL');
         }, 250);
+        forceKillTimer.unref?.();
       }
+      return terminationPromise;
     };
 
     const timeout = setTimeout(() => {
@@ -594,8 +612,10 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     }, timeoutMs);
     timeout.unref?.();
 
-    const onAbort = () => terminate();
+    const onAbort = () => { void terminate(); };
     signal?.addEventListener('abort', onAbort, { once: true });
+    // An abort may race spawn and installation of the listener.
+    if (signal?.aborted) onAbort();
 
     const collect = (target, chunk) => {
       const remaining = Math.max(0, maxOutputBytes - outputBytes);
@@ -612,12 +632,14 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     child.once('error', error => {
       spawnError = error;
     });
-    child.once('close', code => {
+    child.once('close', async code => {
       clearTimeout(timeout);
-      // Escalation must never signal a PID after this child has exited: on
-      // Windows a reused PID could otherwise target an unrelated process.
+      // Do not target a PID after its shell has exited.
       if (forceKillTimer) clearTimeout(forceKillTimer);
       signal?.removeEventListener('abort', onAbort);
+      // Child close and successful process-tree termination are separate on
+      // Windows. Complete the bounded cleanup attempt before reporting.
+      if (terminationPromise) await terminationPromise;
 
       if (signal?.aborted) {
         rejectPromise(abortError(signal));
