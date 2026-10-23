@@ -38,3 +38,6 @@ jobs:
           "$cli" --help | head -n 30
           "$cli" --help | grep -q -- '--allow-edits'
           node scripts/verify-installed-cli.mjs "$cli"
+          # Run the full development-task acceptance on the freshly installed
+          # CLI, including the interactive Bash approval in a real pseudo-TTY.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/legacy-model-transport-cli.test.js
