@@ -28,7 +28,13 @@ jobs:
           trap 'rm -rf "$install_dir" "$archive"' EXIT
           npm install --ignore-scripts --no-audit --no-fund --prefix "$install_dir" "./$archive"
           cli="$install_dir/node_modules/.bin/agent-cil"
+          echo "Packed CLI executable metadata:"
+          ls -l "$cli"
           test -x "$cli"
+          echo "Packed CLI version:"
+          "$cli" --version
           test "$("$cli" --version)" = "agent-cil 0.1.0"
+          echo "Packed CLI help:"
+          "$cli" --help | head -n 30
           "$cli" --help | grep -q -- '--allow-edits'
           node scripts/verify-installed-cli.mjs "$cli"
