@@ -29,6 +29,7 @@ export const HELP = [
   '      --model <name>      Anthropic model (default: ANTHROPIC_MODEL or claude-sonnet-4-5)',
   '      --base-url <url>    Messages API base URL (default: ANTHROPIC_BASE_URL or https://api.anthropic.com)',
   '      --max-tokens <n>    Maximum output tokens (default: 4096)',
+  '      --max-turns <n>     Maximum model rounds per prompt (default: 8)',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
   '',
@@ -67,6 +68,7 @@ export function parseArgs(argv) {
     model: undefined,
     baseUrl: undefined,
     maxTokens: 4096,
+    maxTurns: 8,
     system: undefined,
     cwd: process.cwd(),
     positional: [],
@@ -105,6 +107,12 @@ export function parseArgs(argv) {
       options.maxTokens = Number(arg.slice('--max-tokens='.length));
       if (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1 || options.maxTokens > 200000) {
         throw new CliArgumentError('--max-tokens must be an integer between 1 and 200000.');
+      }
+    } else if (arg === '--max-turns' || arg.startsWith('--max-turns=')) {
+      const raw = arg === '--max-turns' ? takeValue(arg, i++) : arg.slice('--max-turns='.length);
+      options.maxTurns = Number(raw);
+      if (!Number.isSafeInteger(options.maxTurns) || options.maxTurns < 1 || options.maxTurns > 100) {
+        throw new CliArgumentError('--max-turns must be an integer between 1 and 100.');
       }
     } else if (arg === '--system') {
       options.system = takeValue(arg, i++);
@@ -742,6 +750,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     model,
     tools,
     permissionPolicy: createCliPermissionPolicy({ workspace }),
+    maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
       if (!rl || options.print || !process.stdin.isTTY) {
         process.stderr.write('[permission] denied ' + name + ': interactive approval is unavailable.\n');
@@ -787,6 +796,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       const result = await loop.run({ messages: history, input: text, signal: activeController.signal });
       history = result.messages;
       process.stdout.write('\n');
+      if (result.stopReason === 'max_tokens') {
+        printError('Model output reached --max-tokens before finishing. Increase --max-tokens or continue the conversation.');
+        return 1;
+      }
+      if (result.stopReason === 'max_turns') {
+        printError('Agent reached --max-turns (' + options.maxTurns + ') without a final response. Increase --max-turns or continue the conversation.');
+        return 1;
+      }
       return 0;
     } catch (error) {
       process.stdout.write('\n');
