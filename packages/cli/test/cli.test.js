@@ -429,6 +429,7 @@ test('AgentLoop requests approval for the final Bash command after policy input 
     assert.deepEqual(policyCalls, [
       { phase: 'initial', command: 'node -p 1+1', behavior: 'ask' },
       { phase: 'recheck', command: 'node -p 2+2', behavior: 'ask' },
+      { phase: 'post-approval', command: 'node -p 2+2', behavior: 'ask' },
     ]);
     assert.deepEqual(approvalInputs, ['node -p 2+2']);
     assert.equal(toolResult.is_error, undefined);

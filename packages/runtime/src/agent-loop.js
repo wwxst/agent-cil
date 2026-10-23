@@ -366,7 +366,34 @@ export class AgentLoop extends EventEmitter {
           }
         }
 
-        // The approval handler approved the exact input that will execute.
+        // An approval grants the specific reviewed input, not immunity from
+        // policy changes while the user was deciding. Reuse the existing
+        // 2.1.88-derived global + tool-specific permission resolver after
+        // approval. A new deny, rewrite, invalid decision or materially new
+        // approval reason must not execute under a stale confirmation.
+        const afterApproval = await requestPermissionDecision(executionInput, 'post-approval');
+        if (afterApproval.result) return afterApproval.result;
+        const fresh = afterApproval.decision;
+        const stillAllowed = fresh?.behavior === 'allow' ||
+          (fresh?.behavior === 'ask' &&
+            (typeof fresh.reason === 'string' ? fresh.reason : '') === reason);
+        if (!stillAllowed || fresh.updatedInput !== undefined) {
+          // Keep the fresh deny reason: workspace security checks can now
+          // detect a symlink installed *during* approval, and callers need
+          // the exact reason rather than a generic "permission changed".
+          const lateDenyReason = fresh?.behavior === 'deny' &&
+            typeof fresh.reason === 'string' && fresh.reason
+            ? ' ' + fresh.reason : '';
+          const result = toolError(toolUse,
+            'Tool call denied: permission changed during approval; review the request again.' +
+              lateDenyReason);
+          this.emit('toolCallFinished', {
+            turn, toolUseId: toolUse.id, toolName: tool.name,
+            isError: true, denied: true,
+          });
+          return result;
+        }
+        // The input and permission boundary are both still valid.
         behavior = 'allow';
       }
 
