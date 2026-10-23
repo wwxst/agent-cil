@@ -52,6 +52,9 @@ export async function* runToolUse(toolUse, assistantMessage, executeTool, toolUs
   // The original runToolUse validates lookup before entering the tool
   // execution stream; preserve its tool_result error framing.
   if (!tool) {
+    // The legacy framing remains here, but the host loop must still observe
+    // one terminal lifecycle event for an unknown tool.
+    toolUseContext.onUnknownTool?.(toolUse);
     yield {
       message: errorResult(
         toolUse,
@@ -180,6 +183,7 @@ async function checkPermissionsAndCallTool(
     onToolProgress,
     tool,
     assistantMessage,
+    toolUseContext,
   });
   if (!block || block.type !== 'tool_result' || block.tool_use_id !== toolUse.id) {
     throw new Error('Tool execution adapter returned a mismatched tool_result.');
@@ -221,7 +225,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
       structuredClone(input),
       { toolUseId, signal, messages: structuredClone(messages) },
       denyNestedPermission,
-      assistantMessage,
+      structuredClone(assistantMessage),
       onProgress,
     );
     if (signal?.aborted) throw cancelledToolCall(signal);
@@ -299,8 +303,10 @@ function validateMappedToolResult(block, toolUseId, isLegacyCall) {
         }
       } else if (item.type === 'image') {
         if (item.source?.type !== 'base64' ||
-          typeof item.source.media_type !== 'string' ||
-          typeof item.source.data !== 'string') {
+          !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(item.source.media_type) ||
+          typeof item.source.data !== 'string' ||
+          item.source.data.length === 0 ||
+          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(item.source.data)) {
           throw new TypeError('Tool result mapper returned invalid image content.');
         }
       } else {

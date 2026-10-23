@@ -252,7 +252,12 @@ export class AnthropicMessagesAdapter {
         // reports equivalent pre-response transport failures as TypeError.
         // Limit retries to errors thrown by fetch before any HTTP response.
         if (retry < this.#maxRetries && isRetryablePreStreamConnectionError(error)) {
-          await delay(getBoundedRetryDelay(retry + 1), undefined, { signal });
+          try {
+            await delay(getBoundedRetryDelay(retry + 1), undefined, { signal });
+          } catch (waitError) {
+            if (signal?.aborted) abortIfNeeded(signal);
+            throw waitError;
+          }
           continue;
         }
         throw new ModelAdapterError('Failed to connect to the Messages API.', { cause: error });

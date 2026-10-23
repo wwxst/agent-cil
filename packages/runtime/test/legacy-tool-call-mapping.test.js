@@ -206,3 +206,65 @@ test('existing execute-only tool output serialization remains unchanged', async 
     content: '{"path":"safe.txt","written":true}',
   });
 });
+
+
+test('mapped is_error results emit failed tool completion lifecycle', async () => {
+  const loop = loopWithLegacyTool({
+    call: async () => ({ data: 'domain failure' }),
+    mapper: (data, toolUseId) => ({
+      type: 'tool_result', tool_use_id: toolUseId, content: data, is_error: true,
+    }),
+    onResult: item => assert.equal(item.is_error, true),
+  });
+  const finished = [];
+  loop.on('toolCallFinished', event => finished.push(event));
+  await loop.run({ input: 'invoke domain failure' });
+  assert.equal(finished.length, 1);
+  assert.equal(finished[0].isError, true);
+});
+
+test('legacy call cannot mutate the assistant history through parentMessage', async () => {
+  let originalId;
+  const loop = loopWithLegacyTool({
+    call: async (_input, _context, _canUseTool, parentMessage) => {
+      originalId = parentMessage.content.find(x => x.type === 'tool_use').id;
+      parentMessage.content[0].id = 'tampered-id';
+      parentMessage.content[0].input.value = 'tampered-input';
+      return { data: 'untampered' };
+    },
+    mapper: (data, id) => ({ type: 'tool_result', tool_use_id: id, content: data }),
+    onResult: item => assert.equal(item.tool_use_id, 'legacy-1'),
+  });
+  const output = await loop.run({ input: 'protect parent message' });
+  const assistant = output.messages.find(x => x.role === 'assistant' && x.content.some(y=>y.type==='tool_use'));
+  const use = assistant.content.find(x => x.type === 'tool_use');
+  assert.equal(originalId, 'legacy-1');
+  assert.equal(use.id, 'legacy-1');
+  assert.deepEqual(use.input, { value: 'initial' });
+});
+
+test('legacy image mapper rejects unsupported MIME types and malformed base64', async () => {
+  for (const source of [
+    { type: 'base64', media_type: 'image/svg+xml', data: 'AAAA' },
+    { type: 'base64', media_type: 'image/png', data: '%%%invalid' },
+    { type: 'base64', media_type: 'image/png', data: '' },
+    { type: 'base64', media_type: 'image/jpeg', data: 'AA=A' },
+  ]) {
+    await assert.rejects(invokeToolCallAndMapResult({
+      name: 'Image', call: async () => ({ data: 'image' }),
+      mapToolResultToToolResultBlockParam: (_data, id) => ({
+        type: 'tool_result', tool_use_id: id, content: [{ type: 'image', source }],
+      }),
+    }, {}, { toolUseId: 'image-1' }), /invalid image content/);
+  }
+  const good = await invokeToolCallAndMapResult({
+    name: 'Image', call: async () => ({ data: 'image' }),
+    mapToolResultToToolResultBlockParam: (_data, id) => ({
+      type: 'tool_result', tool_use_id: id,
+      content: [{ type: 'image', source: {
+        type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=',
+      } }],
+    }),
+  }, {}, { toolUseId: 'image-1' });
+  assert.equal(good.content[0].source.media_type, 'image/png');
+});

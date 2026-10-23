@@ -122,10 +122,17 @@ export class AgentLoop extends EventEmitter {
     }
   }
 
-  async #executeTool(toolUse, { history, turn, signal, assistantMessage, onToolProgress }) {
+  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress }) {
     const tool = this.#tools.get(toolUse.name);
     if (!tool) {
       const result = toolError(toolUse, 'Unknown tool: ' + toolUse.name);
+      this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: toolUse.name, isError: true });
+      return result;
+    }
+    // The schema and custom validator just ran against validatedTool in the
+    // legacy execution prefix. Never substitute a different registry entry.
+    if (!validatedTool || tool !== validatedTool) {
+      const result = toolError(toolUse, 'Tool definition changed after input validation; refusing to execute.');
       this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: toolUse.name, isError: true });
       return result;
     }
@@ -192,7 +199,9 @@ export class AgentLoop extends EventEmitter {
       if (normalized.error) return inputUpdateError(source, normalized.error);
       if (isDeepStrictEqual(normalized.value, executionInput)) return { changed: false };
 
-      const errors = await this.#tools.validateInput(toolUse.name, normalized.value);
+      const errors = await this.#tools.validateInput(
+        toolUse.name, normalized.value, validatorContext, validatedTool,
+      );
       abortIfNeeded(signal);
       if (errors.length > 0) return inputUpdateError(source, errors.join(' '));
 
@@ -318,18 +327,15 @@ export class AgentLoop extends EventEmitter {
     abortIfNeeded(signal);
     this.emit('toolCallStarted', { turn, toolUseId: toolUse.id, toolName: tool.name });
     try {
-      // The permission chain has authorized the final (possibly rewritten)
-      // input. Reuse the original 2.1.88 Tool.call + mapper contract here;
-      // preexisting execute() tools retain their exact output behavior.
+      // The final input was validated and authorized before this call.
       const result = await invokeToolCallAndMapResult(tool, executionInput, {
-        toolUseId: toolUse.id,
-        signal,
-        messages: history,
-        assistantMessage,
+        toolUseId: toolUse.id, signal, messages: history, assistantMessage,
         onProgress: onToolProgress,
       });
       abortIfNeeded(signal);
-      this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: false });
+      this.emit('toolCallFinished', {
+        turn, toolUseId: toolUse.id, toolName: tool.name, isError: result.is_error === true,
+      });
       return result;
     } catch (error) {
       if (signal?.aborted) abortIfNeeded(signal);
