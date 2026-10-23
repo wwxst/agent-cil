@@ -29,7 +29,7 @@ const finishStream = text => [
   sse('message_stop'),
 ].join('');
 
-test('installed CLI retries a disconnected pre-response fetch, then runs Read and continues', {
+test('CLI retries a disconnected pre-response fetch, then runs Read and continues', {
   timeout: 18000,
 }, async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-legacy-transport-'));
@@ -128,7 +128,7 @@ test('interactive TTY CLI can read, edit, approve Bash verification and reread i
     const address = server.address();
     assert.ok(address && typeof address === 'object');
     const args = [
-      process.execPath, cli, '--print', '--allow-edits', '--max-retries', '0',
+      process.execPath, cli, '--allow-edits', '--max-retries', '0',
       '--cwd', workspace, '--base-url', 'http://127.0.0.1:' + address.port,
       '--model', 'tty-coding-fixture', 'Fix add then run the verification command.',
     ];
@@ -141,6 +141,7 @@ test('interactive TTY CLI can read, edit, approve Bash verification and reread i
     let output = '';
     let stderr = '';
     let approvals = 0;
+    let exits = 0;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', c => {
@@ -148,6 +149,10 @@ test('interactive TTY CLI can read, edit, approve Bash verification and reread i
       if (output.includes('Approve this tool call? [y/N] ') && approvals === 0) {
         approvals += 1;
         child.stdin.write('y\n');
+      }
+      if (output.includes('you> ') && exits === 0) {
+        exits += 1;
+        child.stdin.write('/exit\n');
       }
     });
     child.stderr.on('data', c => { stderr += c; });
@@ -159,6 +164,7 @@ test('interactive TTY CLI can read, edit, approve Bash verification and reread i
     assert.equal(signal, null, stderr + output);
     assert.equal(code, 0, stderr + output);
     assert.equal(approvals, 1, output);
+    assert.equal(exits, 1, output);
     assert.match(output, /Coding task completed and checked/);
     assert.equal(await readFile(join(workspace, 'math.js'), 'utf8'), fixed);
     assert.equal(requests.length, 2);
