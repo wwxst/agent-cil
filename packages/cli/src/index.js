@@ -581,6 +581,16 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
   const root = resolve(workspace);
   const tools = new ToolRegistry();
 
+  // Preserve the original workspace-safe Read implementation and its direct
+  // execute() API, but route actual AgentLoop execution through the 2.1.88
+  // Tool.call + result mapper contract. No duplicate read implementation.
+  const executeRead = async ({ file_path, offset, limit }) => {
+    const target = resolveWorkspacePath(root, file_path);
+    await assertPathWithinWorkspace(root, target);
+    return readTextFile(root, target,
+      offset === undefined && limit === undefined ? undefined : { offset, limit });
+  };
+
   tools.register({
     name: 'Read',
     isConcurrencySafe: () => true,
@@ -595,12 +605,13 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
       required: ['file_path'],
       additionalProperties: false,
     },
-    execute: async ({ file_path, offset, limit }) => {
-      const target = resolveWorkspacePath(root, file_path);
-      await assertPathWithinWorkspace(root, target);
-      return readTextFile(root, target,
-        offset === undefined && limit === undefined ? undefined : { offset, limit });
-    },
+    execute: executeRead,
+    call: async (input) => ({ data: await executeRead(input) }),
+    mapToolResultToToolResultBlockParam: (data, toolUseId) => ({
+      type: 'tool_result',
+      tool_use_id: toolUseId,
+      content: data,
+    }),
   });
 
   tools.register({
