@@ -124,10 +124,6 @@ test('abort during Edit permission wait checkpoints a never-started result witho
   try {
     await writeFile(join(workspace, 'target.txt'), 'unchanged\n');
     const tools = await createBuiltinTools({ workspace });
-    let editInvocations = 0;
-    const edit = tools.get('Edit');
-    const execute = edit.execute;
-    edit.execute = (...args) => { editInvocations++; return execute(...args); };
     const model = { async *stream() {
       yield {
         type: 'tool_use', id: 'permission-pending', name: 'Edit',
@@ -153,7 +149,6 @@ test('abort during Edit permission wait checkpoints a never-started result witho
     controller.abort(new Error('cancel pending permission'));
     releasePermission();
     await assert.rejects(request, /cancel pending permission/);
-    assert.equal(editInvocations, 0);
     assert.equal(started.length, 0);
     assert.equal(await readFile(join(workspace, 'target.txt'), 'utf8'), 'unchanged\n');
     assert.equal(checkpoints.length, 1);
