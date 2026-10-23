@@ -70,3 +70,9 @@ At the same tested commit, `npm test` exited with status **0**:
 206 tests total, 199 passed, 7 skipped and 0 failed. The Windows command above
 still requires a Node-based child-process launcher; this record captures the
 successful provider validation with that execution-only adaptation.
+
+## Permanent Windows launcher fix (PR #25 follow-up)
+
+`scripts/verify-live-provider.mjs` now launches explicit `.js`, `.cjs` and `.mjs` CLI entrypoint paths via `process.execPath` (Node.js), rather than asking Windows to spawn the script directly. This fixes the prior `spawn EFTYPE` with the unmodified verification script. Other executable commands retain direct invocation; `shell:true` is deliberately not used, so the free-form prompt never passes through a shell.
+
+The original **live-provider acceptance** above remains attributed to the tested commit `562bfb6` and its temporary Windows-only launch adjustment. The permanent fix has a separate credential-free, cross-platform regression `packages/cli/test/live-provider-launch.test.js`: it starts the actual validation harness pointing at the Node CLI entrypoint, drives a local SSE model through `Read → Edit → Read`, checks tool history, final file contents via the harness, and exits successfully. CI runs that regression on both Ubuntu and a `windows-latest` GitHub runner. These fixture tests do **not** constitute a second credentialed DeepSeek acceptance.
