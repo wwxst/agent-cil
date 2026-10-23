@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { parseArgs } from '../src/index.js';
 
-const cli = fileURLToPath(new URL('../src/index.js', import.meta.url));
+const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ||
+  fileURLToPath(new URL('../src/index.js', import.meta.url));
 const event = chunk => 'data: ' + JSON.stringify(chunk) + '\n\n';
 const chunk = (delta, finish_reason = null) => ({
   object: 'chat.completion.chunk', id: 'test-stream',
