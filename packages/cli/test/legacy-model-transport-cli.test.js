@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const cli = fileURLToPath(new URL('../src/index.js', import.meta.url));
+// CI re-runs these acceptance cases against the freshly installed npm bin.
+const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
+  fileURLToPath(new URL('../src/index.js', import.meta.url));
 const sse = (type, fields = {}) => 'event: ' + type + '\n' +
   'data: ' + JSON.stringify({ type, ...fields }) + '\n\n';
 const toolStream = blocks => [
