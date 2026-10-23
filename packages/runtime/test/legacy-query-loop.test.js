@@ -145,3 +145,26 @@ test('ported query is the same model loop exercised by AgentLoop, not an unused 
     'turnFinished', 'finished',
   ]);
 });
+
+test('ported Query preserves unknown-tool completion events after extracting the model loop', async () => {
+  let round = 0;
+  const model = { async *stream() {
+    if (round++ === 0) {
+      yield { type: 'tool_use', id: 'missing-21', name: 'AbsentTool', input: {} };
+      yield { type: 'message_end', stopReason: 'tool_use' };
+    } else {
+      yield { type: 'text_delta', text: 'handled' };
+      yield { type: 'message_end', stopReason: 'end_turn' };
+    }
+  } };
+  const loop = new AgentLoop({ model, tools: registry() });
+  const finished = [];
+  loop.on('toolCallFinished', e => finished.push(e));
+  const result = await loop.run({ input: 'unknown query tool' });
+  assert.equal(result.stopReason, 'end_turn');
+  assert.equal(result.messages[2].content[0].tool_use_id, 'missing-21');
+  assert.equal(result.messages[2].content[0].is_error, true);
+  assert.equal(finished.length, 1);
+  assert.equal(finished[0].toolName, 'AbsentTool');
+  assert.equal(finished[0].isError, true);
+});

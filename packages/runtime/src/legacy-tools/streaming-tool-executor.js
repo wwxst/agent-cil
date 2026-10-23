@@ -61,7 +61,7 @@ export class StreamingToolExecutor {
     this.#execute = execute;
     this.#getTool = getTool;
     this.#signal = signal;
-    this.#siblingController = linkedController(signal);
+    this.#siblingController = new AbortController();
   }
 
   discard() {
@@ -144,6 +144,17 @@ export class StreamingToolExecutor {
   #executeTool(tool) {
     tool.status = 'executing';
     const controller = linkedController(this.#siblingController.signal);
+    // A user interrupt may be blocked by this tool. Forward other aborts,
+    // including sibling errors, but do not pre-abort interrupt-blocking tools.
+    const onParentAbort = () => {
+      if (this.#signal?.reason !== 'interrupt' || this.#getInterruptBehavior(tool) === 'cancel') {
+        controller.abort(this.#signal?.reason);
+      }
+    };
+    if (this.#signal) {
+      if (this.#signal.aborted) onParentAbort();
+      else this.#signal.addEventListener('abort', onParentAbort, { once: true });
+    }
     const collect = async () => {
       const messages = [];
       const initialReason = this.#abortReason(tool);
@@ -199,6 +210,7 @@ export class StreamingToolExecutor {
       tool.results = [syntheticError(tool.id, 'sibling_error', this.#erroredToolDescription)];
       tool.status = 'completed';
     }).finally(() => {
+      this.#signal?.removeEventListener('abort', onParentAbort);
       this.#processQueue();
       this.#notifyProgress();
     });
@@ -206,31 +218,39 @@ export class StreamingToolExecutor {
 
   *getCompletedResults() {
     if (this.#discarded) return;
+    let waitingOnEarlierResult = false;
     for (const tool of this.#tools) {
+      // Progress may arrive from later safe tools immediately, but their final
+      // results must retain the model's original tool_use order.
       while (tool.pendingProgress.length > 0) {
         yield { progress: tool.pendingProgress.shift() };
       }
       if (tool.status === 'yielded') continue;
-      if (tool.status === 'completed' && tool.results) {
+      if (tool.status === 'completed' && tool.results && !waitingOnEarlierResult) {
         tool.status = 'yielded';
         for (const message of tool.results) yield { message };
-      } else if (tool.status === 'executing' && !tool.isConcurrencySafe) {
-        break;
+      } else {
+        waitingOnEarlierResult = true;
       }
     }
   }
 
-  #hasPendingProgress() { return this.#tools.some(t => t.pendingProgress.length > 0); }
-  #hasCompletedResults() { return this.#tools.some(t => t.status === 'completed'); }
   #hasExecutingTools() { return this.#tools.some(t => t.status === 'executing'); }
   #hasUnfinishedTools() { return this.#tools.some(t => t.status !== 'yielded'); }
 
   async *getRemainingResults() {
     if (this.#discarded) return;
-    while (this.#hasUnfinishedTools()) {
+    while (!this.#discarded && this.#hasUnfinishedTools()) {
       this.#processQueue();
-      for (const update of this.getCompletedResults()) yield update;
-      if (this.#hasExecutingTools() && !this.#hasCompletedResults() && !this.#hasPendingProgress()) {
+      let producedUpdate = false;
+      for (const update of this.getCompletedResults()) {
+        producedUpdate = true;
+        yield update;
+      }
+      if (this.#discarded) return;
+      // A later safe tool can already be completed but blocked on an earlier
+      // result. Await the unfinished worker rather than spinning synchronously.
+      if (this.#hasExecutingTools() && !producedUpdate) {
         const promises = this.#tools
           .filter(t => t.status === 'executing' && t.promise)
           .map(t => t.promise);
@@ -247,6 +267,8 @@ export class StreamingToolExecutor {
         }
       }
     }
-    for (const update of this.getCompletedResults()) yield update;
+    if (!this.#discarded) {
+      for (const update of this.getCompletedResults()) yield update;
+    }
   }
 }
