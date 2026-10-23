@@ -26,13 +26,15 @@ Configuration is environment-based for this first slice. Remote API endpoints mu
 - ANTHROPIC_API_KEY is required.
 - ANTHROPIC_MODEL selects the default model.
 - ANTHROPIC_BASE_URL selects an API-compatible Messages endpoint.
-- --model, --base-url, --max-tokens, --system, and --cwd override defaults.
+- --model, --base-url, --max-tokens, --max-turns, --system, and --cwd override defaults.
 
 Read-only tools (Read, Glob, Grep) are allowed automatically. File writes/edits and shell commands (Write, Edit, Bash) require interactive approval. In non-interactive print mode, actions requiring approval are denied by default. The shared Runtime validates any permission-updated tool input against the registered schema and rechecks authorization whenever the effective input changes; a denial cannot be overridden by a later replacement. File tools reject lexical paths that escape the chosen workspace and resolve existing path components to detect symlink escapes; direct symlink targets are rejected, and search tools do not traverse symlink entries. Read/Write/Edit now operate through verified file handles, use `O_NOFOLLOW` where available, and compare the opened file identity with the workspace path before reading or modifying it. This narrows final-component symlink races but is not a substitute for an OS sandbox against a hostile process concurrently renaming parent directories.
 
 In non-interactive print mode, SIGINT cancels an in-flight model request and the CLI exits with status 130. The cancellation contract is covered by a local streaming HTTP integration test; this does not establish parity with the official CLI's full signal-handling behavior.
 
 Bash captures combined stdout/stderr up to 1 MiB. On POSIX systems, cancellation, timeout, or output-limit overflow terminates the command's process group and escalates from `SIGTERM` to `SIGKILL` if needed. On Windows, cancellation currently signals the direct child process only; descendant cleanup is platform-dependent.
+
+The default agent limit is 8 model rounds per prompt; use `--max-turns <n>` (1–100) to change it. If the model stops at `max_tokens` or the agent runs out of model rounds while tools are still pending, the CLI reports an incomplete response and exits with status 1 in non-interactive mode. Partial text may already have been printed to stdout; scripts must check the exit status before treating it as a finished task. Interactive mode keeps the conversation history so you can increase the limits on restart or ask the model to continue in the same session.
 
 ## Current limitations
 
