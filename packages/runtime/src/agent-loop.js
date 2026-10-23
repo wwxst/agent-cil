@@ -132,6 +132,10 @@ export class AgentLoop extends EventEmitter {
    * the normal execution path validates and re-authorizes again.
    */
   async #canStartToolDuringStream(toolUse, { history, signal }) {
+    // Only policies explicitly declaring independence from the evolving
+    // assistant message may run before it is complete. Custom policies that
+    // inspect message history retain the original post-message_end behavior.
+    if (this.#permissionPolicy.supportsStreamingPreflight !== true) return false;
     const tool = this.#tools.get(toolUse.name);
     if (!tool || !EARLY_READ_TOOLS.has(toolUse.name) ||
       tool.canRunDuringStream !== true ||
