@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
 import { StreamingToolExecutor } from './legacy-tools/streaming-tool-executor.js';
+import { runToolUse } from './legacy-tools/tool-execution.js';
 
 const STOP_REASONS = new Set(['end_turn', 'tool_use', 'max_tokens']);
 const MAX_PERMISSION_INPUT_REWRITES = 8;
@@ -218,7 +219,21 @@ export class AgentLoop extends EventEmitter {
           getTool: name => this.#tools.get(name),
           signal,
           execute: (block, { signal: toolSignal }) =>
-            this.#executeTool(block, { history, turn, signal: toolSignal }),
+            runToolUse(
+              block,
+              assistantMessage,
+              (toolUse, { signal: verifiedSignal }) =>
+                this.#executeTool(toolUse, { history, turn, signal: verifiedSignal }),
+              {
+                getTool: name => this.#tools.get(name),
+                signal: toolSignal,
+                onUnknownTool: unknown => {
+                  this.emit('toolCallFinished', {
+                    turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
+                  });
+                },
+              },
+            ),
         });
         for (const toolUse of toolUses) {
           abortIfNeeded(signal);
