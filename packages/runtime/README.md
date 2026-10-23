@@ -110,3 +110,10 @@ const loop = new AgentLoop({
 The host supplies the credential through `apiKey` or `apiKeyProvider`; the adapter does not read environment variables, write credentials to disk, or log them. It maps text deltas, client-side tool JSON deltas, usage, and supported stop reasons into the AgentLoop event contract. Server-side tools and unsupported stop reasons are rejected rather than silently ignored.
 
 The adapter uses the Messages API stream event contract documented in the [Anthropic streaming guide](https://docs.anthropic.com/en/api/messages-streaming). This implementation is a small compatibility slice, not a complete replacement for Anthropic's SDK: retries, timeout policy, extended-thinking round trips, citations, images/documents, server-side tools, prompt caching options, and every provider-specific error type remain out of scope.
+
+
+## Legacy 2.1.88 streaming executor port (PR #15)
+
+`src/legacy-tools/streaming-tool-executor.js` is a Node.js-adapted port of the old `services/tools/StreamingToolExecutor.ts` scheduling core. The active `AgentLoop` now uses its `queued → executing → completed → yielded` queue for tool-use turns **after** the complete Messages SSE turn has been validated. Explicitly registered concurrency-safe tools may run together; Write/Edit/Bash remain exclusive barriers. Worker results feed the existing model `tool_result` history. Progress/discard/sibling-error paths are covered by scheduler-specific tests.
+
+The port intentionally uses an adapter that calls the existing PR #9 `AgentLoop.#executeTool` permission execution path, preserving `updatedInput` revalidation and approval. This **does not** mean old `toolExecution.ts` / `runToolUse` (Bun/Hook/MCP/telemetry) has already been ported. The original scheduling and result lifecycle is reused; missing platform dependencies are bridged rather than recreated. Further replacement of the execution adapter requires independent old/new behavior and real-model checks. On this CLI path tools start only after the model message closes, not speculatively during SSE streaming.
