@@ -19,6 +19,25 @@ jobs:
       - run: npm test
       - name: Syntax-check source and tests
         run: find packages -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Validate packed installation and real CLI entry point
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(npm pack --ignore-scripts --silent)"
+          install_dir="$(mktemp -d)"
+          trap 'rm -rf "$install_dir" "$archive"' EXIT
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$install_dir" "./$archive"
+          cli="$install_dir/node_modules/.bin/agent-cil"
+          echo "Packed CLI executable metadata:"
+          ls -l "$cli"
+          test -x "$cli"
+          echo "Packed CLI version:"
+          "$cli" --version
+          test "$("$cli" --version)" = "agent-cil 0.1.0"
+          echo "Packed CLI help:"
+          "$cli" --help | head -n 30
+          "$cli" --help | grep -q -- '--allow-edits'
+          node scripts/verify-installed-cli.mjs "$cli"
 
   legacy-cli-2-1-88-smoke:
     runs-on: ubuntu-latest

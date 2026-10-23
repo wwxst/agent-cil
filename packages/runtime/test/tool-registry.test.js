@@ -67,6 +67,28 @@ test('custom validator failures are surfaced as validation errors', async () => 
   assert.deepEqual(await registry.validateInput('custom', {}), ['Custom input validator failed: validator unavailable']);
 });
 
+test('custom validators cannot bypass the registered JSON schema', async () => {
+  const registry = new ToolRegistry();
+  let customCalls = 0;
+  registry.register({
+    name: 'guarded',
+    description: 'Schema and custom validation.',
+    inputSchema: {
+      type: 'object',
+      properties: { target: { type: 'string', minLength: 1 } },
+      required: ['target'],
+      additionalProperties: false,
+    },
+    validateInput: async () => { customCalls += 1; return true; },
+    execute: async () => 'should not run',
+  });
+
+  assert.match((await registry.validateInput('guarded', {})).join(' '), /required property is missing/);
+  assert.equal(customCalls, 0);
+  assert.deepEqual(await registry.validateInput('guarded', { target: 'ok' }), []);
+  assert.equal(customCalls, 1);
+});
+
 test('default permission policy always denies unless an application supplies another policy', () => {
   assert.deepEqual(defaultDenyPermission({ name: 'delete_file' }), {
     behavior: 'deny',

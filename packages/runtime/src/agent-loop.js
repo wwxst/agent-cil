@@ -1,8 +1,12 @@
 import { EventEmitter } from 'node:events';
+import { isDeepStrictEqual } from 'node:util';
 import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
+import { StreamingToolExecutor } from './legacy-tools/streaming-tool-executor.js';
+import { runToolUse } from './legacy-tools/tool-execution.js';
 
 const STOP_REASONS = new Set(['end_turn', 'tool_use', 'max_tokens']);
+const MAX_PERMISSION_INPUT_REWRITES = 8;
 
 export class ModelProtocolError extends Error {
   constructor(message) {
@@ -47,12 +51,27 @@ function toolError(toolUse, message) {
   };
 }
 
+function normalizePermissionInput(value) {
+  if (!isRecord(value)) return { error: 'input must be a JSON object.' };
+  try {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== 'string') return { error: 'input is not JSON-serializable.' };
+    const normalized = JSON.parse(serialized);
+    if (!isRecord(normalized)) return { error: 'input must be a JSON object.' };
+    return { value: normalized };
+  } catch (error) {
+    return { error: 'input is not JSON-serializable: ' + errorText(error) };
+  }
+}
+
 /**
  * Independent, adapter-driven Agent Loop.
  *
  * Model contract: model.stream({ messages, tools, signal, turn }) returns an
  * async iterable of text_delta, tool_use, and message_end events.
  * Tool permissions default to deny unless an explicit policy allows execution.
+ * Permission policies receive phase='initial' or phase='recheck'; every changed
+ * input is schema-validated and re-authorized before the tool can execute.
  */
 export class AgentLoop extends EventEmitter {
   #model;
@@ -192,11 +211,60 @@ export class AgentLoop extends EventEmitter {
           return result;
         }
 
-        const toolResults = [];
+        // 2.1.88 StreamingToolExecutor: queue safe tools concurrently, keep
+        // Write/Edit/Bash exclusive, and preserve the existing PR #9 permission
+        // chain through #executeTool as the runToolUse adapter. No tool begins
+        // before message_end and protocol validation have completed.
+        const executor = new StreamingToolExecutor({
+          getTool: name => this.#tools.get(name),
+          signal,
+          execute: (block, { signal: toolSignal }) =>
+            runToolUse(
+              block,
+              assistantMessage,
+              (toolUse, { signal: verifiedSignal, tool: validatedTool, toolUseContext }) =>
+                this.#executeTool(toolUse, {
+                  history, turn, signal: verifiedSignal, validatedTool, validatorContext: toolUseContext,
+                }),
+              {
+                getTool: name => this.#tools.get(name),
+                signal: toolSignal,
+                onUnknownTool: unknown => {
+                  this.emit('toolCallFinished', {
+                    turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
+                  });
+                },
+                onInputValidationFailed: () => {
+                  this.emit('toolCallFinished', {
+                    turn, toolUseId: block.id, toolName: block.name,
+                    isError: true, inputValidationFailed: true,
+                  });
+                },
+              },
+            ),
+        });
         for (const toolUse of toolUses) {
           abortIfNeeded(signal);
-          const result = await this.#executeTool(toolUse, { history, turn, signal });
-          toolResults.push(result);
+          executor.addTool(toolUse);
+        }
+        const toolResults = [];
+        for await (const update of executor.getRemainingResults()) {
+          abortIfNeeded(signal);
+          if (update.progress !== undefined) this.emit('toolProgress', { turn, progress: update.progress });
+          if (update.message) {
+            const blocks = update.message.content;
+            if (!Array.isArray(blocks)) throw new ModelProtocolError('Legacy scheduler emitted an invalid tool result.');
+            for (const block of blocks) {
+              if (block?.type !== 'tool_result') {
+                throw new ModelProtocolError('Legacy scheduler emitted an unexpected message.');
+              }
+              toolResults.push(block);
+            }
+          }
+        }
+        abortIfNeeded(signal);
+        if (toolResults.length !== toolUses.length) {
+          throw new ModelProtocolError('Legacy scheduler returned a mismatched number of tool results.');
         }
         history.push({ role: 'user', content: toolResults });
         this.emit('turnFinished', { turn, stopReason, toolResultCount: toolResults.length });
@@ -214,88 +282,195 @@ export class AgentLoop extends EventEmitter {
     }
   }
 
-  async #executeTool(toolUse, { history, turn, signal }) {
+  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext }) {
     const tool = this.#tools.get(toolUse.name);
     if (!tool) {
       const result = toolError(toolUse, 'Unknown tool: ' + toolUse.name);
       this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: toolUse.name, isError: true });
       return result;
     }
-
-    const validationErrors = await this.#tools.validateInput(toolUse.name, toolUse.input);
-    abortIfNeeded(signal);
-    if (validationErrors.length > 0) {
-      const result = toolError(toolUse, 'Invalid tool input: ' + validationErrors.join(' '));
+    // The schema and custom validator just ran against validatedTool in the
+    // legacy execution prefix. Never substitute a different registry entry.
+    if (!validatedTool || tool !== validatedTool) {
+      const result = toolError(toolUse, 'Tool definition changed after input validation; refusing to execute.');
       this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: toolUse.name, isError: true });
       return result;
     }
 
-    let decision;
-    try {
-      decision = await this.#permissionPolicy({
-        name: tool.name,
-        tool: {
+    // Initial schema/value validation is now performed by the ported
+    // 2.1.88 checkPermissionsAndCallTool() before permission is consulted.
+    // The permission updatedInput path below must continue to revalidate.
+
+    const requestPermissionDecision = async (input, phase) => {
+      try {
+        const decision = await this.#permissionPolicy({
           name: tool.name,
-          description: tool.description,
-          inputSchema: structuredClone(tool.inputSchema),
-        },
-        input: structuredClone(toolUse.input),
-        toolUseId: toolUse.id,
-        messages: structuredClone(history),
-        signal,
-      });
-      abortIfNeeded(signal);
-    } catch (error) {
-      if (signal?.aborted) abortIfNeeded(signal);
-      this.emit('permissionError', { turn, toolUseId: toolUse.id, toolName: tool.name, error });
-      const result = toolError(toolUse, 'Permission policy failed: ' + errorText(error));
-      this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true });
-      return result;
-    }
-
-    let behavior = decision?.behavior;
-    let reason = typeof decision?.reason === 'string' ? decision.reason : '';
-    if (!['allow', 'deny', 'ask'].includes(behavior)) {
-      behavior = 'deny';
-      reason = 'Permission policy returned an invalid decision.';
-    }
-
-    if (behavior === 'ask') {
-      this.emit('permissionRequired', { turn, toolUseId: toolUse.id, toolName: tool.name, input: structuredClone(toolUse.input), reason });
-      if (!this.#approvalHandler) {
-        behavior = 'deny';
-        reason = reason || 'No approval handler is configured.';
-      } else {
-        try {
-          const approval = await this.#approvalHandler({
+          tool: {
             name: tool.name,
-            input: structuredClone(toolUse.input),
+            description: tool.description,
+            inputSchema: structuredClone(tool.inputSchema),
+          },
+          input: structuredClone(input),
+          toolUseId: toolUse.id,
+          messages: structuredClone(history),
+          signal,
+          phase,
+        });
+        abortIfNeeded(signal);
+        return { decision };
+      } catch (error) {
+        if (signal?.aborted) abortIfNeeded(signal);
+        this.emit('permissionError', { turn, toolUseId: toolUse.id, toolName: tool.name, error });
+        const result = toolError(toolUse, 'Permission policy failed: ' + errorText(error));
+        this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true });
+        return { result };
+      }
+    };
+
+    const inputUpdateError = (source, message) => {
+      const result = toolError(toolUse, 'Invalid tool input returned by ' + source + ': ' + message);
+      this.emit('toolCallFinished', {
+        turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, inputValidationFailed: true,
+      });
+      return { result };
+    };
+
+    let executionInput = structuredClone(toolUse.input);
+    let inputRewriteCount = 0;
+    const applyUpdatedInput = async (value, source) => {
+      const normalized = normalizePermissionInput(value);
+      if (normalized.error) return inputUpdateError(source, normalized.error);
+      if (isDeepStrictEqual(normalized.value, executionInput)) return { changed: false };
+
+      const errors = await this.#tools.validateInput(
+        toolUse.name, normalized.value, validatorContext, validatedTool,
+      );
+      abortIfNeeded(signal);
+      if (errors.length > 0) return inputUpdateError(source, errors.join(' '));
+
+      if (inputRewriteCount >= MAX_PERMISSION_INPUT_REWRITES) {
+        const result = toolError(
+          toolUse,
+          'Permission checks repeatedly changed the tool input; refusing to execute.',
+        );
+        this.emit('toolCallFinished', {
+          turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, denied: true,
+        });
+        return { result };
+      }
+
+      inputRewriteCount += 1;
+      executionInput = normalized.value;
+      return { changed: true };
+    };
+
+    let permissionResult = await requestPermissionDecision(executionInput, 'initial');
+    if (permissionResult.result) return permissionResult.result;
+    let decision = permissionResult.decision;
+
+    while (true) {
+      abortIfNeeded(signal);
+      let behavior = decision?.behavior;
+      let reason = typeof decision?.reason === 'string' ? decision.reason : '';
+      if (!['allow', 'deny', 'ask'].includes(behavior)) {
+        behavior = 'deny';
+        reason = 'Permission policy returned an invalid decision.';
+      }
+
+      // A deny decision is terminal. An updatedInput attached to a deny result
+      // must never turn that denial into an allow.
+      if (behavior === 'deny') {
+        const result = toolError(toolUse, 'Tool call denied: ' + (reason || 'Permission was not granted.'));
+        this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, denied: true });
+        return result;
+      }
+
+      if (decision.updatedInput !== undefined) {
+        const applied = await applyUpdatedInput(decision.updatedInput, 'permission policy');
+        if (applied.result) return applied.result;
+        if (applied.changed) {
+          // Re-evaluate permissions against the exact input that would execute.
+          // The policy may allow the original request but deny its replacement.
+          permissionResult = await requestPermissionDecision(executionInput, 'recheck');
+          if (permissionResult.result) return permissionResult.result;
+          decision = permissionResult.decision;
+          continue;
+        }
+      }
+
+      if (behavior === 'ask') {
+        this.emit('permissionRequired', {
+          turn,
+          toolUseId: toolUse.id,
+          toolName: tool.name,
+          input: structuredClone(executionInput),
+          reason,
+        });
+        if (!this.#approvalHandler) {
+          const result = toolError(
+            toolUse,
+            'Tool call denied: ' + (reason || 'No approval handler is configured.'),
+          );
+          this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, denied: true });
+          return result;
+        }
+
+        let approval;
+        try {
+          approval = await this.#approvalHandler({
+            name: tool.name,
+            input: structuredClone(executionInput),
             toolUseId: toolUse.id,
             reason,
             signal,
           });
           abortIfNeeded(signal);
-          const approved = approval === true || approval?.approved === true;
-          behavior = approved ? 'allow' : 'deny';
-          if (!approved) reason = typeof approval?.reason === 'string' ? approval.reason : (reason || 'Approval was not granted.');
         } catch (error) {
           if (signal?.aborted) abortIfNeeded(signal);
-          behavior = 'deny';
-          reason = 'Approval handler failed: ' + errorText(error);
+          const result = toolError(toolUse, 'Tool call denied: Approval handler failed: ' + errorText(error));
+          this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, denied: true });
+          return result;
         }
-      }
-    }
 
-    if (behavior !== 'allow') {
-      const result = toolError(toolUse, 'Tool call denied: ' + (reason || 'Permission was not granted.'));
-      this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, denied: true });
-      return result;
+        const approved = approval === true || approval?.approved === true;
+        if (!approved) {
+          const denialReason = typeof approval?.reason === 'string'
+            ? approval.reason
+            : (reason || 'Approval was not granted.');
+          const result = toolError(toolUse, 'Tool call denied: ' + denialReason);
+          this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, denied: true });
+          return result;
+        }
+
+        if (approval?.updatedInput !== undefined) {
+          const applied = await applyUpdatedInput(approval.updatedInput, 'approval handler');
+          if (applied.result) return applied.result;
+          if (applied.changed) {
+            // An approval for one input does not authorize a different input.
+            // Re-check policy and, if needed, request approval for the replacement.
+            permissionResult = await requestPermissionDecision(executionInput, 'recheck');
+            if (permissionResult.result) return permissionResult.result;
+            decision = permissionResult.decision;
+            continue;
+          }
+        }
+
+        // The approval handler approved the exact input that will execute.
+        behavior = 'allow';
+      }
+
+      if (behavior !== 'allow') {
+        const result = toolError(toolUse, 'Tool call denied: ' + (reason || 'Permission was not granted.'));
+        this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, denied: true });
+        return result;
+      }
+      break;
     }
 
     abortIfNeeded(signal);
     this.emit('toolCallStarted', { turn, toolUseId: toolUse.id, toolName: tool.name });
     try {
-      const output = await tool.execute(structuredClone(toolUse.input), {
+      const output = await tool.execute(structuredClone(executionInput), {
         toolUseId: toolUse.id,
         signal,
         messages: structuredClone(history),
