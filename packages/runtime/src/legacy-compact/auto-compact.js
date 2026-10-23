@@ -142,9 +142,13 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
   return {
     async compact({ messages, model, signal } = {}) {
       aborted(signal);
+      // Disabled compaction must be a strict no-op, including for providers
+      // with non-text content blocks that this first port cannot estimate.
+      if (thresholdTokens === 0 || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        return { messages, compacted: false };
+      }
       const estimatedTokens = estimateMessageTokens(messages);
-      if (thresholdTokens === 0 || estimatedTokens < thresholdTokens ||
-        consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      if (estimatedTokens < thresholdTokens) {
         return { messages, compacted: false, estimatedTokens };
       }
       const selection = selectCompletedPrefix(messages, keepRecentRounds);
