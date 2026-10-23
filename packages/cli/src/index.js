@@ -369,10 +369,61 @@ async function readTextHandle(handle, filePath) {
   return content;
 }
 
-async function readTextFile(workspace, filePath) {
+/**
+ * Read a bounded range of 0-based lines through the already-verified file
+ * descriptor. Unlike the default whole-file read, this also permits selecting
+ * a small section of a source file larger than the 1 MiB output cap.
+ *
+ * The Read offset/limit schema follows the released CLI 2.1.304 shape.
+ * Bytes are scanned incrementally and never buffered beyond the output cap.
+ */
+async function readTextLinesHandle(handle, filePath, { offset = 0, limit = Infinity } = {}) {
+  const info = await handle.stat();
+  if (!info.isFile()) throw new Error('Not a regular file: ' + filePath);
+  const pieces = [];
+  let outputBytes = 0;
+  let byteOffset = 0;
+  let lineIndex = 0;
+
+  while (true) {
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, byteOffset);
+    if (bytesRead === 0) break;
+    byteOffset += bytesRead;
+    let start = 0;
+    while (start < bytesRead) {
+      const newline = buffer.indexOf(10, start);
+      const end = newline < 0 || newline >= bytesRead ? bytesRead : newline + 1;
+      if (lineIndex >= offset && lineIndex - offset < limit) {
+        const part = buffer.subarray(start, end);
+        if (part.includes(0)) {
+          throw new Error('Refusing to read a binary file as text: ' + filePath);
+        }
+        outputBytes += part.length;
+        if (outputBytes > MAX_TEXT_FILE_BYTES) {
+          throw new Error('Selected lines exceed the 1 MiB read limit: ' + filePath);
+        }
+        pieces.push(part);
+      }
+      if (end <= start) throw new Error('Could not advance line reader.');
+      start = end;
+      if (newline >= 0 && newline < bytesRead) {
+        lineIndex += 1;
+        if (lineIndex >= offset + limit) {
+          return Buffer.concat(pieces, outputBytes).toString('utf8');
+        }
+      }
+    }
+  }
+  return Buffer.concat(pieces, outputBytes).toString('utf8');
+}
+
+async function readTextFile(workspace, filePath, options) {
   const handle = await openWorkspaceFile(workspace, filePath, constants.O_RDONLY);
   try {
-    return await readTextHandle(handle, filePath);
+    return options === undefined
+      ? readTextHandle(handle, filePath)
+      : readTextLinesHandle(handle, filePath, options);
   } finally {
     await handle.close();
   }
@@ -501,17 +552,22 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
 
   tools.register({
     name: 'Read',
-    description: 'Read a UTF-8 text file within the workspace.',
+    description: 'Read a UTF-8 text file within the workspace. Use zero-based offset and limit to read sections of large files.',
     inputSchema: {
       type: 'object',
-      properties: { file_path: { type: 'string', minLength: 1 } },
+      properties: {
+        file_path: { type: 'string', minLength: 1 },
+        offset: { type: 'integer', minimum: 0 },
+        limit: { type: 'integer', minimum: 1 },
+      },
       required: ['file_path'],
       additionalProperties: false,
     },
-    execute: async ({ file_path }) => {
+    execute: async ({ file_path, offset, limit }) => {
       const target = resolveWorkspacePath(root, file_path);
       await assertPathWithinWorkspace(root, target);
-      return readTextFile(root, target);
+      return readTextFile(root, target,
+        offset === undefined && limit === undefined ? undefined : { offset, limit });
     },
   });
 
