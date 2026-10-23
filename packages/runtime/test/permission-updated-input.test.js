@@ -103,6 +103,7 @@ test('rechecks policy updates and asks again when approval changes the final inp
     { value: 'model input', phase: 'initial' },
     { value: 'prepared for approval', phase: 'recheck' },
     { value: 'user-approved replacement', phase: 'recheck' },
+    { value: 'user-approved replacement', phase: 'post-approval' },
   ]);
   assert.deepEqual(executedInput, { value: 'user-approved replacement' });
   assert.equal(result.messages.at(-1).content[0].content, 'user-approved replacement');
