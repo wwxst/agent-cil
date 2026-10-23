@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { isDeepStrictEqual } from 'node:util';
 import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
+import { StreamingToolExecutor } from './legacy-tools/streaming-tool-executor.js';
 
 const STOP_REASONS = new Set(['end_turn', 'tool_use', 'max_tokens']);
 const MAX_PERMISSION_INPUT_REWRITES = 8;
@@ -209,11 +210,38 @@ export class AgentLoop extends EventEmitter {
           return result;
         }
 
-        const toolResults = [];
+        // 2.1.88 StreamingToolExecutor: queue safe tools concurrently, keep
+        // Write/Edit/Bash exclusive, and preserve the existing PR #9 permission
+        // chain through #executeTool as the runToolUse adapter. No tool begins
+        // before message_end and protocol validation have completed.
+        const executor = new StreamingToolExecutor({
+          getTool: name => this.#tools.get(name),
+          signal,
+          execute: (block, { signal: toolSignal }) =>
+            this.#executeTool(block, { history, turn, signal: toolSignal }),
+        });
         for (const toolUse of toolUses) {
           abortIfNeeded(signal);
-          const result = await this.#executeTool(toolUse, { history, turn, signal });
-          toolResults.push(result);
+          executor.addTool(toolUse);
+        }
+        const toolResults = [];
+        for await (const update of executor.getRemainingResults()) {
+          abortIfNeeded(signal);
+          if (update.progress !== undefined) this.emit('toolProgress', { turn, progress: update.progress });
+          if (update.message) {
+            const blocks = update.message.content;
+            if (!Array.isArray(blocks)) throw new ModelProtocolError('Legacy scheduler emitted an invalid tool result.');
+            for (const block of blocks) {
+              if (block?.type !== 'tool_result') {
+                throw new ModelProtocolError('Legacy scheduler emitted an unexpected message.');
+              }
+              toolResults.push(block);
+            }
+          }
+        }
+        abortIfNeeded(signal);
+        if (toolResults.length !== toolUses.length) {
+          throw new ModelProtocolError('Legacy scheduler returned a mismatched number of tool results.');
         }
         history.push({ role: 'user', content: toolResults });
         this.emit('turnFinished', { turn, stopReason, toolResultCount: toolResults.length });
