@@ -375,10 +375,10 @@ test('compaction clears only stale usage anchor, preserving signed recent conten
   assert.equal(answer.compacted, true);
   assert.equal(summaryCalls, 1);
   assert.equal(answer.contextTokens, tokenCountWithEstimation(input));
-  assert.equal(answer.messages[2].usage, undefined,
+  assert.equal(answer.messages[1].usage, undefined,
     'retained pre-compact usage must not be reused');
-  assert.equal(answer.messages[2].content[0].signature, 'sig-2');
-  assert.equal(answer.messages[4].content[0].signature, 'sig-3');
+  assert.equal(answer.messages[1].content[0].signature, 'sig-2');
+  assert.equal(answer.messages[3].content[0].signature, 'sig-3');
   assert.equal(input[3].usage.input_tokens, 125000, 'source transcript is unchanged');
   assert.equal(tokenCountWithEstimation(answer.messages),
     estimateMessageTokens(answer.messages));
