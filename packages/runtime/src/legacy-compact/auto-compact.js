@@ -9,6 +9,8 @@
  * Only complete API rounds may be removed. Never strip, change or fabricate
  * protected thinking blocks/signatures in any surviving assistant turn.
  */
+import { ModelContextLengthError } from '../anthropic-messages-adapter.js';
+
 const MIN_SUMMARY_CHARS = 12;
 const MAX_SUMMARY_CHARS = 16000;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -140,7 +142,7 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
   }
   let consecutiveFailures = 0;
   return {
-    async compact({ messages, model, signal } = {}) {
+    async compact({ messages, model, signal, force = false } = {}) {
       aborted(signal);
       // Disabled compaction must be a strict no-op, including for providers
       // with non-text content blocks that this first port cannot estimate.
@@ -148,40 +150,77 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
         return { messages, compacted: false };
       }
       const estimatedTokens = estimateMessageTokens(messages);
-      if (estimatedTokens < thresholdTokens) {
+      // 2.1.88 reactive recovery bypasses proactive threshold after the
+      // server itself reports that the request cannot fit. Disabling compact
+      // explicitly (threshold 0) remains authoritative.
+      if (!force && estimatedTokens < thresholdTokens) {
         return { messages, compacted: false, estimatedTokens };
       }
       const selection = selectCompletedPrefix(messages, keepRecentRounds);
       if (!selection) return { messages, compacted: false, estimatedTokens };
       const { prefix, recent } = selection;
-      let text = '', completed = false, stopReason;
       try {
-        const stream = model.stream({
-          messages: [
-            ...structuredClone(prefix),
-            { role: 'user', content: SUMMARY_PROMPT },
-          ],
-          tools: [], signal, purpose: 'compact',
-        });
-        if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') {
-          throw new Error('Summary model did not return an event stream.');
-        }
-        for await (const event of stream) {
-          aborted(signal);
-          if (!isRecord(event) || typeof event.type !== 'string' || completed) {
-            throw new Error('Malformed summary stream event.');
-          }
-          if (event.type === 'text_delta') {
-            if (typeof event.text !== 'string') throw new Error('Invalid summary text.');
-            text += event.text;
-            if (text.length > MAX_SUMMARY_CHARS) throw new Error('Summary exceeded output bound.');
-          } else if (event.type === 'message_end') {
-            stopReason = event.stopReason ?? event.stop_reason;
-            completed = true;
-          } else if (event.type !== 'thinking' && event.type !== 'redacted_thinking' &&
-            event.type !== 'usage') {
-            // No model-generated tools or unknown protocol events during compact.
-            throw new Error('Unexpected tool or protocol event during summary.');
+        // Port 2.1.88 compact.ts truncateHeadForPTLRetry: when the summary
+        // request is also too long, discard oldest WHOLE API-round groups,
+        // retain the newest one for summarizing and add a user-role marker
+        // if truncation made the first request message an assistant.
+        let summarize = structuredClone(prefix);
+        let text = '', completed = false, stopReason;
+        for (let summaryAttempt = 0; summaryAttempt < 3; summaryAttempt++) {
+          text = '';
+          completed = false;
+          stopReason = undefined;
+          let sawSummaryEvent = false;
+          try {
+            const stream = model.stream({
+              messages: [
+                ...summarize,
+                { role: 'user', content: SUMMARY_PROMPT },
+              ],
+              tools: [], signal, purpose: 'compact',
+            });
+            if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') {
+              throw new Error('Summary model did not return an event stream.');
+            }
+            for await (const event of stream) {
+              sawSummaryEvent = true;
+              aborted(signal);
+              if (!isRecord(event) || typeof event.type !== 'string' || completed) {
+                throw new Error('Malformed summary stream event.');
+              }
+              if (event.type === 'text_delta') {
+                if (typeof event.text !== 'string') throw new Error('Invalid summary text.');
+                text += event.text;
+                if (text.length > MAX_SUMMARY_CHARS) throw new Error('Summary exceeded output bound.');
+              } else if (event.type === 'message_end') {
+                stopReason = event.stopReason ?? event.stop_reason;
+                completed = true;
+              } else if (event.type !== 'thinking' && event.type !== 'redacted_thinking' &&
+                event.type !== 'usage') {
+                throw new Error('Unexpected tool or protocol event during summary.');
+              }
+            }
+            break;
+          } catch (error) {
+            aborted(signal);
+            if (!(error instanceof ModelContextLengthError) ||
+              sawSummaryEvent || summaryAttempt === 2) throw error;
+            // Remove our own synthetic marker before regrouping. Otherwise
+            // the next overflow would drop only that marker and make no
+            // forward progress (the same bug guarded by 2.1.88 compact.ts).
+            const source = summarize[0]?.role === 'user' &&
+              summarize[0]?.content ===
+                'Older conversation rounds omitted because the summary request exceeded context.'
+              ? summarize.slice(1) : summarize;
+            const groups = groupMessagesByApiRound(source);
+            if (groups.length < 2) throw error;
+            const removed = Math.max(1, Math.floor(groups.length * 0.2));
+            summarize = groups.slice(removed).flat();
+            if (!validToolPairing(summarize)) throw error;
+            if (summarize[0]?.role === 'assistant') {
+              summarize.unshift({ role: 'user', content:
+                'Older conversation rounds omitted because the summary request exceeded context.' });
+            }
           }
         }
         aborted(signal);

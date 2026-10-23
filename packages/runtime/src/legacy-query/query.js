@@ -14,6 +14,7 @@
  */
 import { StreamingToolExecutor } from '../legacy-tools/streaming-tool-executor.js';
 import { runToolUse } from '../legacy-tools/tool-execution.js';
+import { ModelContextLengthError } from '../anthropic-messages-adapter.js';
 
 const STOP_REASONS = new Set(['end_turn', 'tool_use', 'max_tokens']);
 
@@ -85,6 +86,9 @@ export async function query({
       // Old query.ts State: mutable across model/tool iterations. Only the
       // Node CLI subset is active; compaction/Hook/session fields are gated.
       let state = { messages: initialHistory, turnCount: 1, transition: undefined };
+      // A single error cannot recursively start an unbounded model/compact
+      // retry chain. A new successful tool turn may have one fresh chance.
+      let recoveredTurn = 0;
       while (true) {
         let { messages: history, turnCount: turn } = state;
         abortIfNeeded(signal);
@@ -122,6 +126,7 @@ export async function query({
         const toolUses = [];
         let stopReason;
         let messageEnded = false;
+        let sawStreamEvent = false;
         // Original 2.1.88 query.ts starts its StreamingToolExecutor before
         // the model response is finished. Keep this existing port and its
         // ordered queue; do not create another dispatch system.
@@ -173,6 +178,7 @@ export async function query({
           }
 
           for await (const event of stream) {
+            sawStreamEvent = true;
             abortIfNeeded(signal);
             if (!isRecord(event) || typeof event.type !== 'string') {
               throw new ModelProtocolError('Model emitted a malformed stream event.');
@@ -256,8 +262,46 @@ export async function query({
           // Discard speculative results and abort in-flight read/search tasks.
           // No Write/Edit/Bash has been admitted before message_end.
           executor.discard();
+          // Preserve the old Query observable cancellation contract: emit
+          // modelError exactly once before propagating AbortError.
+          if (signal?.aborted) {
+            emit('modelError', { turn, error });
+            abortIfNeeded(signal);
+          }
+          // Adapted from 2.1.88 query.ts reactive prompt-too-long branch:
+          // only a typed *pre-stream* context rejection may be recovered.
+          // A partial SSE response (even usage-only), tools or malformed
+          // stream must NEVER be replayed, regardless of the error message.
+          if (error instanceof ModelContextLengthError &&
+            !sawStreamEvent && compactContext && recoveredTurn !== turn) {
+            recoveredTurn = turn;
+            try {
+              const compacted = await compactContext({
+                messages: history, model, signal, force: true,
+              });
+              abortIfNeeded(signal);
+              if (compacted?.compacted && Array.isArray(compacted.messages)) {
+                const recovered = structuredClone(compacted.messages);
+                state.messages = recovered;
+                emit('contextCompacted', {
+                  turn, reason: 'prompt_too_long',
+                  beforeCount: history.length, afterCount: recovered.length,
+                  estimatedTokens: compacted.estimatedTokens,
+                  compactedTokens: compacted.compactedTokens,
+                  committedMessages: structuredClone(recovered),
+                });
+                emit('contextRetry', { turn, reason: 'prompt_too_long' });
+                // This is the same model turn, not a second execution of
+                // any completed tool. The only operation performed was the
+                // no-tools summary request.
+                continue;
+              }
+            } catch (compactError) {
+              emit('contextCompactError', { turn, error: compactError });
+              if (signal?.aborted) abortIfNeeded(signal);
+            }
+          }
           emit('modelError', { turn, error });
-          if (signal?.aborted) abortIfNeeded(signal);
           throw error;
         }
 

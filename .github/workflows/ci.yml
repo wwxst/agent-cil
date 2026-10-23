@@ -64,6 +64,9 @@ jobs:
           # Summarize completed DeepSeek tool rounds on installed CLI while
           # keeping recent signed thinking, tool_use and tool_result intact.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-auto-compact-cli.test.js
+          # A typed prompt-too-long HTTP 400 after successful Edit must
+          # trigger one tool-free summary then continue without redoing Edit.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-reactive-recovery-cli.test.js
           # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 
