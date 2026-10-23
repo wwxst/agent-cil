@@ -146,7 +146,7 @@ export async function query({
         const executor = new StreamingToolExecutor({
           getTool: name => tools.get(name),
           signal,
-          execute: (block, { signal: toolSignal }) =>
+          execute: (block, { signal: toolSignal, onToolExecutionStarted }) =>
             runToolUse(
               block,
               assistantMessage,
@@ -154,7 +154,7 @@ export async function query({
                 executeTool(toolUse, {
                   history, turn, signal: verifiedSignal,
                   validatedTool, validatorContext: toolUseContext,
-                  assistantMessage, onToolProgress,
+                  assistantMessage, onToolProgress, onToolExecutionStarted,
                   speculative: earlyIds.has(block.id),
                 }),
               {
