@@ -296,6 +296,45 @@ test('force=true retains explicit error propagation for unrecoverable provider o
 });
 
 
+test('2.1.88 prompt-too-long summary retry trims the reported token gap in whole API rounds', async () => {
+  const { ModelContextLengthError } = await import('../src/anthropic-messages-adapter.js');
+  const messages = [
+    user('initial request'),
+    assistant('read-1', 'sig-1'), result('read-1', 'old first file\n'.repeat(1800)),
+    assistant('read-2', 'sig-2'), result('read-2', 'old second file\n'.repeat(1800)),
+    assistant('read-3', 'sig-3'), result('read-3', 'old third file\n'.repeat(1800)),
+    assistant('read-4', 'sig-4'), result('read-4', 'recent file'),
+    assistant('read-5', 'sig-5'), result('read-5', 'latest file'),
+    user('continue safely'),
+  ];
+  const prefixGroups = groupMessagesByApiRound(
+    selectCompletedPrefix(messages, 2).prefix);
+  const excess = estimateMessageTokens(prefixGroups[0]) + 1;
+  const requests = [];
+  const model = { async *stream({ messages: attempt, tools, purpose }) {
+    requests.push({ messages: structuredClone(attempt), tools, purpose });
+    if (requests.length === 1) {
+      throw new ModelContextLengthError(
+        'prompt is too long: ' + String(10000 + excess) + ' tokens > 10000 maximum');
+    }
+    yield { type: 'text_delta', text: 'Historical completed work summarized safely.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const compactor = createAutoCompact({ thresholdTokens: 100 });
+  const answer = await compactor.compact({ messages, model, force: true });
+  assert.equal(requests.length, 2);
+  assert.equal(answer.compacted, true);
+  assert.deepEqual(requests.map(x => x.tools), [[], []]);
+  assert.deepEqual(requests.map(x => x.purpose), ['compact', 'compact']);
+  assert.match(requests[1].messages[0].content, /Older conversation rounds omitted/);
+  assert.equal(requests[1].messages[1].content[0].signature, 'sig-2',
+    'reported token gap must remove the first assistant round, not half a tool pair');
+  assert.equal(answer.messages[1].content[0].signature, 'sig-4');
+  assert.equal(answer.messages[3].content[0].signature, 'sig-5');
+  assert.equal(messages[1].content[0].signature, 'sig-1',
+    'failed summary attempts must not mutate the original history');
+});
+
 test('2.1.304 rapid refill breaker stops a fourth compact within three internal rounds', async () => {
   const { RapidRefillBreakerError } = await import('../src/legacy-compact/auto-compact.js');
   const chainId = {};
