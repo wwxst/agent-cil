@@ -65,7 +65,14 @@ export class StreamingToolExecutor {
   }
 
   discard() {
+    if (this.#discarded) return;
     this.#discarded = true;
+    // In 2.1.88 streaming_fallback tombstones pending tool results. In this
+    // Node port, a failed model stream must additionally cancel any in-flight
+    // read-only operation. No orphan result may reach the next conversation.
+    if (!this.#siblingController.signal.aborted) {
+      this.#siblingController.abort('streaming_fallback');
+    }
     this.#notifyProgress();
   }
 
