@@ -108,3 +108,49 @@ test('TTY Ctrl+C aborts in-flight DeepSeek SSE, does not exit, and idle Ctrl+C n
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+
+test('TTY idle double Ctrl+C within legacy 800ms window exits without a model request', {
+  timeout: 14000,
+  skip: process.platform === 'win32',
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-idle-ctrlc-'));
+  let child, watchdog;
+  try {
+    child = spawn('script', ['-q', '-e', '-c',
+      [process.execPath, cli, '--provider', 'deepseek', '--cwd', workspace]
+        .map(quote).join(' '), '/dev/null'], {
+      env: { ...process.env, DEEPSEEK_API_KEY: 'fake-idle-ctrlc-key' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let output = '', stderr = '', first = false, second = false;
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      output += chunk;
+      if (!first && output.includes('you> ')) {
+        first = true;
+        child.stdin.write('\x03');
+      }
+      if (first && !second && output.includes('Press Ctrl+C again to exit.')) {
+        second = true;
+        child.stdin.write('\x03');
+      }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    watchdog = setTimeout(() => child.kill('SIGKILL'), 9000);
+    const [status, signal] = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, sig) => resolve([code, sig]));
+    });
+    assert.equal(signal, null, output + stderr);
+    assert.equal(status, 130, output + stderr);
+    assert.equal(first, true);
+    assert.equal(second, true);
+    assert.equal(output.includes('fake-idle-ctrlc-key'), false);
+  } finally {
+    if (watchdog) clearTimeout(watchdog);
+    if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
