@@ -575,6 +575,7 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
 
   tools.register({
     name: 'Read',
+    isConcurrencySafe: () => true,
     description: 'Read a UTF-8 text file within the workspace. Use zero-based offset and limit to read sections of large files.',
     inputSchema: {
       type: 'object',
@@ -658,6 +659,7 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
 
   tools.register({
     name: 'Glob',
+    isConcurrencySafe: () => true,
     description: 'Find workspace files matching a glob pattern such as src/**/*.js or *.json.',
     inputSchema: {
       type: 'object',
@@ -681,6 +683,7 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
 
   tools.register({
     name: 'Grep',
+    isConcurrencySafe: () => true,
     description: 'Search text files in the workspace using a regular expression.',
     inputSchema: {
       type: 'object',
