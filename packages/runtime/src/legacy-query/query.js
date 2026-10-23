@@ -333,12 +333,14 @@ export async function query({
 
         // Resume deferred tools after the complete model message has passed
         // protocol validation. Preserve model order and exclusive barriers.
-        for (const toolUse of toolUses.slice(scheduledCount)) {
-          abortIfNeeded(signal);
-          executor.addTool(toolUse);
-        }
         const toolResults = [];
         try {
+          // Register even deferred tools if a Ctrl+C arrived between final
+          // model message and execution. The executor refuses to start new
+          // tools once cancelled and can close every tool_use pairing.
+          for (const toolUse of toolUses.slice(scheduledCount)) {
+            executor.addTool(toolUse);
+          }
           for await (const update of executor.getRemainingResults()) {
             abortIfNeeded(signal);
             if (update.progress !== undefined) emit('toolProgress', { turn, progress: update.progress });
@@ -353,11 +355,33 @@ export async function query({
               }
             }
           }
+          abortIfNeeded(signal);
         } catch (error) {
-          executor.discard();
+          if (signal?.aborted) {
+            // 2.1.88 query.ts drains outstanding results on abort; 2.1.304
+            // also records call-started vs queued state. The resumed CLI
+            // must know about a successful Edit even if subsequent Bash was
+            // cancelled. Pair all IDs before checkpointing (no partial batch).
+            try {
+              const interrupted = await executor.takeInterruptedResults();
+              if (interrupted.length === toolUses.length &&
+                interrupted.every((block, i) =>
+                  block?.type === 'tool_result' && block.tool_use_id === toolUses[i].id)) {
+                history.push({ role: 'user', content: interrupted });
+                emit('turnFinished', {
+                  turn, stopReason, interrupted: true,
+                  toolResultCount: interrupted.length,
+                  committedMessages: structuredClone(history),
+                });
+              }
+            } finally {
+              executor.discard();
+            }
+          } else {
+            executor.discard();
+          }
           throw error;
         }
-        abortIfNeeded(signal);
         if (toolResults.length !== toolUses.length) {
           throw new ModelProtocolError('Legacy scheduler returned a mismatched number of tool results.');
         }
