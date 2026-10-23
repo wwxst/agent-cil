@@ -72,3 +72,21 @@ Structural live evidence: [deepseek-live-2026-10-23.json](deepseek-live-2026-10-
 The unsuccessful initial extended run had one successful compact followed by the
 reduction-bound error; it motivated fix 1. The checked-in JSON is the successful
 rerun with that fix. No Runtime was rewritten.
+
+
+## Post-acceptance source review (subsequent PR #31 commits)
+
+The credentialed results above were collected at `5aad518c3a7d22234c35c0e47809275a072b5f79`. **They have not been rerun against the later review commits** and should not be used as proof of the revised source behavior.
+
+The review directly compared the restored CLI 2.1.88 `autoCompactIfNeeded`, `query.ts`, `compact.ts`, `useCancelRequest.ts`, `useExitOnCtrlCD.ts` and `useDoublePress.ts` with the runnable Node CLI. It corrected two gaps: proactive compaction failures must be logged and ignored (subject to a 3-failure circuit breaker), while a forced provider-overflow recovery still reports failure; and Ctrl+C must cancel active work but require two presses within 800ms to exit the idle interactive CLI. A new Linux pseudo-TTY CLI test covers interrupted SSE, continued conversation and idle exit; CI also tests the installed npm package on Linux and startup/Read/Edit on Windows.
+
+The uploaded 2.1.304 ZIP was not source-inspected in this review due to its size exceeding available artifact extraction access. As a result **exact new-version behavior equivalence is not yet demonstrated**. The PR remains open.
+
+For credentialed re-acceptance of the revised branch (local-only secret, no credentials committed):
+
+```powershell
+$env:DEEPSEEK_API_KEY = '<secret from secure local environment>'
+node scripts/verify-deepseek-extended.mjs
+```
+
+The script outputs structural metadata only. Inspect and redact it before saving any additional evidence. Required checks: real automatic summary failures do not abort a healthy run; active Ctrl+C interrupts once and leaves the interactive CLI usable; idle Ctrl+C only exits on double press; signed tool turns, file edits and Bash execution remain correct. Real HTTP 400/retry/no-duplicate-Edit/Bash and default 850k threshold remain explicitly unverified unless independently exercised.
