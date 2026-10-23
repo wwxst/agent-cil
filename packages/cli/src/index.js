@@ -692,7 +692,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 
   let prompt = options.prompt;
-  const interactiveInput = process.stdin.isTTY && process.stdout.isTTY && !options.print && prompt.length === 0;
+  // A positional first prompt should start the interactive session on a TTY,
+  // not silently force one-shot mode. --print remains explicitly one-shot.
+  const interactiveInput = process.stdin.isTTY && process.stdout.isTTY && !options.print;
   if (options.print && prompt.length === 0 && process.stdin.isTTY) {
     printError('No prompt provided. Pass a prompt or pipe stdin.');
     return 2;
@@ -801,6 +803,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return await runPrompt(prompt, { plain: options.print });
     }
     process.stderr.write('agent-cil interactive mode. Type /exit to quit.\n');
+    if (prompt) {
+      const status = await runPrompt(prompt);
+      if (status === 130) process.stderr.write('Interrupted.\n');
+      // A failed model call leaves history unchanged. Keep the interactive shell
+      // open so a user can retry without restarting the process.
+    }
     while (rl && !rl.closed) {
       let text;
       try {
