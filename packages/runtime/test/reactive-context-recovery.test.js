@@ -16,7 +16,7 @@ const toolCall = (id, name = 'Edit') => ({
   ],
 });
 const toolResult = id => ({ role: 'user', content: [
-  { type: 'tool_result', tool_use_id: id, content: 'already executed' },
+  { type: 'tool_result', tool_use_id: id, content: 'already executed\n'.repeat(120) },
 ] });
 const history = [
   user('Fix math.js'),
