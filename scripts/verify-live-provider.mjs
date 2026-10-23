@@ -50,7 +50,7 @@ async function runCli({ workspace, prompt, label }) {
   // Also use Node explicitly on POSIX so this acceptance runs with the same
   // interpreter as the caller, regardless of executable bits or shebangs.
   // Do not use shell:true: the free-form model prompt is an argument.
-  const isNodeScript = /\\.(?:c|m)?js$/i.test(executable);
+  const isNodeScript = /\.(?:c|m)?js$/i.test(executable);
   const command = isNodeScript ? process.execPath : executable;
   const launchArgs = isNodeScript ? [executable, ...args] : args;
   const child = spawn(command, launchArgs, {
