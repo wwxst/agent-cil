@@ -16,8 +16,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Verify .js CLI startup and Read/Edit acceptance on Windows
-        run: node --test packages/cli/test/live-provider-launch.test.js
+      - name: Verify CLI startup, interrupted batches and real Bash process trees on Windows
+        run: node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/interrupted-tool-batch.test.js packages/cli/test/windows-bash-tree-cancel.test.js
       - name: Verify real Windows Bash process tree cancellation
         run: node --test packages/cli/test/windows-bash-tree-cancel.test.js
       - name: Verify interrupted Edit and Bash batch history on Windows
