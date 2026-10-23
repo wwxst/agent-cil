@@ -1,31 +1,13 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-// Bounded pre-stream retries, adapted from the 2.1.88 source's retry policy.
-// Never replay a request after a successful HTTP response starts streaming.
-const MAX_RETRY_DELAY_MS = 30000;
-const RETRYABLE_HTTP_STATUS = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
-
-function retryDelayMs(response, retryIndex) {
-  const retryAfter = response.headers?.get?.('retry-after');
-  if (retryAfter) {
-    const seconds = Number(retryAfter);
-    const parsedMs = Number.isFinite(seconds) && seconds >= 0
-      ? seconds * 1000
-      : Date.parse(retryAfter) - Date.now();
-    if (Number.isFinite(parsedMs) && parsedMs >= 0) {
-      // A long server-requested cooldown should be surfaced rather than
-      // silently ignored, or replaced with a faster client-side retry.
-      return parsedMs > MAX_RETRY_DELAY_MS ? null : Math.ceil(parsedMs);
-    }
-  }
-  return Math.min(500 * 2 ** retryIndex, MAX_RETRY_DELAY_MS);
-}
-
-function shouldRetryHttp(response) {
-  if (!RETRYABLE_HTTP_STATUS.has(response.status)) return false;
-  if (response.headers?.get?.('x-should-retry') === 'false') return false;
-  return true;
-}
+// The old 2.1.88 withRetry.ts and client.ts transport logic is now used
+// directly. A successful HTTP response / started SSE body is NEVER replayed.
+import {
+  getBoundedRetryDelay,
+  isRetryablePreStreamConnectionError,
+  shouldRetryHttpResponse,
+  withClientRequestId,
+} from './legacy-api/transport.js';
 
 function isRecord(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -254,26 +236,38 @@ export class AnthropicMessagesAdapter {
       try {
         response = await this.#fetch(this.#baseUrl + '/v1/messages', {
           method: 'POST',
-          headers: {
+          headers: withClientRequestId({
             'content-type': 'application/json',
             'anthropic-version': this.#version,
             'x-api-key': apiKey,
             accept: 'text/event-stream',
-          },
+          }, { baseUrl: this.#baseUrl }),
           body: JSON.stringify(body),
           signal,
           redirect: 'error',
         });
       } catch (error) {
         if (signal?.aborted) abortIfNeeded(signal);
+        // Original 2.1.88 withRetry retries APIConnectionError. Node fetch
+        // reports equivalent pre-response transport failures as TypeError.
+        // Limit retries to errors thrown by fetch before any HTTP response.
+        if (retry < this.#maxRetries && isRetryablePreStreamConnectionError(error)) {
+          try {
+            await delay(getBoundedRetryDelay(retry + 1), undefined, { signal });
+          } catch (waitError) {
+            if (signal?.aborted) abortIfNeeded(signal);
+            throw waitError;
+          }
+          continue;
+        }
         throw new ModelAdapterError('Failed to connect to the Messages API.', { cause: error });
       }
 
       if (!response || typeof response.ok !== 'boolean') {
         throw new ModelAdapterError('Fetch adapter returned an invalid response.');
       }
-      if (response.ok || retry >= this.#maxRetries || !shouldRetryHttp(response)) break;
-      const waitMs = retryDelayMs(response, retry);
+      if (response.ok || retry >= this.#maxRetries || !shouldRetryHttpResponse(response)) break;
+      const waitMs = getBoundedRetryDelay(retry + 1, response.headers?.get?.('retry-after'));
       if (waitMs === null) break;
       // Release the failed response before retrying. A successful HTTP response
       // is never retried; SSE truncation/error may have already emitted content.

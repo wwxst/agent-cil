@@ -38,6 +38,8 @@ jobs:
           "$cli" --help | head -n 30
           "$cli" --help | grep -q -- '--allow-edits'
           node scripts/verify-installed-cli.mjs "$cli"
+          # Exercise model transport and TTY approval via the installed CLI.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/legacy-model-transport-cli.test.js
 
   legacy-cli-2-1-88-smoke:
     runs-on: ubuntu-latest
