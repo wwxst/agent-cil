@@ -55,6 +55,8 @@ jobs:
           # Verify signed thinking, 3 model rounds and Read/Edit behavior
           # through the freshly packed and installed executable.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-thinking-cli.test.js
+          # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 
   legacy-cli-2-1-88-smoke:
     runs-on: ubuntu-latest

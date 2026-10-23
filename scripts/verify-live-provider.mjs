@@ -15,17 +15,33 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const apiKey = process.env.ANTHROPIC_API_KEY;
-const baseUrl = process.env.ANTHROPIC_BASE_URL;
-const model = process.env.ANTHROPIC_MODEL || 'deepseek-flash';
+const provider = process.env.AGENT_CIL_PROVIDER || 'anthropic';
+const apiKey = provider === 'openai' ? process.env.OPENAI_API_KEY
+  : provider === 'deepseek'
+    ? (process.env.DEEPSEEK_API_KEY || process.env.ANTHROPIC_API_KEY)
+    : process.env.ANTHROPIC_API_KEY;
+const baseUrl = provider === 'openai'
+  ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
+  : provider === 'deepseek'
+    ? (process.env.DEEPSEEK_BASE_URL || process.env.ANTHROPIC_BASE_URL ||
+       'https://api.deepseek.com/anthropic')
+    : process.env.ANTHROPIC_BASE_URL;
+const model = provider === 'openai'
+  ? (process.env.OPENAI_MODEL || 'gpt-5.1')
+  : provider === 'deepseek'
+    ? (process.env.DEEPSEEK_MODEL || process.env.ANTHROPIC_MODEL || 'deepseek-flash')
+    : (process.env.ANTHROPIC_MODEL || 'deepseek-flash');
 const executable = process.argv[2] || process.env.AGENT_CIL_TEST_EXECUTABLE || 'agent-cil';
 
 function redact(text) {
   return String(text).replaceAll(apiKey || '\u0000NO_SECRET\u0000', '[REDACTED]');
 }
 function validateConfiguration() {
+  if (!['anthropic', 'deepseek', 'openai'].includes(provider)) {
+    throw new Error('AGENT_CIL_PROVIDER must be anthropic, deepseek, or openai.');
+  }
   if (typeof apiKey !== 'string' || apiKey.trim().length === 0) {
-    throw new Error('ANTHROPIC_API_KEY must be set through the local environment.');
+    throw new Error('Provider API key must be set through the local environment.');
   }
   if (typeof baseUrl !== 'string' || baseUrl.trim().length === 0) {
     throw new Error('ANTHROPIC_BASE_URL must be set explicitly for this model provider.');
@@ -43,7 +59,7 @@ function validateConfiguration() {
 async function runCli({ workspace, prompt, label }) {
   const args = [
     '--print', '--allow-edits', '--max-retries', '1', '--max-turns', '8',
-    '--max-tokens', '1024', '--model', model,
+    '--max-tokens', '1024', '--provider', provider, '--model', model,
     '--base-url', baseUrl, '--cwd', workspace, prompt,
   ];
   // Windows cannot spawn .js entrypoints as executable programs (EFTYPE).
@@ -54,7 +70,11 @@ async function runCli({ workspace, prompt, label }) {
   const command = isNodeScript ? process.execPath : executable;
   const launchArgs = isNodeScript ? [executable, ...args] : args;
   const child = spawn(command, launchArgs, {
-    env: { ...process.env, ANTHROPIC_API_KEY: apiKey },
+    env: { ...process.env,
+      ANTHROPIC_API_KEY: provider === 'anthropic' ? apiKey : undefined,
+      DEEPSEEK_API_KEY: provider === 'deepseek' ? apiKey : undefined,
+      OPENAI_API_KEY: provider === 'openai' ? apiKey : undefined,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: false,
   });
@@ -130,6 +150,7 @@ async function main() {
     assert.ok(readCount >= 2, 'expected at least two Read tool calls.');
     assert.match(coding.stderr, /\[tool\] Edit\b/, 'expected an Edit tool call.');
     process.stdout.write('PASS: live Read -> Edit -> Read coding task, workspace content verified.\n');
+    process.stdout.write('Provider: ' + provider + '\n');
     process.stdout.write('Model: ' + model + '\n');
     process.stdout.write('Base URL: ' + new URL(baseUrl).origin + ' (path omitted)\n');
     process.stdout.write('Credentialed provider acceptance completed without exporting secrets.\n');
