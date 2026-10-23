@@ -22,6 +22,13 @@ function syntheticError(id, reason, bashDescription = '') {
   return { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: true }] };
 }
 
+function neverInvokedResult(id) {
+  return { role: 'user', content: [{
+    type: 'tool_result', tool_use_id: id, is_error: true,
+    content: '<tool_use_error>Interrupted: tool was not started; no tool execution was attempted.</tool_use_error>',
+  }] };
+}
+
 function uncertainSideEffectResult(id) {
   return { role: 'user', content: [{
     type: 'tool_result', tool_use_id: id, is_error: true,
@@ -188,7 +195,10 @@ export class StreamingToolExecutor {
       const messages = [];
       const initialReason = this.#abortReason(tool);
       if (initialReason) {
-        tool.results = [syntheticError(tool.id, initialReason, this.#erroredToolDescription)];
+        tool.results = [initialReason === 'user_interrupted' &&
+          this.#signal?.reason !== 'interrupt'
+          ? neverInvokedResult(tool.id)
+          : syntheticError(tool.id, initialReason, this.#erroredToolDescription)];
         tool.status = 'completed';
         return;
       }
@@ -240,9 +250,11 @@ export class StreamingToolExecutor {
         }
       } catch (error) {
         const reason = this.#abortReason(tool);
-        messages.push(reason === 'user_interrupted' && tool.callStarted &&
+        messages.push(reason === 'user_interrupted' &&
           this.#signal?.reason !== 'interrupt'
-          ? uncertainSideEffectResult(tool.id)
+          ? (tool.callStarted
+            ? uncertainSideEffectResult(tool.id)
+            : neverInvokedResult(tool.id))
           : syntheticError(tool.id, reason || 'sibling_error', this.#erroredToolDescription));
       }
       tool.results = messages;
