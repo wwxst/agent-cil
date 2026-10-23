@@ -140,7 +140,7 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
   }
   let consecutiveFailures = 0;
   return {
-    async compact({ messages, model, signal } = {}) {
+    async compact({ messages, model, signal, force = false } = {}) {
       aborted(signal);
       // Disabled compaction must be a strict no-op, including for providers
       // with non-text content blocks that this first port cannot estimate.
@@ -148,7 +148,10 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
         return { messages, compacted: false };
       }
       const estimatedTokens = estimateMessageTokens(messages);
-      if (estimatedTokens < thresholdTokens) {
+      // 2.1.88 reactive recovery bypasses proactive threshold after the
+      // server itself reports that the request cannot fit. Disabling compact
+      // explicitly (threshold 0) remains authoritative.
+      if (!force && estimatedTokens < thresholdTokens) {
         return { messages, compacted: false, estimatedTokens };
       }
       const selection = selectCompletedPrefix(messages, keepRecentRounds);
