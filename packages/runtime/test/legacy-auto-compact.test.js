@@ -294,3 +294,50 @@ test('force=true retains explicit error propagation for unrecoverable provider o
     /provider summary rejected/);
   assert.equal(compact.consecutiveFailures, 1);
 });
+
+
+test('2.1.304 rapid refill breaker stops a fourth compact within three internal rounds', async () => {
+  const { RapidRefillBreakerError } = await import('../src/legacy-compact/auto-compact.js');
+  const chainId = {};
+  const controller = createAutoCompact({ thresholdTokens: 100 });
+  let summaries = 0;
+  const model = { async *stream({ purpose, tools }) {
+    assert.equal(purpose, 'compact'); assert.deepEqual(tools, []);
+    summaries++;
+    yield { type: 'text_delta', text: 'Earlier work completed and checked successfully.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  for (let turn = 1; turn <= 3; turn++) {
+    const output = await controller.compact({ messages: raw, model, chainId, turn });
+    assert.equal(output.compacted, true);
+  }
+  await assert.rejects(controller.compact({
+    messages: raw, model, chainId, turn: 4,
+  }), error => error instanceof RapidRefillBreakerError &&
+    error.code === 'rapid_refill_breaker_tripped');
+  assert.equal(summaries, 3, 'fourth compaction must be stopped before provider call');
+  // Another user prompt must not inherit a previous tool-chain breaker.
+  const fresh = await controller.compact({ messages: raw, model, chainId: {}, turn: 1 });
+  assert.equal(fresh.compacted, true);
+  assert.equal(summaries, 4);
+});
+
+test('forced provider overflow can still compact after the proactive failure circuit opens', async () => {
+  const controller = createAutoCompact({ thresholdTokens: 100 });
+  let attempts = 0;
+  const model = { async *stream({ purpose }) {
+    assert.equal(purpose, 'compact');
+    attempts++;
+    if (attempts <= 3) throw new Error('network dropped summary response');
+    yield { type: 'text_delta', text: 'All earlier tasks completed and checked.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  for (let i = 0; i < 3; i++) {
+    const x = await controller.compact({ messages: raw, model });
+    assert.equal(x.compacted, false);
+  }
+  assert.equal(controller.consecutiveFailures, 3);
+  const forced = await controller.compact({ messages: raw, model, force: true });
+  assert.equal(forced.compacted, true);
+  assert.equal(attempts, 4);
+});
