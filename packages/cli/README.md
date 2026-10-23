@@ -40,6 +40,8 @@ The default agent limit is 8 model rounds per prompt; use `--max-turns <n>` (1â€
 
 Transient pre-stream HTTP failures (408, 409, 429, selected 5xx statuses including 529) are retried up to **2** times by default, with bounded exponential backoff or a short server-provided `Retry-After` value. Use `--max-retries 0` to disable retries or choose 1â€“5 for a different bound. The adapter respects `x-should-retry: false` and will not automatically retry a server cooldown longer than 30 seconds. Authentication errors and errors after the HTTP SSE stream begins are **not** replayed; once streaming starts, a replay could duplicate partial model output or tool actions. The handling is adapted from the old 2.1.88 retry subsystem, not a complete port of its provider-specific fallback and token refresh logic.
 
+The `Read` tool supports optional zero-based `offset` and positive `limit` line parameters, following the 2.1.304 tool schema. Plain Read retains the 1 MiB whole-file limit. With a line range, the CLI reads from the already-verified file handle in bounded chunks, so the agent can select small sections of larger source files. The selected output is still capped at 1 MiB; binary content and paths outside the workspace remain rejected. The tool returns the selected text without adding line-number prefixes.
+
 ## Current limitations
 
 This is not yet compatible with the official CLI OAuth/configuration, SDK stream-json protocol, Session resume, MCP, Hooks, full tool set, or advanced concurrent streaming tool scheduler. It is a first usable API-key CLI path, not a claim of complete 2.1.304 compatibility.
