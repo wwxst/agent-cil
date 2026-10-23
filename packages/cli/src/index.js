@@ -421,9 +421,10 @@ async function readTextLinesHandle(handle, filePath, { offset = 0, limit = Infin
 async function readTextFile(workspace, filePath, options) {
   const handle = await openWorkspaceFile(workspace, filePath, constants.O_RDONLY);
   try {
+    // Await the selected read before the finally block closes its file handle.
     return options === undefined
-      ? readTextHandle(handle, filePath)
-      : readTextLinesHandle(handle, filePath, options);
+      ? await readTextHandle(handle, filePath)
+      : await readTextLinesHandle(handle, filePath, options);
   } finally {
     await handle.close();
   }
