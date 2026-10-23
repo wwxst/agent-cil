@@ -59,6 +59,7 @@ test('parses model, endpoint, token, system, cwd, print and prompt options', () 
     '--base-url=https://example.test',
     '--max-tokens', '2048',
     '--max-turns=12',
+    '--max-retries=1',
     '--system', 'Be precise.',
     '--cwd', '/tmp/project',
     'explain', 'this repository',
@@ -68,6 +69,7 @@ test('parses model, endpoint, token, system, cwd, print and prompt options', () 
   assert.equal(options.baseUrl, 'https://example.test');
   assert.equal(options.maxTokens, 2048);
   assert.equal(options.maxTurns, 12);
+  assert.equal(options.maxRetries, 1);
   assert.equal(options.system, 'Be precise.');
   assert.equal(options.cwd, resolve('/tmp/project'));
   assert.equal(options.prompt, 'explain this repository');
@@ -81,6 +83,10 @@ test('rejects unknown options and invalid max token values', () => {
   assert.throws(() => parseArgs(['--max-turns=101']), CliArgumentError);
   assert.throws(() => parseArgs(['--max-turns', 'one']), CliArgumentError);
   assert.equal(parseArgs(['hello']).maxTurns, 8);
+  assert.equal(parseArgs(['hello']).maxRetries, 2);
+  assert.throws(() => parseArgs(['--max-retries', '-1']), CliArgumentError);
+  assert.throws(() => parseArgs(['--max-retries', '6']), CliArgumentError);
+  assert.throws(() => parseArgs(['--max-retries=wrong']), CliArgumentError);
 });
 
 test('CLI rejects a remote plaintext API endpoint during startup', async () => {
@@ -1109,6 +1115,7 @@ test('CLI propagates HTTP 429 and 503 model errors with a nonzero exit status', 
         const child = spawn(process.execPath, [
           cliPath, '--print', 'hello', '--cwd', workspace,
           '--base-url', 'http://127.0.0.1:' + addr.port,
+          '--max-retries', '0',
         ], { env: { ...process.env, ANTHROPIC_API_KEY: 'not-for-logs' }, stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';
         let stderr = '';
@@ -1129,6 +1136,74 @@ test('CLI propagates HTTP 429 and 503 model errors with a nonzero exit status', 
       assert.equal(output.stderr.includes('not-for-logs'), false);
       assert.equal(output.stdout.trim(), '');
     }
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('CLI retries transient HTTP 503 once and then prints the streamed answer', {
+  timeout: 15000,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-retry-cli-'));
+  const requests = [];
+  const sse = (type, fields = {}) =>
+    'event: ' + type + '\n' + 'data: ' + JSON.stringify({ type, ...fields }) + '\n\n';
+  const success = [
+    sse('message_start', { message: { usage: { input_tokens: 2 } } }),
+    sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+    sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'RETRY_WORKED' } }),
+    sse('content_block_stop', { index: 0 }),
+    sse('message_delta', { delta: { stop_reason: 'end_turn' } }),
+    sse('message_stop'),
+  ].join('');
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    if (requests.length === 1) {
+      response.writeHead(503, { 'content-type': 'application/json', 'retry-after': '0' });
+      response.end(JSON.stringify({ error: { type: 'overloaded_error', message: 'Try again.' } }));
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.end(success);
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const cliPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+    const result = await new Promise((resolveRun, rejectRun) => {
+      const child = spawn(process.execPath, [
+        cliPath, '--print', 'hello', '--cwd', workspace,
+        '--base-url', 'http://127.0.0.1:' + address.port,
+        '--max-retries=1',
+      ], {
+        env: { ...process.env, ANTHROPIC_API_KEY: 'local-test-key' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      const watchdog = setTimeout(() => child.kill('SIGKILL'), 7000);
+      child.once('error', error => { clearTimeout(watchdog); rejectRun(error); });
+      child.once('close', (code, signal) => {
+        clearTimeout(watchdog);
+        resolveRun({ code, signal, stdout, stderr });
+      });
+    });
+    assert.equal(result.signal, null, result.stderr);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'RETRY_WORKED');
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests[0], requests[1]);
   } finally {
     await new Promise(resolve => server.close(resolve));
     await rm(workspace, { recursive: true, force: true });
