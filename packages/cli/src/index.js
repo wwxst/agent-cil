@@ -31,6 +31,7 @@ export const HELP = [
   '      --max-tokens <n>    Maximum output tokens (default: 4096)',
   '      --max-turns <n>     Maximum model rounds per prompt (default: 8)',
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
+  '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
   '',
@@ -71,6 +72,7 @@ export function parseArgs(argv) {
     maxTokens: 4096,
     maxTurns: 8,
     maxRetries: 2,
+    allowEdits: false,
     system: undefined,
     cwd: process.cwd(),
     positional: [],
@@ -92,6 +94,8 @@ export function parseArgs(argv) {
     }
     if (arg === '--print' || arg === '-p') {
       options.print = true;
+    } else if (arg === '--allow-edits') {
+      options.allowEdits = true;
     } else if (arg === '--model') {
       options.model = takeValue(arg, i++);
     } else if (arg.startsWith('--model=')) {
@@ -761,6 +765,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     permissionPolicy: createCliPermissionPolicy({ workspace }),
     maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
+      // Explicit opt-in for headless editing. The permission policy and Runtime
+      // schema/path rechecks have already run; Bash remains ask-only.
+      if (options.allowEdits && (name === 'Write' || name === 'Edit')) {
+        process.stderr.write('[permission] auto-approved ' + name + ' (--allow-edits)\n');
+        return { approved: true };
+      }
       if (!rl || options.print || !process.stdin.isTTY) {
         process.stderr.write('[permission] denied ' + name + ': interactive approval is unavailable.\n');
         return { approved: false, reason: 'Interactive approval is unavailable.' };
