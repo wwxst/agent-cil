@@ -118,7 +118,9 @@ export class StreamingToolExecutor {
   // Original queue traversal: a queued exclusive tool is a barrier. Safe
   // tools may execute concurrently only when no exclusive tool is running.
   #processQueue() {
-    if (this.#discarded) return;
+    // Once cancelled, never start an uncalled queued tool. The interruption
+    // checkpoint will synthesize a matching "not started" tool_result.
+    if (this.#discarded || this.#signal?.aborted) return;
     for (const tool of this.#tools) {
       if (tool.status !== 'queued') continue;
       if (this.#canExecuteTool(tool.isConcurrencySafe)) {
@@ -240,6 +242,56 @@ export class StreamingToolExecutor {
         waitingOnEarlierResult = true;
       }
     }
+  }
+
+  /**
+   * 2.1.88 query.ts drains completed and missing tool_result blocks when
+   * aborted; CLI 2.1.304 StreamingToolExecutor.takeFinishedResults() and
+   * discardAndAbortInFlight distinguish completed vs call-started vs queued.
+   * Adapt those same states for a single Node assistant message: preserve the
+   * actual result for completed tools, synthesize never-started results for
+   * queued tools and mark unresolved in-flight side effects as UNCERTAIN.
+   * Results remain in model tool_use order with exactly one tool_result/id.
+   */
+  async takeInterruptedResults({ settleTimeoutMs = 1500 } = {}) {
+    if (!this.#signal?.aborted) {
+      throw new TypeError('Interrupted results require an aborted signal.');
+    }
+    // Propagate cancellation to all workers; the Bash tool propagates this
+    // to the OS process tree. Never wait forever for uncooperative tools.
+    if (!this.#siblingController.signal.aborted) {
+      this.#siblingController.abort('user_interrupted');
+    }
+    const running = this.#tools
+      .filter(t => t.status === 'executing' && t.promise)
+      .map(t => t.promise);
+    if (running.length) {
+      let timer;
+      try {
+        await Promise.race([
+          Promise.allSettled(running),
+          new Promise(resolve => { timer = setTimeout(resolve, settleTimeoutMs); }),
+        ]);
+      } finally { clearTimeout(timer); }
+    }
+    const results = this.#tools.map(tool => {
+      const blocks = tool.status === 'completed' || tool.status === 'yielded'
+        ? tool.results?.flatMap(m =>
+          m?.role === 'user' && Array.isArray(m.content)
+            ? m.content.filter(b => b?.type === 'tool_result' && b.tool_use_id === tool.id)
+            : []) ?? []
+        : [];
+      if (blocks.length === 1) return structuredClone(blocks[0]);
+      const maybeExecuted = tool.status === 'executing';
+      return {
+        type: 'tool_result', tool_use_id: tool.id, is_error: true,
+        content: maybeExecuted
+          ? '<tool_use_error>Interrupted: tool was started but its side effects or result may have completed. Inspect the workspace before retrying; do not automatically replay this call.</tool_use_error>'
+          : '<tool_use_error>Interrupted: tool was not started; no tool execution was attempted.</tool_use_error>',
+      };
+    });
+    this.discard();
+    return results;
   }
 
   #hasExecutingTools() { return this.#tools.some(t => t.status === 'executing'); }
