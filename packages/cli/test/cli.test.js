@@ -60,6 +60,7 @@ test('parses model, endpoint, token, system, cwd, print and prompt options', () 
     '--max-tokens', '2048',
     '--max-turns=12',
     '--max-retries=1',
+    '--allow-edits',
     '--system', 'Be precise.',
     '--cwd', '/tmp/project',
     'explain', 'this repository',
@@ -70,6 +71,7 @@ test('parses model, endpoint, token, system, cwd, print and prompt options', () 
   assert.equal(options.maxTokens, 2048);
   assert.equal(options.maxTurns, 12);
   assert.equal(options.maxRetries, 1);
+  assert.equal(options.allowEdits, true);
   assert.equal(options.system, 'Be precise.');
   assert.equal(options.cwd, resolve('/tmp/project'));
   assert.equal(options.prompt, 'explain this repository');
@@ -84,6 +86,7 @@ test('rejects unknown options and invalid max token values', () => {
   assert.throws(() => parseArgs(['--max-turns', 'one']), CliArgumentError);
   assert.equal(parseArgs(['hello']).maxTurns, 8);
   assert.equal(parseArgs(['hello']).maxRetries, 2);
+  assert.equal(parseArgs(['hello']).allowEdits, false);
   assert.throws(() => parseArgs(['--max-retries', '-1']), CliArgumentError);
   assert.throws(() => parseArgs(['--max-retries', '6']), CliArgumentError);
   assert.throws(() => parseArgs(['--max-retries=wrong']), CliArgumentError);
@@ -1207,5 +1210,105 @@ test('CLI retries transient HTTP 503 once and then prints the streamed answer', 
   } finally {
     await new Promise(resolve => server.close(resolve));
     await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('CLI --allow-edits executes workspace Write/Edit but still denies Bash and path escape', {
+  timeout: 20000,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-headless-edits-'));
+  const escapeFile = join(workspace, '..', workspace.split(/[\\/]/).at(-1) + '-escaped.txt');
+  const requests = [];
+  const sse = (type, fields = {}) =>
+    'event: ' + type + '\n' + 'data: ' + JSON.stringify({ type, ...fields }) + '\n\n';
+  const toolStream = (id, name, input) => [
+    sse('message_start', { message: { usage: { input_tokens: 2 } } }),
+    sse('content_block_start', { index: 0, content_block: { type: 'tool_use', id, name, input: {} } }),
+    sse('content_block_delta', { index: 0, delta: {
+      type: 'input_json_delta', partial_json: JSON.stringify(input),
+    } }),
+    sse('content_block_stop', { index: 0 }),
+    sse('message_delta', { delta: { stop_reason: 'tool_use' } }),
+    sse('message_stop'),
+  ].join('');
+  const finalStream = [
+    sse('message_start', { message: { usage: { input_tokens: 2 } } }),
+    sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+    sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'Finished.' } }),
+    sse('content_block_stop', { index: 0 }),
+    sse('message_delta', { delta: { stop_reason: 'end_turn' } }),
+    sse('message_stop'),
+  ].join('');
+  const responses = [
+    toolStream('headless-write', 'Write', { file_path: 'allowed.txt', content: 'before' }),
+    toolStream('headless-edit', 'Edit', {
+      file_path: 'allowed.txt', old_string: 'before', new_string: 'after',
+    }),
+    toolStream('headless-bash', 'Bash', {
+      command: 'touch forbidden-by-default.txt',
+    }),
+    toolStream('headless-escape', 'Write', {
+      file_path: '../' + escapeFile.split(/[\\/]/).at(-1), content: 'escape denied',
+    }),
+    finalStream,
+  ];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    response.writeHead(200, { 'content-type': 'text/event-stream', connection: 'close' });
+    response.end(responses[Math.min(requests.length - 1, responses.length - 1)]);
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const cliPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+    const result = await new Promise((resolveRun, rejectRun) => {
+      const child = spawn(process.execPath, [
+        cliPath, '--print', '--allow-edits', 'Update the file',
+        '--cwd', workspace, '--base-url', 'http://127.0.0.1:' + address.port,
+        '--max-retries', '0',
+      ], {
+        env: { ...process.env, ANTHROPIC_API_KEY: 'test-key' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', data => { stdout += data; });
+      child.stderr.on('data', data => { stderr += data; });
+      const watchdog = setTimeout(() => child.kill('SIGKILL'), 10000);
+      child.once('error', error => { clearTimeout(watchdog); rejectRun(error); });
+      child.once('close', (code, signal) => {
+        clearTimeout(watchdog);
+        resolveRun({ code, signal, stdout, stderr });
+      });
+    });
+    assert.equal(result.signal, null, result.stderr);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'Finished.');
+    assert.equal(await readFile(join(workspace, 'allowed.txt'), 'utf8'), 'after');
+    await assert.rejects(readFile(join(workspace, 'forbidden-by-default.txt')), { code: 'ENOENT' });
+    await assert.rejects(readFile(escapeFile), { code: 'ENOENT' });
+    assert.equal(requests.length, 5);
+    assert.match(result.stderr, /auto-approved Write/);
+    assert.match(result.stderr, /auto-approved Edit/);
+    assert.match(result.stderr, /denied Bash/);
+
+    const toolResult = index => requests[index].messages.at(-1).content[0];
+    assert.equal(toolResult(1).is_error, undefined, 'Write should succeed');
+    assert.equal(toolResult(2).is_error, undefined, 'Edit should succeed');
+    assert.equal(toolResult(3).is_error, true, 'Bash stays denied');
+    assert.equal(toolResult(4).is_error, true, 'workspace escape stays denied');
+    assert.match(toolResult(4).content, /File target is not authorized/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await rm(workspace, { recursive: true, force: true });
+    await rm(escapeFile, { force: true });
   }
 });
