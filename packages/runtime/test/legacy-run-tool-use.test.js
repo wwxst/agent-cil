@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Stream } from '../src/legacy-tools/stream.js';
+import { AgentLoop } from '../src/agent-loop.js';
+import { ToolRegistry } from '../src/tool-registry.js';
 import {
   runToolUse,
   streamedCheckPermissionsAndCallTool,
@@ -117,4 +119,51 @@ test('streamedCheckPermissionsAndCallTool supports direct adapter stream use', a
   ));
   assert.equal(outputs.length, 1);
   assert.equal(outputs[0].message.content[0].content, 'ok');
+});
+
+test('stored Stream failure is not swallowed after progress and done', async () => {
+  const stream = new Stream();
+  stream.enqueue('progress');
+  stream.error(new Error('late worker error'));
+  stream.done();
+  const iterator = stream[Symbol.asyncIterator]();
+  assert.deepEqual(await iterator.next(), { done: false, value: 'progress' });
+  await assert.rejects(iterator.next(), /late worker error/);
+});
+
+test('runToolUse converts delayed worker failure after a progress update', async () => {
+  const updates = runToolUse(toolUse(), {}, async (_block, { onToolProgress }) => {
+    onToolProgress({ state: 'started' });
+    throw new Error('failure after progress');
+  }, context());
+  const iterator = updates[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  assert.deepEqual(first.value, { progress: { state: 'started' } });
+  await new Promise(resolve => setImmediate(resolve));
+  const next = await iterator.next();
+  assert.equal(next.done, false);
+  assert.equal(next.value.message.content[0].is_error, true);
+  assert.match(next.value.message.content[0].content, /failure after progress/);
+});
+
+test('active AgentLoop emits toolCallFinished for the legacy unknown-tool branch', async () => {
+  const model = {
+    async *stream() {
+      yield { type: 'tool_use', id: 'missing-1', name: 'Missing', input: {} };
+      yield { type: 'message_end', stopReason: 'tool_use' };
+    },
+  };
+  const loop = new AgentLoop({
+    model,
+    tools: new ToolRegistry(),
+    maxTurns: 1,
+  });
+  const completed = [];
+  loop.on('toolCallFinished', event => completed.push(event));
+  const answer = await loop.run({ input: 'unknown tool' });
+  assert.equal(answer.messages.at(-1).content[0].is_error, true);
+  assert.match(answer.messages.at(-1).content[0].content, /No such tool available: Missing/);
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].toolUseId, 'missing-1');
+  assert.equal(completed[0].isError, true);
 });
