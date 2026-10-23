@@ -262,7 +262,12 @@ export async function query({
           // Discard speculative results and abort in-flight read/search tasks.
           // No Write/Edit/Bash has been admitted before message_end.
           executor.discard();
-          if (signal?.aborted) abortIfNeeded(signal);
+          // Preserve the old Query observable cancellation contract: emit
+          // modelError exactly once before propagating AbortError.
+          if (signal?.aborted) {
+            emit('modelError', { turn, error });
+            abortIfNeeded(signal);
+          }
           // Adapted from 2.1.88 query.ts reactive prompt-too-long branch:
           // only a typed *pre-stream* context rejection may be recovered.
           // A partial SSE response (even usage-only), tools or malformed
