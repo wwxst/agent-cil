@@ -132,3 +132,14 @@ The Node ESM port at `src/legacy-permissions/permission-rules.js` uses the origi
 The following are deliberately **not** claimed: content-specific Bash command rules such as `Bash(npm publish:*)`, MCP server/tool permission aliases or wildcards, `tool.checkPermissions` callbacks, sandbox-specific allow decisions, React/Ink/Hook integrations, and persisted permissions settings. Content-qualified rules are parsed as in 2.1.88 but **never** treated as broad whole-tool allows. This preserves fail-closed behavior until the old tool-specific permission dependency is restored. The old full `checkPermissionsAndCallTool()` implementation from `toolExecution.ts` remains a later gated port, not an already completed module.
 
 The parity tests in `test/legacy-permission-rules.test.js` exercise fixtures corresponding to the old parser/matcher cases; `packages/cli/test/cli.test.js` verifies decisions through the active CLI policy and a model-to-tool `AgentLoop` run. These are deterministic code/runtime tests, not a real-model API acceptance.
+
+## 2.1.88 `checkPermissionsAndCallTool()` validation prefix (PR #18)
+
+The active `runToolUse → streamedCheckPermissionsAndCallTool → checkPermissionsAndCallTool` path now performs the first two *actual* phases found at lines 615–730 of the recovered 2.1.88 `src/services/tools/toolExecution.ts` **before requesting permission**:
+
+1. Parse/validate the tool input schema (original: `tool.inputSchema.safeParse`; Node CLI adapter: the same JSON Schema already published to the Messages API, validated by `validateJsonSchema`).
+2. Invoke each tool's `validateInput` for value-level checks, including the original `{ result: false, message, errorCode }` rejection contract.
+
+Schema/value failures produce a model-visible error `tool_result` and prevent policy calls, approval and tool execution. The former initial validation block has been removed from `AgentLoop.#executeTool()`, so successful tools are **not validated twice**. The PR #9 `updatedInput` recheck loop remains in `AgentLoop`; it still validates each rewritten input (using the **same** tool-value validator), rechecks permission, and denies or re-asks when needed. This is a running port of a concrete old execution sequence and has live AgentLoop behavior tests, not just a copied reference.
+
+**Not yet ported:** the original PreToolUse and PostToolUse hook processors, `resolveHookPermissionDecision`, the tool-specific permission method/interactive state, `tool.call()`/rich result mapping, analytics/MCP, and session-specific side effects. Actual permission, OS file safeguards, and execution continue in the tested PR #9 path. Zod and Bun runtime dependencies have not been introduced into the Node 22 CLI. This PR does **not** establish real Anthropic API compatibility without an actual credentialed run.
