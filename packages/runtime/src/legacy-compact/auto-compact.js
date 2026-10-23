@@ -99,14 +99,17 @@ export function estimateMessageTokens(messages) {
  * estimate only messages appended after that assistant response.
  */
 export function getTokenCountFromUsage(usage) {
-  if (!isRecord(usage) || !Number.isFinite(usage.input_tokens) ||
-    usage.input_tokens < 0) return undefined;
-  const fields = ['input_tokens', 'cache_creation_input_tokens',
-    'cache_read_input_tokens', 'output_tokens'];
+  // CLI 2.1.88 utils/tokens.ts requires both input_tokens and output_tokens.
+  // A Messages API message_start snapshot may contain only input tokens;
+  // treating the absent final output as zero corrupts the next threshold.
+  if (!isRecord(usage) || !Number.isSafeInteger(usage.input_tokens) ||
+    usage.input_tokens < 0 || !Number.isSafeInteger(usage.output_tokens) ||
+    usage.output_tokens < 0) return undefined;
   let total = 0;
-  for (const field of fields) {
+  for (const field of ['input_tokens', 'cache_creation_input_tokens',
+    'cache_read_input_tokens', 'output_tokens']) {
     const value = usage[field] ?? 0;
-    if (!Number.isFinite(value) || value < 0) return undefined;
+    if (!Number.isSafeInteger(value) || value < 0) return undefined;
     total += value;
   }
   return Number.isSafeInteger(total) ? total : undefined;
