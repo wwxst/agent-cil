@@ -1,3 +1,32 @@
+import { setTimeout as delay } from 'node:timers/promises';
+
+// Bounded pre-stream retries, adapted from the 2.1.88 source's retry policy.
+// Never replay a request after a successful HTTP response starts streaming.
+const MAX_RETRY_DELAY_MS = 30000;
+const RETRYABLE_HTTP_STATUS = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
+
+function retryDelayMs(response, retryIndex) {
+  const retryAfter = response.headers?.get?.('retry-after');
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    const parsedMs = Number.isFinite(seconds) && seconds >= 0
+      ? seconds * 1000
+      : Date.parse(retryAfter) - Date.now();
+    if (Number.isFinite(parsedMs) && parsedMs >= 0) {
+      // A long server-requested cooldown should be surfaced rather than
+      // silently ignored, or replaced with a faster client-side retry.
+      return parsedMs > MAX_RETRY_DELAY_MS ? null : Math.ceil(parsedMs);
+    }
+  }
+  return Math.min(500 * 2 ** retryIndex, MAX_RETRY_DELAY_MS);
+}
+
+function shouldRetryHttp(response) {
+  if (!RETRYABLE_HTTP_STATUS.has(response.status)) return false;
+  if (response.headers?.get?.('x-should-retry') === 'false') return false;
+  return true;
+}
+
 function isRecord(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -118,6 +147,7 @@ export class AnthropicMessagesAdapter {
   #baseUrl;
   #version;
   #fetch;
+  #maxRetries;
 
   constructor({
     apiKey,
@@ -127,6 +157,7 @@ export class AnthropicMessagesAdapter {
     system,
     baseUrl = 'https://api.anthropic.com',
     apiVersion = '2023-06-01',
+    maxRetries = 2,
     fetchImpl = globalThis.fetch,
   } = {}) {
     if (apiKey !== undefined && (typeof apiKey !== 'string' || apiKey.trim().length === 0)) {
@@ -161,6 +192,9 @@ export class AnthropicMessagesAdapter {
     }
     if (typeof apiVersion !== 'string' || apiVersion.trim().length === 0) throw new TypeError('apiVersion must be a non-empty string.');
     if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a fetch-compatible function.');
+    if (!Number.isSafeInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
+      throw new RangeError('maxRetries must be an integer between 0 and 5.');
+    }
 
     this.#apiKey = apiKey;
     this.#apiKeyProvider = apiKeyProvider;
@@ -170,6 +204,7 @@ export class AnthropicMessagesAdapter {
     this.#baseUrl = parsedBaseUrl.toString().replace(/\/+$/, '');
     this.#version = apiVersion;
     this.#fetch = fetchImpl;
+    this.#maxRetries = maxRetries;
   }
 
   async *stream({ messages, tools = [], signal } = {}) {
@@ -214,22 +249,41 @@ export class AnthropicMessagesAdapter {
     if (requestTools.length > 0) body.tools = requestTools;
 
     let response;
-    try {
-      response = await this.#fetch(this.#baseUrl + '/v1/messages', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'anthropic-version': this.#version,
-          'x-api-key': apiKey,
-          accept: 'text/event-stream',
-        },
-        body: JSON.stringify(body),
-        signal,
-        redirect: 'error',
-      });
-    } catch (error) {
-      if (signal?.aborted) abortIfNeeded(signal);
-      throw new ModelAdapterError('Failed to connect to the Messages API.', { cause: error });
+    for (let retry = 0; ; retry += 1) {
+      abortIfNeeded(signal);
+      try {
+        response = await this.#fetch(this.#baseUrl + '/v1/messages', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'anthropic-version': this.#version,
+            'x-api-key': apiKey,
+            accept: 'text/event-stream',
+          },
+          body: JSON.stringify(body),
+          signal,
+          redirect: 'error',
+        });
+      } catch (error) {
+        if (signal?.aborted) abortIfNeeded(signal);
+        throw new ModelAdapterError('Failed to connect to the Messages API.', { cause: error });
+      }
+
+      if (!response || typeof response.ok !== 'boolean') {
+        throw new ModelAdapterError('Fetch adapter returned an invalid response.');
+      }
+      if (response.ok || retry >= this.#maxRetries || !shouldRetryHttp(response)) break;
+      const waitMs = retryDelayMs(response, retry);
+      if (waitMs === null) break;
+      // Release the failed response before retrying. A successful HTTP response
+      // is never retried; SSE truncation/error may have already emitted content.
+      await response.body?.cancel?.();
+      try {
+        await delay(waitMs, undefined, { signal });
+      } catch (error) {
+        if (signal?.aborted) abortIfNeeded(signal);
+        throw error;
+      }
     }
 
     if (!response || typeof response.ok !== 'boolean') {
