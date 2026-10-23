@@ -229,12 +229,17 @@ export function createAutoCompact({
       if (thresholdTokens === 0 || (!force && consecutiveFailures >= MAX_CONSECUTIVE_FAILURES)) {
         return { messages, compacted: false };
       }
-      const estimatedTokens = tokenCountWithEstimation(messages);
+      // Real API usage is authoritative for the next context threshold.
+      // The existing 20% *message payload* reduction guard, however, must
+      // compare like with like: never compare a provider usage snapshot
+      // against an unrelated local UTF-8 byte-estimated summary.
+      const contextTokens = tokenCountWithEstimation(messages);
+      const estimatedTokens = estimateMessageTokens(messages);
       // 2.1.88 reactive recovery bypasses proactive threshold after the
       // server itself reports that the request cannot fit. Disabling compact
       // explicitly (threshold 0) remains authoritative.
-      if (!force && estimatedTokens < effectiveThreshold) {
-        return { messages, compacted: false, estimatedTokens };
+      if (!force && contextTokens < effectiveThreshold) {
+        return { messages, compacted: false, estimatedTokens, contextTokens };
       }
       const selection = selectCompletedPrefix(messages, keepRecentRounds);
       if (!selection) return { messages, compacted: false, estimatedTokens };
@@ -370,7 +375,7 @@ export function createAutoCompact({
         }
         return {
           messages: next, compacted: true,
-          estimatedTokens, compactedTokens: nextTokens,
+          estimatedTokens, contextTokens, compactedTokens: nextTokens,
           removedMessages: prefix.length,
         };
       } catch (error) {
