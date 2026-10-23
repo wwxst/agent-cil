@@ -159,10 +159,18 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
       const selection = selectCompletedPrefix(messages, keepRecentRounds);
       if (!selection) return { messages, compacted: false, estimatedTokens };
       const { prefix, recent } = selection;
-      // Proactive compaction cannot shrink protected recent rounds. Wait for
-      // those rounds to age out rather than aborting a healthy conversation.
-      // Forced server-overflow recovery still follows its bounded failure path.
-      if (!force && estimateMessageTokens(recent) >= estimatedTokens * 0.8) {
+      // The original autoCompactIfNeeded returns wasCompacted:false on a
+      // proactive failure rather than aborting the active Query. Before even
+      // sampling, account for the mandatory new summary envelope, not just
+      // protected recent rounds: otherwise the best possible replacement can
+      // already exceed the 80% reduction requirement.
+      const minimalReplacement = [
+        { role: 'user', content:
+          'This conversation continues after context compaction. Earlier completed work:\n' +
+          'x'.repeat(MIN_SUMMARY_CHARS) + '\nRecent messages follow unchanged.' },
+        ...recent,
+      ];
+      if (!force && estimateMessageTokens(minimalReplacement) >= estimatedTokens * 0.8) {
         return { messages, compacted: false, estimatedTokens };
       }
       try {
@@ -253,7 +261,15 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
       } catch (error) {
         if (signal?.aborted) aborted(signal);
         consecutiveFailures++;
-        // Original conversation stays intact. Never half-commit a summary.
+        // Port of 2.1.88 autoCompactIfNeeded's catch branch: normal
+        // compaction failures do NOT abort a healthy development task.
+        // Circuit-break after 3 consecutive failures, and never commit a
+        // partial summary. Forced prompt-too-long recovery still throws the
+        // real failure rather than hiding an already-rejected model request.
+        if (!force) {
+          return { messages, compacted: false, estimatedTokens,
+            error, consecutiveFailures };
+        }
         throw error;
       }
     },
