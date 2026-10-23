@@ -378,8 +378,15 @@ export class AgentLoop extends EventEmitter {
           (fresh?.behavior === 'ask' &&
             (typeof fresh.reason === 'string' ? fresh.reason : '') === reason);
         if (!stillAllowed || fresh.updatedInput !== undefined) {
+          // Keep the fresh deny reason: workspace security checks can now
+          // detect a symlink installed *during* approval, and callers need
+          // the exact reason rather than a generic "permission changed".
+          const lateDenyReason = fresh?.behavior === 'deny' &&
+            typeof fresh.reason === 'string' && fresh.reason
+            ? ' ' + fresh.reason : '';
           const result = toolError(toolUse,
-            'Tool call denied: permission changed during approval; review the request again.');
+            'Tool call denied: permission changed during approval; review the request again.' +
+              lateDenyReason);
           this.emit('toolCallFinished', {
             turn, toolUseId: toolUse.id, toolName: tool.name,
             isError: true, denied: true,
