@@ -22,6 +22,13 @@ function syntheticError(id, reason, bashDescription = '') {
   return { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: true }] };
 }
 
+function uncertainSideEffectResult(id) {
+  return { role: 'user', content: [{
+    type: 'tool_result', tool_use_id: id, is_error: true,
+    content: '<tool_use_error>Interrupted: tool call started; side effects may have occurred. Inspect files/processes before retry. Do not automatically replay.</tool_use_error>',
+  }] };
+}
+
 function toolNameDescription(block) {
   const summary = block.input?.command ?? block.input?.file_path ?? block.input?.pattern ?? '';
   const text = typeof summary === 'string' ? summary : '';
@@ -174,6 +181,7 @@ export class StreamingToolExecutor {
       }
       let selfErrored = false;
       try {
+        tool.callStarted = true;
         const source = this.#execute(tool.block, { signal: controller.signal });
         // runToolUse in 2.1.88 yields messages; the active AgentLoop adapter
         // returns its existing validated tool_result via a Promise.
@@ -183,7 +191,12 @@ export class StreamingToolExecutor {
         for await (const update of iterator) {
           const reason = this.#abortReason(tool);
           if (reason && !selfErrored) {
-            messages.push(syntheticError(tool.id, reason, this.#erroredToolDescription));
+            // A valid completed result is better evidence than an abort
+            // flag that was set immediately after the side effect finished.
+            // Otherwise mark the result uncertain, never simply "rejected".
+            messages.push(update?.message || (tool.callStarted
+              ? uncertainSideEffectResult(tool.id)
+              : syntheticError(tool.id, reason, this.#erroredToolDescription)));
             break;
           }
           if (update?.progress !== undefined) {
@@ -208,7 +221,9 @@ export class StreamingToolExecutor {
         }
       } catch (error) {
         const reason = this.#abortReason(tool);
-        messages.push(syntheticError(tool.id, reason || 'sibling_error', this.#erroredToolDescription));
+        messages.push(reason === 'user_interrupted' && tool.callStarted
+          ? uncertainSideEffectResult(tool.id)
+          : syntheticError(tool.id, reason || 'sibling_error', this.#erroredToolDescription));
       }
       tool.results = messages;
       tool.status = 'completed';
@@ -282,7 +297,7 @@ export class StreamingToolExecutor {
             : []) ?? []
         : [];
       if (blocks.length === 1) return structuredClone(blocks[0]);
-      const maybeExecuted = tool.status === 'executing';
+      const maybeExecuted = tool.callStarted === true;
       return {
         type: 'tool_result', tool_use_id: tool.id, is_error: true,
         content: maybeExecuted
