@@ -186,3 +186,140 @@ async function checkPermissionsAndCallTool(
   }
   return [{ message: createUserMessage(block) }];
 }
+
+/**
+ * Port of the successful 2.1.88 checkPermissionsAndCallTool() tool-call and
+ * result-mapping segment (original Tool.ts: call, mapper; toolExecution.ts:
+ * await tool.call(...), result.data, mapToolResultToToolResultBlockParam).
+ *
+ * The verified AgentLoop still owns authorization and input rewrites. Only
+ * after final approval does it invoke this stage with the final input.
+ * The CLI does not yet support legacy additional messages, context modifiers,
+ * MCP metadata or structured-output attachments: fail explicitly rather
+ * than silently dropping side effects.
+ */
+export async function invokeToolCallAndMapResult(tool, input, {
+  toolUseId, signal, messages = [], assistantMessage, onProgress,
+} = {}) {
+  if (typeof toolUseId !== 'string' || !toolUseId) {
+    throw new TypeError('An authenticated toolUseId is required.');
+  }
+  if (signal?.aborted) throw cancelledToolCall(signal);
+
+  let mapped;
+  if (typeof tool.call === 'function') {
+    if (typeof tool.mapToolResultToToolResultBlockParam !== 'function') {
+      throw new TypeError('Legacy tool is missing its result mapper.');
+    }
+    // A nested tool approval is not authorized merely because the parent
+    // call has approval. Deny until legacy nested-permission routing is ported.
+    const denyNestedPermission = async () => ({
+      behavior: 'deny',
+      reason: 'Nested permission requests are not supported by this CLI.',
+    });
+    const toolResult = await tool.call(
+      structuredClone(input),
+      { toolUseId, signal, messages: structuredClone(messages) },
+      denyNestedPermission,
+      assistantMessage,
+      onProgress,
+    );
+    if (signal?.aborted) throw cancelledToolCall(signal);
+    if (!toolResult || typeof toolResult !== 'object' ||
+      Array.isArray(toolResult) || !Object.hasOwn(toolResult, 'data')) {
+      throw new TypeError('Legacy tool.call() must return { data }.');
+    }
+    if ((Array.isArray(toolResult.newMessages) && toolResult.newMessages.length > 0) ||
+      toolResult.contextModifier !== undefined ||
+      toolResult.mcpMeta !== undefined ||
+      toolResult.structured_output !== undefined) {
+      throw new Error('Legacy tool returned unsupported messages or context metadata.');
+    }
+    mapped = await tool.mapToolResultToToolResultBlockParam(toolResult.data, toolUseId);
+  } else {
+    if (typeof tool.execute !== 'function') {
+      throw new TypeError('Registered tool has no callable implementation.');
+    }
+    const output = await tool.execute(structuredClone(input), {
+      toolUseId, signal, messages: structuredClone(messages),
+    });
+    if (signal?.aborted) throw cancelledToolCall(signal);
+    mapped = {
+      type: 'tool_result',
+      tool_use_id: toolUseId,
+      content: serializePlainToolOutput(output),
+    };
+  }
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  return validateMappedToolResult(mapped, toolUseId);
+}
+
+function cancelledToolCall(signal) {
+  const error = signal?.reason instanceof Error
+    ? signal.reason : new Error('Tool execution aborted.');
+  if (error.name !== 'AbortError') {
+    const cancellation = new Error(error.message);
+    cancellation.name = 'AbortError';
+    cancellation.cause = error;
+    return cancellation;
+  }
+  return error;
+}
+
+function serializePlainToolOutput(value) {
+  if (typeof value === 'string') return value;
+  if (value === undefined) return '';
+  const serialized = JSON.stringify(value);
+  if (typeof serialized !== 'string') {
+    throw new TypeError('Tool output is not JSON-serializable.');
+  }
+  return serialized;
+}
+
+function validateMappedToolResult(block, toolUseId) {
+  if (!block || typeof block !== 'object' || Array.isArray(block) ||
+    block.type !== 'tool_result' || block.tool_use_id !== toolUseId) {
+    throw new TypeError('Tool result mapper returned an invalid tool_result identity.');
+  }
+  if (block.is_error !== undefined && typeof block.is_error !== 'boolean') {
+    throw new TypeError('Tool result mapper returned an invalid is_error flag.');
+  }
+  const content = block.content ?? '';
+  if (typeof content !== 'string' && !Array.isArray(content)) {
+    throw new TypeError('Tool result mapper returned unsupported content.');
+  }
+  if (Array.isArray(content)) {
+    for (const item of content) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new TypeError('Tool result mapper returned a malformed content block.');
+      }
+      if (item.type === 'text') {
+        if (typeof item.text !== 'string') {
+          throw new TypeError('Tool result mapper returned invalid text content.');
+        }
+      } else if (item.type === 'image') {
+        if (item.source?.type !== 'base64' ||
+          typeof item.source.media_type !== 'string' ||
+          typeof item.source.data !== 'string') {
+          throw new TypeError('Tool result mapper returned invalid image content.');
+        }
+      } else {
+        throw new TypeError('Tool result mapper returned an unsupported content block type.');
+      }
+    }
+  }
+  const serialized = JSON.stringify(content);
+  if (typeof serialized !== 'string' || Buffer.byteLength(serialized) > 1024 * 1024) {
+    // Original 2.1.88 spills large result contents to session storage.
+    // That persistence dependency is unported, so refuse oversized blocks.
+    throw new RangeError('Tool result exceeds the 1 MiB mapping limit.');
+  }
+  // Keep the result shape constrained to the model-facing API fields. Do not
+  // forward internal metadata a tool might accidentally or maliciously emit.
+  return {
+    type: 'tool_result',
+    tool_use_id: toolUseId,
+    content,
+    ...(block.is_error === true ? { is_error: true } : {}),
+  };
+}
