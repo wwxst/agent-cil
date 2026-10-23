@@ -372,7 +372,8 @@ test('compaction clears only stale usage anchor, preserving signed recent conten
     yield { type: 'message_end', stopReason: 'end_turn' };
   } };
   const answer = await controller.compact({ messages: input, model });
-  assert.equal(answer.compacted, true);
+  assert.equal(answer.compacted, true, answer.error?.stack ??
+    `Compaction returned ${JSON.stringify({ estimatedTokens: answer.estimatedTokens, contextTokens: answer.contextTokens })}`);
   assert.equal(summaryCalls, 1);
   assert.equal(answer.contextTokens, tokenCountWithEstimation(input));
   assert.equal(answer.messages[1].usage, undefined,
