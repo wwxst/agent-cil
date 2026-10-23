@@ -278,13 +278,16 @@ export function createCliPermissionPolicy({
   return policy;
 }
 
-async function walkFiles(start, state = { files: [], truncated: false }) {
+async function walkFiles(start, state = { files: [], truncated: false }, signal) {
+  if (signal?.aborted) throw abortError(signal);
   if (state.files.length >= MAX_WALK_FILES) {
     state.truncated = true;
     return state;
   }
   const entries = await readdir(start, { withFileTypes: true });
+  if (signal?.aborted) throw abortError(signal);
   for (const entry of entries) {
+    if (signal?.aborted) throw abortError(signal);
     if (state.files.length >= MAX_WALK_FILES) {
       state.truncated = true;
       break;
@@ -292,7 +295,7 @@ async function walkFiles(start, state = { files: [], truncated: false }) {
     if (entry.isSymbolicLink()) continue;
     const fullPath = join(start, entry.name);
     if (entry.isDirectory()) {
-      if (!IGNORED_DIRECTORIES.has(entry.name)) await walkFiles(fullPath, state);
+      if (!IGNORED_DIRECTORIES.has(entry.name)) await walkFiles(fullPath, state, signal);
     } else if (entry.isFile()) {
       state.files.push(fullPath);
     }
@@ -388,8 +391,10 @@ async function openWorkspaceFile(workspace, target, flags, mode) {
     throw error;
   }
 }
-async function readTextHandle(handle, filePath) {
+async function readTextHandle(handle, filePath, signal) {
+  if (signal?.aborted) throw abortError(signal);
   const info = await handle.stat();
+  if (signal?.aborted) throw abortError(signal);
   if (!info.isFile()) throw new Error('Not a regular file: ' + filePath);
   if (info.size > MAX_TEXT_FILE_BYTES) {
     throw new Error('File exceeds the 1 MiB read limit: ' + filePath);
@@ -400,9 +405,11 @@ async function readTextHandle(handle, filePath) {
   const chunks = [];
   let total = 0;
   while (total <= MAX_TEXT_FILE_BYTES) {
+    if (signal?.aborted) throw abortError(signal);
     const length = Math.min(64 * 1024, MAX_TEXT_FILE_BYTES + 1 - total);
     const buffer = Buffer.allocUnsafe(length);
     const { bytesRead } = await handle.read(buffer, 0, length, total);
+    if (signal?.aborted) throw abortError(signal);
     if (bytesRead === 0) break;
     total += bytesRead;
     if (total > MAX_TEXT_FILE_BYTES) {
@@ -424,8 +431,10 @@ async function readTextHandle(handle, filePath) {
  * The Read offset/limit schema follows the released CLI 2.1.304 shape.
  * Bytes are scanned incrementally and never buffered beyond the output cap.
  */
-async function readTextLinesHandle(handle, filePath, { offset = 0, limit = Infinity } = {}) {
+async function readTextLinesHandle(handle, filePath, { offset = 0, limit = Infinity } = {}, signal) {
+  if (signal?.aborted) throw abortError(signal);
   const info = await handle.stat();
+  if (signal?.aborted) throw abortError(signal);
   if (!info.isFile()) throw new Error('Not a regular file: ' + filePath);
   const pieces = [];
   let outputBytes = 0;
@@ -433,12 +442,15 @@ async function readTextLinesHandle(handle, filePath, { offset = 0, limit = Infin
   let lineIndex = 0;
 
   while (true) {
+    if (signal?.aborted) throw abortError(signal);
     const buffer = Buffer.allocUnsafe(64 * 1024);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, byteOffset);
+    if (signal?.aborted) throw abortError(signal);
     if (bytesRead === 0) break;
     byteOffset += bytesRead;
     let start = 0;
     while (start < bytesRead) {
+      if (signal?.aborted) throw abortError(signal);
       const newline = buffer.indexOf(10, start);
       const end = newline < 0 || newline >= bytesRead ? bytesRead : newline + 1;
       if (lineIndex >= offset && lineIndex - offset < limit) {
@@ -465,13 +477,17 @@ async function readTextLinesHandle(handle, filePath, { offset = 0, limit = Infin
   return Buffer.concat(pieces, outputBytes).toString('utf8');
 }
 
-async function readTextFile(workspace, filePath, options) {
+async function readTextFile(workspace, filePath, options, signal) {
+  if (signal?.aborted) throw abortError(signal);
   const handle = await openWorkspaceFile(workspace, filePath, constants.O_RDONLY);
   try {
     // Await the selected read before the finally block closes its file handle.
-    return options === undefined
-      ? await readTextHandle(handle, filePath)
-      : await readTextLinesHandle(handle, filePath, options);
+    if (signal?.aborted) throw abortError(signal);
+    const value = options === undefined
+      ? await readTextHandle(handle, filePath, signal)
+      : await readTextLinesHandle(handle, filePath, options, signal);
+    if (signal?.aborted) throw abortError(signal);
+    return value;
   } finally {
     await handle.close();
   }
@@ -601,11 +617,13 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
   // Preserve the original workspace-safe Read implementation and its direct
   // execute() API, but route actual AgentLoop execution through the 2.1.88
   // Tool.call + result mapper contract. No duplicate read implementation.
-  const executeRead = async ({ file_path, offset, limit }) => {
+  const executeRead = async ({ file_path, offset, limit }, { signal } = {}) => {
+    if (signal?.aborted) throw abortError(signal);
     const target = resolveWorkspacePath(root, file_path);
     await assertPathWithinWorkspace(root, target);
+    if (signal?.aborted) throw abortError(signal);
     return readTextFile(root, target,
-      offset === undefined && limit === undefined ? undefined : { offset, limit });
+      offset === undefined && limit === undefined ? undefined : { offset, limit }, signal);
   };
 
   tools.register({
@@ -626,7 +644,7 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
       additionalProperties: false,
     },
     execute: executeRead,
-    call: async (input) => ({ data: await executeRead(input) }),
+    call: async (input, context) => ({ data: await executeRead(input, context) }),
     mapToolResultToToolResultBlockParam: (data, toolUseId) => ({
       type: 'tool_result',
       tool_use_id: toolUseId,
@@ -709,12 +727,14 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
       required: ['pattern'],
       additionalProperties: false,
     },
-    execute: async ({ pattern }) => {
+    execute: async ({ pattern }, { signal } = {}) => {
+      if (signal?.aborted) throw abortError(signal);
       if (pattern.startsWith('/') || pattern.split('/').includes('..')) {
         throw new Error('Glob pattern must stay within the workspace.');
       }
       const matcher = globToRegExp(pattern);
-      const walked = await walkFiles(root);
+      const walked = await walkFiles(root, undefined, signal);
+      if (signal?.aborted) throw abortError(signal);
       const matches = walked.files
         .map((file) => relative(root, file).split(sep).join('/'))
         .filter((file) => matcher.test(file))
@@ -740,26 +760,32 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
       required: ['pattern'],
       additionalProperties: false,
     },
-    execute: async ({ pattern, path = '.', ignore_case = false }) => {
+    execute: async ({ pattern, path = '.', ignore_case = false }, { signal } = {}) => {
+      if (signal?.aborted) throw abortError(signal);
       const start = resolveWorkspacePath(root, path);
       await assertPathWithinWorkspace(root, start);
       const info = await stat(start);
-      const walked = info.isFile() ? { files: [start], truncated: false } : await walkFiles(start);
+      const walked = info.isFile() ? { files: [start], truncated: false } :
+        await walkFiles(start, undefined, signal);
+      if (signal?.aborted) throw abortError(signal);
       const files = walked.files;
       const matcher = new RegExp(pattern, ignore_case ? 'i' : '');
       const matches = [];
       let truncated = walked.truncated;
       for (const file of files) {
+        if (signal?.aborted) throw abortError(signal);
         if (matches.length >= 200) { truncated = true; break; }
         let content;
         try {
-          content = await readTextFile(root, file);
+          content = await readTextFile(root, file, undefined, signal);
         } catch (error) {
+          if (signal?.aborted) throw abortError(signal);
           if (error instanceof Error && (error.message.includes('1 MiB') || error.message.includes('binary file'))) continue;
           throw error;
         }
         const lines = content.split(/\r?\n/);
         for (let i = 0; i < lines.length; i += 1) {
+          if (signal?.aborted) throw abortError(signal);
           if (matcher.test(lines[i])) {
             matches.push({
               path: relative(root, file).split(sep).join('/'),
