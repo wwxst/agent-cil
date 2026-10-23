@@ -177,3 +177,56 @@ test('stream protocol rejects unknown blocks, mismatched signature, malformed re
     await assert.rejects(collect(adapterFor([stream], [])), ModelAdapterError);
   }
 });
+
+
+test('2.1.304 redacted block ignores known thinking_delta without modifying opaque data', async () => {
+  const response = start() +
+    open(0, { type: 'redacted_thinking', data: 'encrypted-raw' }) +
+    delta(0, { type: 'thinking_delta' }) + close(0) +
+    open(1, { type: 'text', text: '' }) +
+    delta(1, { type: 'text_delta', text: 'visible' }) +
+    close(1) + end('end_turn');
+  const events = await collect(adapterFor([response], [], 'https://api.anthropic.com'));
+  assert.deepEqual(events.filter(x => x.type !== 'usage'), [
+    { type: 'redacted_thinking', data: 'encrypted-raw' },
+    { type: 'text_delta', text: 'visible' },
+    { type: 'message_end', stopReason: 'end_turn' },
+  ]);
+});
+
+test('abort during unfinished thinking/tool SSE never executes tools or commits a partial message', async () => {
+  const controller = new AbortController();
+  const tools = new ToolRegistry();
+  let executed = 0, modelErrors = 0;
+  tools.register({
+    name: 'Read', description: 'Fixture Read',
+    execute: async () => { executed++; return 'data'; },
+  });
+  const chunk = start() +
+    open(0, { type: 'thinking', thinking: '' }) +
+    delta(0, { type: 'thinking_delta', thinking: 'unfinished sensitive thought' }) +
+    delta(0, { type: 'signature_delta', signature: 'unfinished-signature' }) +
+    close(0) +
+    open(1, { type: 'tool_use', id: 'tool-waiting', name: 'Read', input: {} });
+  const model = new AnthropicMessagesAdapter({
+    apiKey: 'fixture-key', model: 'deepseek-flash',
+    baseUrl: 'https://api.deepseek.com/anthropic', maxRetries: 0,
+    fetchImpl: async () => ({
+      ok: true, status: 200,
+      body: { async *[Symbol.asyncIterator]() {
+        yield Buffer.from(chunk);
+        controller.abort(Object.assign(new Error('user cancelled'), { name: 'AbortError' }));
+        yield Buffer.from(delta(1, { type: 'input_json_delta', partial_json: '{}' }) +
+          close(1) + end('tool_use'));
+      } },
+    }),
+  });
+  const loop = new AgentLoop({
+    model, tools, permissionPolicy: async () => ({ behavior: 'allow' }),
+  });
+  loop.on('modelError', () => modelErrors++);
+  await assert.rejects(loop.run({ input: 'cancel', signal: controller.signal }), /user cancelled/);
+  assert.equal(executed, 0);
+  assert.equal(modelErrors, 1);
+  assert.equal(loop.active, false);
+});
