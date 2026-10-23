@@ -209,3 +209,100 @@ test('ported scheduler discards pending tool results during a streaming fallback
   assert.deepEqual(seen, []);
   assert.deepEqual(invoked, ['read-1'], 'unstarted exclusive tool should not be executed after discard');
 });
+
+test('parallel safe results retain input order when the second tool finishes first', async () => {
+  const gates = { one: defer(), two: defer() };
+  const executor = new StreamingToolExecutor({
+    getTool: () => ({ isConcurrencySafe: () => true }),
+    execute: async block => {
+      await gates[block.id].promise;
+      return result(block.id, block.id);
+    },
+  });
+  executor.addTool(block('one', 'Read'));
+  executor.addTool(block('two', 'Read'));
+  const seen = [];
+  const reading = (async () => {
+    for await (const update of executor.getRemainingResults()) {
+      if (update.message) seen.push(update.message.content[0].tool_use_id);
+    }
+    return seen;
+  })();
+  gates.two.resolve();
+  await flush();
+  assert.deepEqual(seen, [], 'later completed reads cannot overtake an earlier pending result');
+  gates.one.resolve();
+  assert.deepEqual(await reading, ['one', 'two']);
+});
+
+test('discard terminates an active result drain without an event-loop spin', async () => {
+  const gate = defer();
+  const executor = new StreamingToolExecutor({
+    getTool: () => ({ isConcurrencySafe: () => true }),
+    execute: async () => {
+      await gate.promise;
+      return result('one', 'done');
+    },
+  });
+  executor.addTool(block('one', 'Read'));
+  const seen = [];
+  const reading = (async () => {
+    for await (const update of executor.getRemainingResults()) seen.push(update);
+    return seen;
+  })();
+  await flush();
+  executor.discard();
+  gate.resolve();
+  assert.deepEqual(await reading, []);
+});
+
+test('interruptBehavior block keeps running tool signal live on parent interrupt', async () => {
+  const parent = new AbortController();
+  const gate = defer();
+  let toolSignal;
+  const executor = new StreamingToolExecutor({
+    signal: parent.signal,
+    getTool: () => ({ interruptBehavior: () => 'block' }),
+    execute: async (item, { signal }) => {
+      toolSignal = signal;
+      await gate.promise;
+      if (signal.aborted) throw new Error('unexpected cancellation');
+      return result(item.id, 'finished');
+    },
+  });
+  executor.addTool(block('one', 'Write'));
+  assert.ok(toolSignal);
+  parent.abort('interrupt');
+  assert.equal(toolSignal.aborted, false, 'blocking interrupt must not abort the tool');
+  gate.resolve();
+  const seen = [];
+  for await (const update of executor.getRemainingResults()) {
+    if (update.message) seen.push(update.message.content[0]);
+  }
+  assert.deepEqual(seen, [result('one', 'finished')]);
+});
+
+test('interruptBehavior cancel propagates parent interrupt to the tool signal', async () => {
+  const parent = new AbortController();
+  const gate = defer();
+  let toolSignal;
+  const executor = new StreamingToolExecutor({
+    signal: parent.signal,
+    getTool: () => ({ interruptBehavior: () => 'cancel' }),
+    execute: async (item, { signal }) => {
+      toolSignal = signal;
+      await gate.promise;
+      return result(item.id, 'finished');
+    },
+  });
+  executor.addTool(block('one', 'Bash'));
+  parent.abort('interrupt');
+  assert.equal(toolSignal.aborted, true);
+  gate.resolve();
+  const seen = [];
+  for await (const update of executor.getRemainingResults()) {
+    if (update.message) seen.push(update.message.content[0]);
+  }
+  assert.equal(seen[0].is_error, true);
+  assert.match(seen[0].content, /User rejected tool use/);
+});
