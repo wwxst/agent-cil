@@ -266,6 +266,7 @@ export class AnthropicMessagesAdapter {
         throw new ModelAdapterError('Messages API stream error: ' + message);
       }
       if (type === 'message_start') {
+        if (messageStarted) throw new ModelAdapterError('Messages API sent duplicate message_start.');
         messageStarted = true;
         const initialUsage = payload.message?.usage;
         if (isRecord(initialUsage)) {
@@ -273,12 +274,18 @@ export class AnthropicMessagesAdapter {
           yield { type: 'usage', usage: structuredClone(usage) };
         }
       } else if (type === 'content_block_start') {
+        if (!messageStarted || stopReason !== undefined) {
+          throw new ModelAdapterError('Messages API started a content block before message_start or after stop_reason.');
+        }
         const block = payload.content_block;
         if (!Number.isSafeInteger(payload.index) || payload.index < 0 || !isRecord(block)) {
           throw new ModelAdapterError('Messages API sent a malformed content_block_start.');
         }
         if (block.type === 'server_tool_use') {
           throw new ModelAdapterError('Server-side tool use is not supported by this client-tool adapter.');
+        }
+        if (block.type !== 'text' && block.type !== 'tool_use') {
+          throw new ModelAdapterError('Messages API sent unsupported content block type: ' + String(block.type));
         }
         if (blocks.has(payload.index)) throw new ModelAdapterError('Messages API reused an active content block index.');
         const state = { type: block.type };
@@ -299,16 +306,24 @@ export class AnthropicMessagesAdapter {
           yield { type: 'text_delta', text: block.text };
         }
       } else if (type === 'content_block_delta') {
+        if (!messageStarted || stopReason !== undefined) {
+          throw new ModelAdapterError('Messages API sent content delta outside the active message.');
+        }
         const state = blocks.get(payload.index);
         const delta = payload.delta;
         if (!state || !isRecord(delta)) throw new ModelAdapterError('Messages API sent a delta for an unknown content block.');
-        if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+        if (delta.type === 'text_delta' && state.type === 'text' && typeof delta.text === 'string') {
           yield { type: 'text_delta', text: delta.text };
         } else if (delta.type === 'input_json_delta' && state.type === 'tool_use'
           && typeof delta.partial_json === 'string') {
           state.partialJson += delta.partial_json;
+        } else {
+          throw new ModelAdapterError('Messages API sent an incompatible content_block_delta for ' + state.type + '.');
         }
       } else if (type === 'content_block_stop') {
+        if (!messageStarted || stopReason !== undefined) {
+          throw new ModelAdapterError('Messages API stopped a content block outside the active message.');
+        }
         const state = blocks.get(payload.index);
         if (!state) throw new ModelAdapterError('Messages API stopped an unknown content block.');
         if (state.type === 'tool_use') {
@@ -325,6 +340,9 @@ export class AnthropicMessagesAdapter {
         }
         blocks.delete(payload.index);
       } else if (type === 'message_delta') {
+        if (!messageStarted || blocks.size > 0) {
+          throw new ModelAdapterError('Messages API sent message_delta before message_start or with unfinished content blocks.');
+        }
         if (typeof payload.delta?.stop_reason === 'string') stopReason = payload.delta.stop_reason;
         if (isRecord(payload.usage)) {
           usage = { ...usage, ...payload.usage };
@@ -337,6 +355,8 @@ export class AnthropicMessagesAdapter {
         messageStopped = true;
         yield { type: 'message_end', stopReason: mapStopReason(stopReason) };
         return;
+      } else {
+        throw new ModelAdapterError('Messages API sent an unsupported SSE event: ' + String(type));
       }
     }
 
