@@ -282,7 +282,14 @@ export async function query({
           throw new ModelProtocolError('Legacy scheduler returned a mismatched number of tool results.');
         }
         history.push({ role: 'user', content: toolResults });
-        emit('turnFinished', { turn, stopReason, toolResultCount: toolResults.length });
+        // A complete assistant tool call and all matching tool_result blocks
+        // form a resumable checkpoint. This is the headless CLI equivalent of
+        // the 2.1.88 query.ts stream exposing committed messages before a
+        // later API failure. Never checkpoint partial streams or tool batches.
+        emit('turnFinished', {
+          turn, stopReason, toolResultCount: toolResults.length,
+          committedMessages: structuredClone(history),
+        });
 
         if (turn === maxTurns) {
           const result = { messages: history, turns: turn, stopReason: 'max_turns', finalMessage: assistantMessage };
