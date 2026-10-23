@@ -7,7 +7,7 @@ function sse(type, fields = {}) {
     'data: ' + JSON.stringify({ type, ...fields }) + '\n\n';
 }
 
-test('DeepSeek V4.1 custom model alias passes unchanged to nested Anthropic-compatible endpoint', async () => {
+test('official DeepSeek V4.1 Flash model ID passes unchanged to Anthropic-compatible endpoint', async () => {
   const requests = [];
   const fakeSse = [
     sse('message_start', { message: { usage: { input_tokens: 5 } } }),
@@ -19,7 +19,7 @@ test('DeepSeek V4.1 custom model alias passes unchanged to nested Anthropic-comp
   ].join('');
   const adapter = new AnthropicMessagesAdapter({
     apiKey: 'mock-key-not-real',
-    model: 'deepseek4.1flsh',
+    model: 'deepseek-flash',
     maxTokens: 64,
     baseUrl: 'https://api.deepseek.com/anthropic',
     fetchImpl: async (url, options) => {
@@ -40,7 +40,7 @@ test('DeepSeek V4.1 custom model alias passes unchanged to nested Anthropic-comp
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, 'https://api.deepseek.com/anthropic/v1/messages');
   assert.deepEqual(JSON.parse(requests[0].options.body), {
-    model: 'deepseek4.1flsh',
+    model: 'deepseek-flash',
     max_tokens: 64,
     messages: [{ role: 'user', content: 'Reply READY' }],
     stream: true,
