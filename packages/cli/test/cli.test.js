@@ -10,6 +10,7 @@ import { AgentLoop } from '../../runtime/src/agent-loop.js';
 import {
   CliArgumentError,
   createBuiltinTools,
+  createCliPermissionContext,
   createCliPermissionPolicy,
   main,
   parseArgs,
@@ -1371,5 +1372,31 @@ test('npm-style symlink executable invokes CLI main rather than exiting silently
     assert.equal(run.stderr, '');
   } finally {
     await rm(folder, { recursive: true, force: true });
+  }
+});
+
+
+test('ported legacy acceptEdits mode is the active CLI policy without bypassing Bash or path validation', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-legacy-mode-'));
+  try {
+    const defaultContext = createCliPermissionContext();
+    const editContext = createCliPermissionContext({ allowEdits: true });
+    assert.equal(defaultContext.mode, 'default');
+    assert.equal(editContext.mode, 'acceptEdits');
+
+    const normal = createCliPermissionPolicy({ workspace, permissionContext: defaultContext });
+    const edits = createCliPermissionPolicy({ workspace, permissionContext: editContext });
+
+    assert.equal((await normal({ name: 'Write', input: { file_path: 'safe.txt' } })).behavior, 'ask');
+    assert.equal((await edits({ name: 'Write', input: { file_path: 'safe.txt' } })).behavior, 'allow');
+    assert.equal((await edits({ name: 'Edit', input: { file_path: 'safe.txt' } })).behavior, 'allow');
+    assert.equal((await edits({ name: 'Bash', input: { command: 'echo hi' } })).behavior, 'ask');
+
+    const escaped = await edits({ name: 'Write', input: { file_path: '../outside.txt' } });
+    assert.equal(escaped.behavior, 'deny');
+    assert.match(escaped.reason, /escapes the workspace/);
+    assert.equal((await edits({ name: 'Read', input: { file_path: 'safe.txt' } })).behavior, 'allow');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
   }
 });

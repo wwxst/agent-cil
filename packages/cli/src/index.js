@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
@@ -194,7 +195,26 @@ async function assertPathWithinWorkspace(workspace, target) {
  * the workspace before prompting; the Runtime repeats this check if a policy
  * or approval handler changes the effective input.
  */
-export function createCliPermissionPolicy({ workspace = process.cwd() } = {}) {
+/**
+ * The legacy 2.1.88 permission update operation is now the source of the
+ * opt-in acceptEdits mode; no special-case bypass in the approval handler.
+ * Additional rule persistence stays disabled until the original dependency
+ * closure is runnable and independently verified.
+ */
+export function createCliPermissionContext({ allowEdits = false } = {}) {
+  return applyPermissionUpdates({
+    mode: 'default',
+    alwaysAllowRules: {},
+    alwaysDenyRules: {},
+    alwaysAskRules: {},
+    additionalWorkingDirectories: new Map(),
+  }, allowEdits ? [{ type: 'setMode', destination: 'cliArg', mode: 'acceptEdits' }] : []);
+}
+
+export function createCliPermissionPolicy({
+  workspace = process.cwd(),
+  permissionContext = createCliPermissionContext(),
+} = {}) {
   const root = resolve(workspace);
   return async ({ name, input } = {}) => {
     if (name === 'Glob') {
@@ -220,7 +240,9 @@ export function createCliPermissionPolicy({ workspace = process.cwd() } = {}) {
       if (name === 'Read' || name === 'Grep') {
         return { behavior: 'allow', reason: 'Read-only workspace operation.' };
       }
-      return { behavior: 'ask', reason: 'This tool modifies workspace files.' };
+      return permissionContext.mode === 'acceptEdits'
+        ? { behavior: 'allow', reason: 'Edits authorized by acceptEdits mode.' }
+        : { behavior: 'ask', reason: 'This tool modifies workspace files.' };
     }
 
     if (name === 'Bash') {
@@ -819,15 +841,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const loop = new AgentLoop({
     model,
     tools,
-    permissionPolicy: createCliPermissionPolicy({ workspace }),
+    permissionPolicy: createCliPermissionPolicy({
+      workspace,
+      permissionContext: createCliPermissionContext({ allowEdits: options.allowEdits }),
+    }),
     maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
-      // Explicit opt-in for headless editing. The permission policy and Runtime
-      // schema/path rechecks have already run; Bash remains ask-only.
-      if (options.allowEdits && (name === 'Write' || name === 'Edit')) {
-        process.stderr.write('[permission] auto-approved ' + name + ' (--allow-edits)\n');
-        return { approved: true };
-      }
       if (!rl || options.print || !process.stdin.isTTY) {
         process.stderr.write('[permission] denied ' + name + ': interactive approval is unavailable.\n');
         return { approved: false, reason: 'Interactive approval is unavailable.' };
@@ -857,6 +876,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   };
   process.on('SIGINT', onSigint);
   loop.on('toolCallStarted', ({ toolName }) => {
+    if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
+      process.stderr.write('[permission] auto-approved ' + toolName + ' (--allow-edits)\n');
+    }
     process.stderr.write('\n[tool] ' + toolName + '\n');
   });
   loop.on('toolCallFinished', ({ toolName, isError, denied }) => {
