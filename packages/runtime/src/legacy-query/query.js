@@ -135,6 +135,7 @@ export async function query({
         let stopReason;
         let messageEnded = false;
         let sawStreamEvent = false;
+        let lastUsage;
         // Original 2.1.88 query.ts starts its StreamingToolExecutor before
         // the model response is finished. Keep this existing port and its
         // ordered queue; do not create another dispatch system.
@@ -257,6 +258,12 @@ export async function query({
               stopReason = reason;
               messageEnded = true;
             } else if (event.type === 'usage') {
+              // Messages API yields initial and final usage snapshots.
+              // Store only the most recent complete snapshot, never sum
+              // snapshots (they are not per-event billable deltas).
+              if (event.usage && typeof event.usage === 'object') {
+                lastUsage = structuredClone(event.usage);
+              }
               emit('usage', { turn, usage: event.usage });
             } else {
               throw new ModelProtocolError('Unsupported model stream event: ' + event.type);
@@ -320,6 +327,10 @@ export async function query({
         const needsFollowUp = toolUses.length > 0;
 
         assistantMessage.stop_reason = stopReason;
+        // Keep accounting outside content blocks so protected thinking/tool
+        // payloads remain unchanged. Anthropic adapter serializes role/content
+        // only; Query compaction may use usage as the latest accurate anchor.
+        if (lastUsage) assistantMessage.usage = lastUsage;
         history.push(assistantMessage);
         emit('assistantMessage', { turn, message: structuredClone(assistantMessage) });
 
