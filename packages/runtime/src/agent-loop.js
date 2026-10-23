@@ -8,6 +8,7 @@ export { ModelProtocolError } from './legacy-query/query.js';
 import { resolveToolSpecificPermission } from './legacy-permissions/tool-specific-permission.js';
 
 const MAX_PERMISSION_INPUT_REWRITES = 8;
+const EARLY_READ_TOOLS = new Set(['Read', 'Glob', 'Grep']);
 
 function isRecord(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -114,6 +115,8 @@ export class AgentLoop extends EventEmitter {
         model: this.#model,
         tools: this.#tools,
         maxTurns: this.#maxTurns,
+        canStartToolDuringStream: (toolUse, context) =>
+          this.#canStartToolDuringStream(toolUse, context),
         executeTool: (toolUse, context) => this.#executeTool(toolUse, context),
         emit: (eventName, event) => this.emit(eventName, event),
       });
@@ -122,7 +125,46 @@ export class AgentLoop extends EventEmitter {
     }
   }
 
-  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress }) {
+  /**
+   * Read-only speculation gate. Ported Query may start a tool as soon as its
+   * tool_use block is complete, but only the trusted CLI Read/Glob/Grep tools
+   * opt in. Preview global permissions without approvals or rewritten inputs;
+   * the normal execution path validates and re-authorizes again.
+   */
+  async #canStartToolDuringStream(toolUse, { history, signal }) {
+    // Only policies explicitly declaring independence from the evolving
+    // assistant message may run before it is complete. Custom policies that
+    // inspect message history retain the original post-message_end behavior.
+    if (this.#permissionPolicy.supportsStreamingPreflight !== true) return false;
+    const tool = this.#tools.get(toolUse.name);
+    if (!tool || !EARLY_READ_TOOLS.has(toolUse.name) ||
+      tool.canRunDuringStream !== true ||
+      typeof tool.isConcurrencySafe !== 'function' ||
+      tool.validateInput || tool.checkPermissions) return false;
+    try {
+      if (!tool.isConcurrencySafe(toolUse.input)) return false;
+      abortIfNeeded(signal);
+      const result = await this.#permissionPolicy({
+        name: tool.name,
+        tool: { name: tool.name, description: tool.description,
+          inputSchema: structuredClone(tool.inputSchema) },
+        input: structuredClone(toolUse.input),
+        toolUseId: toolUse.id,
+        messages: structuredClone(history),
+        signal,
+        phase: 'streaming-preflight',
+      });
+      abortIfNeeded(signal);
+      return result?.behavior === 'allow' && result.updatedInput === undefined;
+    } catch (error) {
+      if (signal?.aborted) abortIfNeeded(signal);
+      // Unknown, asking, rewritten or failing preflight is never permission
+      // to speculate. The ordinary complete-turn execution path still runs.
+      return false;
+    }
+  }
+
+  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress, speculative = false }) {
     const tool = this.#tools.get(toolUse.name);
     if (!tool) {
       const result = toolError(toolUse, 'Unknown tool: ' + toolUse.name);
@@ -256,6 +298,18 @@ export class AgentLoop extends EventEmitter {
       }
 
       if (behavior === 'ask') {
+        // A changing policy cannot start an interactive approval while the
+        // model stream is incomplete. Fail closed rather than speculatively
+        // asking or executing with stale preflight authorization.
+        if (speculative) {
+          const result = toolError(toolUse,
+            'Tool call denied: streaming preflight authorization is no longer sufficient.');
+          this.emit('toolCallFinished', {
+            turn, toolUseId: toolUse.id, toolName: tool.name,
+            isError: true, denied: true,
+          });
+          return result;
+        }
         this.emit('permissionRequired', {
           turn,
           toolUseId: toolUse.id,
