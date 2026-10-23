@@ -819,3 +819,97 @@ test('Glob and Grep search within the workspace and return relative paths', asyn
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+
+test('TTY positional prompt remains interactive and preserves history for the next turn', {
+  skip: process.platform !== 'linux' || spawnSync('script', ['--version'], { stdio: 'ignore' }).status !== 0,
+  timeout: 15000,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-tty-history-'));
+  const requests = [];
+  const sse = (type, fields = {}) => 'event: ' + type + '\ndata: ' + JSON.stringify({ type, ...fields }) + '\n\n';
+  const assistantResponse = text => [
+    sse('message_start', { message: { usage: { input_tokens: 3 } } }),
+    sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+    sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text } }),
+    sse('content_block_stop', { index: 0 }),
+    sse('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } }),
+    sse('message_stop'),
+  ].join('');
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', connection: 'close' });
+    res.end(assistantResponse(requests.length === 1 ? 'FIRST_RESPONSE_OK' : 'SECOND_RESPONSE_OK'));
+  });
+
+  let child;
+  let timeout;
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const addr = server.address();
+    assert.ok(addr && typeof addr === 'object');
+    const cliPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+    const quote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
+    const command = [
+      process.execPath,
+      cliPath,
+      '--model', 'local-tty-fixture',
+      '--base-url', 'http://127.0.0.1:' + addr.port,
+      '--cwd', workspace,
+      'first prompt',
+    ].map(quote).join(' ');
+
+    child = spawn('script', ['-q', '-e', '-c', command, '/dev/null'], {
+      env: { ...process.env, ANTHROPIC_API_KEY: 'local-tty-key' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let output = '';
+    let stderr = '';
+    let promptCount = 0;
+    let sentFollowUp = false;
+    let sentExit = false;
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      output += chunk;
+      const found = (output.match(/you> /g) || []).length;
+      if (found > promptCount) promptCount = found;
+      if (promptCount >= 1 && !sentFollowUp) {
+        sentFollowUp = true;
+        child.stdin.write('second prompt\n');
+      }
+      if (promptCount >= 2 && !sentExit) {
+        sentExit = true;
+        child.stdin.write('/exit\n');
+      }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    timeout = setTimeout(() => { child.kill('SIGKILL'); }, 9000);
+    const [status, sig] = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, signal) => resolve([code, signal]));
+    });
+
+    assert.equal(sig, null, 'TTY test process timed out: ' + output + '\n' + stderr);
+    assert.equal(status, 0, output + '\n' + stderr);
+    assert.ok(sentExit, 'CLI never offered a second interactive prompt: ' + output);
+    assert.match(output, /FIRST_RESPONSE_OK/);
+    assert.match(output, /SECOND_RESPONSE_OK/);
+    assert.equal(requests.length, 2);
+    const secondMessages = requests[1].messages;
+    assert.ok(secondMessages.some(m => m.role === 'user' && m.content === 'first prompt'));
+    assert.ok(secondMessages.some(m => m.role === 'assistant' &&
+      Array.isArray(m.content) && m.content.some(block => block.text === 'FIRST_RESPONSE_OK')));
+    assert.ok(secondMessages.some(m => m.role === 'user' && m.content === 'second prompt'));
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
+    await new Promise(resolve => server.close(resolve));
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
