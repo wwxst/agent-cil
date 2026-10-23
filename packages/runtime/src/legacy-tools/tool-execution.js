@@ -180,6 +180,7 @@ async function checkPermissionsAndCallTool(
     onToolProgress,
     tool,
     assistantMessage,
+    toolUseContext,
   });
   if (!block || block.type !== 'tool_result' || block.tool_use_id !== toolUse.id) {
     throw new Error('Tool execution adapter returned a mismatched tool_result.');
