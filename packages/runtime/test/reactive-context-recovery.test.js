@@ -214,3 +214,39 @@ test('summary streaming failure never retries and cannot commit a fake transcrip
   assert.equal(summary, 1);
   assert.equal(commits, 0);
 });
+
+
+test('two summary context rejections discard two different whole groups, not the synthetic marker twice', async () => {
+  const more = [
+    ...history,
+    toolCall('read-4', 'Read'), toolResult('read-4'),
+    toolCall('read-5', 'Read'), toolResult('read-5'),
+  ];
+  let attempts = 0;
+  const model = { async *stream({ messages, tools, purpose }) {
+    assert.equal(purpose, 'compact');
+    assert.deepEqual(tools, []);
+    attempts++;
+    const ids = messages.filter(m => m.role === 'assistant')
+      .flatMap(m => m.content.filter(b => b.type === 'tool_use').map(b => b.id));
+    if (attempts === 1) {
+      assert.deepEqual(ids, ['edit-1', 'read-2', 'read-3']);
+      throw overflow();
+    }
+    if (attempts === 2) {
+      assert.deepEqual(ids, ['edit-1', 'read-2', 'read-3'],
+        'first retry removed the leading user-only group');
+      throw overflow();
+    }
+    assert.deepEqual(ids, ['read-2', 'read-3'],
+      'second retry must drop the first real assistant/tool_result group');
+    assert.match(messages[0].content, /Older conversation rounds omitted/);
+    yield { type: 'text_delta', text: 'Old work was completed and verified, continue.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const compact = createAutoCompact({ thresholdTokens: 999999 });
+  const result = await compact.compact({ messages: more, model, force: true });
+  assert.equal(attempts, 3);
+  assert.equal(result.compacted, true);
+  assert.deepEqual(result.messages.slice(1), more.slice(-4));
+});
