@@ -14,6 +14,16 @@ import { ModelContextLengthError } from '../anthropic-messages-adapter.js';
 const MIN_SUMMARY_CHARS = 12;
 const MAX_SUMMARY_CHARS = 16000;
 const MAX_CONSECUTIVE_FAILURES = 3;
+const RAPID_REFILL_TURN_LIMIT = 3;
+const RAPID_REFILL_MAX_CONSECUTIVE = 3;
+
+export class RapidRefillBreakerError extends Error {
+  constructor() {
+    super('Context repeatedly refilled in fewer than 3 tool turns after compaction; stopping this agent chain to avoid a compaction loop.');
+    this.name = 'RapidRefillBreakerError';
+    this.code = 'rapid_refill_breaker_tripped';
+  }
+}
 
 function aborted(signal) {
   if (!signal?.aborted) return;
@@ -141,12 +151,22 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
     throw new RangeError('Compact threshold must be a non-negative integer.');
   }
   let consecutiveFailures = 0;
+  // 2.1.304 XYo/ySr/kfo state: only rapid SUCCESSFUL compactions in the
+  // same query chain count; separate user prompts start a fresh chain.
+  let activeChain;
+  let lastCompactTurn = null;
+  let consecutiveRapidRefills = 0;
   return {
-    async compact({ messages, model, signal, force = false } = {}) {
+    async compact({ messages, model, signal, force = false, chainId, turn } = {}) {
       aborted(signal);
+      if (chainId !== undefined && chainId !== activeChain) {
+        activeChain = chainId;
+        lastCompactTurn = null;
+        consecutiveRapidRefills = 0;
+      }
       // Disabled compaction must be a strict no-op, including for providers
       // with non-text content blocks that this first port cannot estimate.
-      if (thresholdTokens === 0 || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      if (thresholdTokens === 0 || (!force && consecutiveFailures >= MAX_CONSECUTIVE_FAILURES)) {
         return { messages, compacted: false };
       }
       const estimatedTokens = estimateMessageTokens(messages);
@@ -159,6 +179,15 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
       const selection = selectCompletedPrefix(messages, keepRecentRounds);
       if (!selection) return { messages, compacted: false, estimatedTokens };
       const { prefix, recent } = selection;
+      // Preserve the newer CLI's chain-local rapid-refill breaker, distinct
+      // from the older circuit breaker for three failed summary requests.
+      const withinSameChain = chainId !== undefined &&
+        lastCompactTurn !== null && Number.isSafeInteger(turn) &&
+        turn >= lastCompactTurn && turn - lastCompactTurn < RAPID_REFILL_TURN_LIMIT;
+      const nextRapidCount = withinSameChain ? consecutiveRapidRefills + 1 : 0;
+      if (!force && nextRapidCount >= RAPID_REFILL_MAX_CONSECUTIVE) {
+        throw new RapidRefillBreakerError();
+      }
       // The original autoCompactIfNeeded returns wasCompacted:false on a
       // proactive failure rather than aborting the active Query. Before even
       // sampling, account for the mandatory new summary envelope, not just
@@ -253,6 +282,10 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
           throw new Error('Summary did not sufficiently reduce context size.');
         }
         consecutiveFailures = 0;
+        if (chainId !== undefined && Number.isSafeInteger(turn)) {
+          lastCompactTurn = turn;
+          consecutiveRapidRefills = nextRapidCount;
+        }
         return {
           messages: next, compacted: true,
           estimatedTokens, compactedTokens: nextTokens,
