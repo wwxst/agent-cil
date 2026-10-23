@@ -973,7 +973,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   compactThreshold ??= provider === 'deepseek' ? 850000 : 0;
   const { createAutoCompact } = await import('../../runtime/src/legacy-compact/auto-compact.js');
-  const autoCompact = createAutoCompact({ thresholdTokens: compactThreshold });
+  const autoCompact = createAutoCompact({
+    thresholdTokens: compactThreshold,
+    contextWindowTokens: provider === 'deepseek' ? 1048576 : undefined,
+    reservedOutputTokens: options.maxTokens,
+  });
   const loop = new AgentLoop({
     model,
     tools,
