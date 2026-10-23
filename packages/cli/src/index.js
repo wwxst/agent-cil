@@ -28,8 +28,9 @@ export const HELP = [
   '  -h, --help              Show help',
   '  -v, -V, --version       Show version',
   '  -p, --print             Run one prompt and print only the assistant response',
-  '      --model <name>      Anthropic model (default: ANTHROPIC_MODEL or claude-sonnet-4-5)',
-  '      --base-url <url>    Messages API base URL (default: ANTHROPIC_BASE_URL or https://api.anthropic.com)',
+  '      --model <name>      Model ID (default depends on provider)',
+  '      --base-url <url>    API endpoint base URL (defaults to provider URL)',
+  '      --provider <name>   anthropic (default), deepseek, or openai',
   '      --max-tokens <n>    Maximum output tokens (default: 4096)',
   '      --max-turns <n>     Maximum model rounds per prompt (default: 8)',
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
@@ -40,7 +41,11 @@ export const HELP = [
   'Environment:',
   '  ANTHROPIC_API_KEY       Required for model requests',
   '  ANTHROPIC_MODEL         Default model name',
-  '  ANTHROPIC_BASE_URL      Optional API-compatible endpoint',
+  '  ANTHROPIC_BASE_URL      Optional Anthropic-compatible endpoint',
+  '  DEEPSEEK_API_KEY        DeepSeek key (fallback: ANTHROPIC_API_KEY)',
+  '  OPENAI_API_KEY          OpenAI key for --provider openai',
+  '  OPENAI_MODEL            Default OpenAI model ID',
+  '  OPENAI_BASE_URL         Optional OpenAI Chat API base URL',
   '',
   'Built-in tools:',
   '  Read, Glob, Grep       Read-only workspace tools',
@@ -71,6 +76,7 @@ export function parseArgs(argv) {
     print: false,
     model: undefined,
     baseUrl: undefined,
+    provider: 'anthropic',
     maxTokens: 4096,
     maxTurns: 8,
     maxRetries: 2,
@@ -98,6 +104,12 @@ export function parseArgs(argv) {
       options.print = true;
     } else if (arg === '--allow-edits') {
       options.allowEdits = true;
+    } else if (arg === '--provider' || arg.startsWith('--provider=')) {
+      const provider = arg === '--provider' ? takeValue(arg, i++) : arg.slice('--provider='.length);
+      if (!['anthropic', 'deepseek', 'openai'].includes(provider)) {
+        throw new CliArgumentError('--provider must be anthropic, deepseek, or openai.');
+      }
+      options.provider = provider;
     } else if (arg === '--model') {
       options.model = takeValue(arg, i++);
     } else if (arg.startsWith('--model=')) {
@@ -806,9 +818,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 0;
   }
 
-  const apiKey = env.ANTHROPIC_API_KEY;
+  const provider = options.provider;
+  const credentialEnvName = provider === 'openai' ? 'OPENAI_API_KEY'
+    : provider === 'deepseek' ? 'DEEPSEEK_API_KEY or ANTHROPIC_API_KEY' : 'ANTHROPIC_API_KEY';
+  const apiKey = provider === 'openai' ? env.OPENAI_API_KEY
+    : provider === 'deepseek' ? (env.DEEPSEEK_API_KEY || env.ANTHROPIC_API_KEY)
+      : env.ANTHROPIC_API_KEY;
   if (typeof apiKey !== 'string' || apiKey.trim().length === 0) {
-    printError('ANTHROPIC_API_KEY is required. Set it in the environment; credentials are not saved to disk.');
+    printError(credentialEnvName + ' is required. Supply it via the environment, not CLI arguments.');
     return 2;
   }
 
@@ -850,15 +867,34 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let rl;
 
   const { AgentLoop } = await import('../../runtime/src/agent-loop.js');
-  const { AnthropicMessagesAdapter } = await import('../../runtime/src/anthropic-messages-adapter.js');
-  const model = new AnthropicMessagesAdapter({
-    apiKey,
-    model: options.model || env.ANTHROPIC_MODEL || 'claude-sonnet-4-5',
-    baseUrl: options.baseUrl || env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
-    maxTokens: options.maxTokens,
-    maxRetries: options.maxRetries,
-    system: options.system,
-  });
+  // Only the transport changes: both providers feed the same 2.1.88-derived
+  // query loop and the same permission-checked Read/Edit/Bash tools.
+  let model;
+  if (provider === 'openai') {
+    const { OpenAIChatAdapter } = await import('../../runtime/src/openai-chat-adapter.js');
+    model = new OpenAIChatAdapter({
+      apiKey,
+      model: options.model || env.OPENAI_MODEL || 'gpt-5.1',
+      baseUrl: options.baseUrl || env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+      maxTokens: options.maxTokens,
+      maxRetries: options.maxRetries,
+      system: options.system,
+    });
+  } else {
+    const { AnthropicMessagesAdapter } = await import('../../runtime/src/anthropic-messages-adapter.js');
+    model = new AnthropicMessagesAdapter({
+      apiKey,
+      model: options.model || (provider === 'deepseek'
+        ? (env.DEEPSEEK_MODEL || 'deepseek-flash')
+        : (env.ANTHROPIC_MODEL || 'claude-sonnet-4-5')),
+      baseUrl: options.baseUrl || (provider === 'deepseek'
+        ? (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/anthropic')
+        : (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com')),
+      maxTokens: options.maxTokens,
+      maxRetries: options.maxRetries,
+      system: options.system,
+    });
+  }
   const tools = await createBuiltinTools({ workspace });
   const loop = new AgentLoop({
     model,
