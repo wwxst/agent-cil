@@ -87,19 +87,30 @@ export class ToolRegistry {
     const schemaErrors = validateJsonSchema(input, tool.inputSchema);
     if (schemaErrors.length > 0) return schemaErrors;
 
-    if (tool.validateInput) {
-      let result;
-      try {
-        result = await tool.validateInput(structuredClone(input));
-      } catch (error) {
-        return ['Custom input validator failed: ' + (error instanceof Error ? error.message : String(error))];
-      }
-      if (result === true || result === undefined) return [];
-      if (Array.isArray(result)) return result.map(item => String(item));
-      if (typeof result === 'string') return [result];
-      return ['Custom input validator rejected the input.'];
-    }
-
-    return [];
+    return validateToolInputValues(tool, input);
   }
+}
+
+/**
+ * The second stage of the legacy 2.1.88 checkPermissionsAndCallTool()
+ * validation sequence (tool.validateInput after schema parsing).
+ * This is also used by permission updatedInput revalidation, so the two
+ * paths cannot drift. Legacy validators may return { result, message }.
+ */
+export async function validateToolInputValues(tool, input, context) {
+  if (!tool.validateInput) return [];
+  let result;
+  try {
+    result = await tool.validateInput(structuredClone(input), context);
+  } catch (error) {
+    return ['Custom input validator failed: ' + (error instanceof Error ? error.message : String(error))];
+  }
+  if (result === true || result === undefined || result?.result === true) return [];
+  if (Array.isArray(result)) return result.map(item => String(item));
+  if (typeof result === 'string') return [result];
+  if (result && typeof result === 'object' && result.result === false) {
+    return [typeof result.message === 'string' && result.message ? result.message :
+      'Custom input validator rejected the input.'];
+  }
+  return ['Custom input validator rejected the input.'];
 }
