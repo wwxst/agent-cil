@@ -523,21 +523,34 @@ function abortError(signal) {
 }
 
 function signalProcessTree(child, signalName) {
-  if (!child.pid) return;
-  if (process.platform !== 'win32') {
-    try {
-      // detached=true gives the shell and its descendants a private process group.
-      process.kill(-child.pid, signalName);
-      return;
-    } catch {
-      // Fall back to signaling the direct child if the process group is unavailable.
-    }
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) return;
+  if (process.platform === 'win32') {
+    // Port of CLI 2.1.88 ShellCommand.#doKill() / bundled tree-kill and
+    // CLI 2.1.304 bS: Windows child.kill() only terminates cmd.exe, leaving
+    // descendants alive to write files after cancellation. Use taskkill's
+    // /T (descendants) /F (force) with a PID passed as a separate argument.
+    // The built-in Node child handle remains open until exit; unlike Bun's
+    // native process handle we cannot implement its PID pin/unpin API.
+    const root = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+    const exe = join(root, 'System32', 'taskkill.exe');
+    const killer = spawn(exe, ['/PID', String(child.pid), '/T', '/F'], {
+      windowsHide: true, shell: false, stdio: 'ignore',
+    });
+    // taskkill may race a process exit or fail on a restricted host. Make a
+    // best-effort direct-child fallback while retaining the caller's abort.
+    killer.once('error', () => {
+      try { child.kill(signalName); } catch { /* already exited */ }
+    });
+    return;
   }
   try {
-    child.kill(signalName);
+    // detached=true gives the shell and its descendants a private process group.
+    process.kill(-child.pid, signalName);
+    return;
   } catch {
-    // The process may have exited between the state check and signal delivery.
+    // Fall back to signaling the direct child if the process group is unavailable.
   }
+  try { child.kill(signalName); } catch { /* already exited */ }
 }
 
 function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
