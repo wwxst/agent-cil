@@ -177,3 +177,18 @@ test('AgentLoop reuses Query and never runs tools from compaction-only sampling'
   assert.equal(commits.length, 1);
   assert.equal(commits[0].committedMessages[0].role, 'user');
 });
+
+
+test('disabled compaction does not inspect or rewrite unsupported provider message payloads', async () => {
+  const unsupported = [{ role: 'user', content: [
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA' } },
+    { type: 'text', text: 'look at this image' },
+  ] }];
+  const compact = createAutoCompact({ thresholdTokens: 0 });
+  const result = await compact.compact({
+    messages: unsupported,
+    model: { async *stream() { throw new Error('summary must not be invoked'); } },
+  });
+  assert.equal(result.compacted, false);
+  assert.equal(result.messages, unsupported, 'disabled mode preserves object identity');
+});
