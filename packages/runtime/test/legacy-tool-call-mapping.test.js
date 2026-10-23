@@ -51,11 +51,15 @@ test('ToolRegistry accepts exact 2.1.88 call+mapper pair without changing model 
   assert.throws(() => tools.register({
     name: 'Incomplete', description: 'Incomplete tool.', call: callback,
   }), ToolRegistryError);
-  assert.throws(() => tools.register({
-    name: 'Duplicated', description: 'Duplicated execution.',
+  // Staged migration permits both entry points on an existing built-in.
+  // The running AgentLoop prefers call(), while direct execute() callers work.
+  tools.register({
+    name: 'Migrating', description: 'Migrating execution.',
     call: callback, mapToolResultToToolResultBlockParam: mapper,
-    execute: async () => 'forbidden',
-  }), ToolRegistryError);
+    execute: async () => 'compatible',
+  });
+  assert.equal(typeof tools.get('Migrating').execute, 'function');
+  assert.equal(typeof tools.get('Migrating').call, 'function');
 });
 
 test('ported 2.1.88 tool.call receives final approved input and maps exactly once', async () => {
