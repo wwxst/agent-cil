@@ -589,19 +589,23 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     let timedOut = false;
     let outputLimitHit = false;
     let spawnError;
-    let forceKillTimer;
     let terminationPromise;
 
     const terminate = () => {
       if (terminationPromise) return terminationPromise;
-      terminationPromise = signalProcessTree(child, 'SIGTERM');
-      // Windows taskkill /T /F already forces the entire process tree.
-      // Retain Unix's separate process-group escalation.
-      if (process.platform !== 'win32') {
-        forceKillTimer = setTimeout(() => {
-          void signalProcessTree(child, 'SIGKILL');
-        }, 250);
-        forceKillTimer.unref?.();
+      const firstKill = signalProcessTree(child, 'SIGTERM');
+      if (process.platform === 'win32') {
+        // taskkill /T /F is already a forced tree kill.
+        terminationPromise = firstKill;
+      } else {
+        // In the original ShellCommand, SIGKILL reaches descendants even
+        // after the shell exits. Never cancel escalation on child.close:
+        // an orphan can ignore SIGTERM while its group leader has exited.
+        terminationPromise = Promise.resolve(firstKill).then(() => new Promise(resolveKill => {
+          setTimeout(() => {
+            void signalProcessTree(child, 'SIGKILL').finally(resolveKill);
+          }, 250);
+        }));
       }
       return terminationPromise;
     };
@@ -634,8 +638,8 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     });
     child.once('close', async code => {
       clearTimeout(timeout);
-      // Do not target a PID after its shell has exited.
-      if (forceKillTimer) clearTimeout(forceKillTimer);
+      // Termination is tracked by its Promise and awaited below. Do not
+      // cancel the SIGKILL escalation when only the group leader has exited.
       signal?.removeEventListener('abort', onAbort);
       // Child close and successful process-tree termination are separate on
       // Windows. Complete the bounded cleanup attempt before reporting.
