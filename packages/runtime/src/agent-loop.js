@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
 import { StreamingToolExecutor } from './legacy-tools/streaming-tool-executor.js';
-import { runToolUse } from './legacy-tools/tool-execution.js';
+import { runToolUse, invokeToolCallAndMapResult } from './legacy-tools/tool-execution.js';
 import { resolveToolSpecificPermission } from './legacy-permissions/tool-specific-permission.js';
 
 const STOP_REASONS = new Set(['end_turn', 'tool_use', 'max_tokens']);
@@ -223,9 +223,10 @@ export class AgentLoop extends EventEmitter {
             runToolUse(
               block,
               assistantMessage,
-              (toolUse, { signal: verifiedSignal, tool: validatedTool, toolUseContext }) =>
+              (toolUse, { signal: verifiedSignal, tool: validatedTool, toolUseContext, onToolProgress }) =>
                 this.#executeTool(toolUse, {
                   history, turn, signal: verifiedSignal, validatedTool, validatorContext: toolUseContext,
+                  assistantMessage, onToolProgress,
                 }),
               {
                 getTool: name => this.#tools.get(name),
@@ -283,7 +284,7 @@ export class AgentLoop extends EventEmitter {
     }
   }
 
-  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext }) {
+  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress }) {
     const tool = this.#tools.get(toolUse.name);
     if (!tool) {
       const result = toolError(toolUse, 'Unknown tool: ' + toolUse.name);
@@ -488,14 +489,15 @@ export class AgentLoop extends EventEmitter {
     abortIfNeeded(signal);
     this.emit('toolCallStarted', { turn, toolUseId: toolUse.id, toolName: tool.name });
     try {
-      const output = await tool.execute(structuredClone(executionInput), {
-        toolUseId: toolUse.id,
-        signal,
-        messages: structuredClone(history),
+      // The final input was validated and authorized before this call.
+      const result = await invokeToolCallAndMapResult(tool, executionInput, {
+        toolUseId: toolUse.id, signal, messages: history, assistantMessage,
+        onProgress: onToolProgress,
       });
       abortIfNeeded(signal);
-      const result = { type: 'tool_result', tool_use_id: toolUse.id, content: serializeToolOutput(output) };
-      this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: false });
+      this.emit('toolCallFinished', {
+        turn, toolUseId: toolUse.id, toolName: tool.name, isError: result.is_error === true,
+      });
       return result;
     } catch (error) {
       if (signal?.aborted) abortIfNeeded(signal);
