@@ -987,7 +987,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     activeController = new AbortController();
     if (!plain) process.stdout.write('assistant> ');
     const onTextDelta = ({ text: delta }) => process.stdout.write(delta);
+    // Once a model-requested tool turn has finished, its effects may already
+    // be on disk. If the NEXT model stream fails, retaining the completed
+    // assistant/tool_result pair prevents a retry from redoing that work.
+    let committedHistory;
+    const onTurnFinished = ({ committedMessages }) => {
+      if (committedMessages) committedHistory = committedMessages;
+    };
     loop.on('textDelta', onTextDelta);
+    loop.on('turnFinished', onTurnFinished);
     try {
       const result = await loop.run({ messages: history, input: text, signal: activeController.signal });
       history = result.messages;
@@ -1003,10 +1011,20 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return 0;
     } catch (error) {
       process.stdout.write('\n');
+      if (committedHistory) {
+        // The erroring model response is NOT committed. Only the preceding
+        // completed tool rounds (including the original user request) survive.
+        history = committedHistory;
+        if (interactiveInput) {
+          process.stderr.write('[recovery] Completed tool results were retained. ' +
+            'Continue the conversation without re-running previous tools.\n');
+        }
+      }
       printError(error instanceof Error ? error.message : String(error));
       return activeController.signal.aborted ? 130 : 1;
     } finally {
       loop.off('textDelta', onTextDelta);
+      loop.off('turnFinished', onTurnFinished);
       activeController = undefined;
     }
   };
@@ -1019,8 +1037,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     if (prompt) {
       const status = await runPrompt(prompt);
       if (status === 130) process.stderr.write('Interrupted.\n');
-      // A failed model call leaves history unchanged. Keep the interactive shell
-      // open so a user can retry without restarting the process.
+      // Invalid/incomplete model responses are never committed. A completed
+      // tool-result checkpoint is retained when a later model turn fails, so
+      // the interactive shell can safely continue without replaying tools.
     }
     while (rl && !rl.closed) {
       let text;
