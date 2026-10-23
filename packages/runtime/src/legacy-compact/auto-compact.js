@@ -205,7 +205,14 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
             aborted(signal);
             if (!(error instanceof ModelContextLengthError) ||
               sawSummaryEvent || summaryAttempt === 2) throw error;
-            const groups = groupMessagesByApiRound(summarize);
+            // Remove our own synthetic marker before regrouping. Otherwise
+            // the next overflow would drop only that marker and make no
+            // forward progress (the same bug guarded by 2.1.88 compact.ts).
+            const source = summarize[0]?.role === 'user' &&
+              summarize[0]?.content ===
+                'Older conversation rounds omitted because the summary request exceeded context.'
+              ? summarize.slice(1) : summarize;
+            const groups = groupMessagesByApiRound(source);
             if (groups.length < 2) throw error;
             const removed = Math.max(1, Math.floor(groups.length * 0.2));
             summarize = groups.slice(removed).flat();
