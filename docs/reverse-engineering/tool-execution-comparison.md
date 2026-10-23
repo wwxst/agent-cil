@@ -102,7 +102,33 @@
 - handoff 前后的权限上下文、AbortSignal 和 tool_use_id 是否保持关联。
 - isolation latch 与普通 permission deny 的差别，以及结果如何回填。
 
-## 5. 对自有 Runtime 的设计启示
+## 5. 权限回传 updatedInput：已确认的行为差异
+
+这项差异已经从旧版源码和新版 2.1.304 的实际分派代码中定位，不再只是候选问题。
+
+| 版本/实现 | 文件与定位 | 已确认行为 | 证据等级 |
+| --- | --- | --- | --- |
+| 旧版 2.1.88 | `restored-src/src/hooks/useCanUseTool.tsx:37-52` | allow 决策将 `updatedInput ?? input` 放入最终 allow 结果 | 已证实 |
+| 旧版 2.1.88 | `restored-src/src/hooks/useCanUseTool.tsx:93-120`；`restored-src/src/hooks/toolPermission/PermissionContext.ts:291-317` | ask 路径将更新后的输入交给审批流程；用户批准时返回带最终输入的 allow 结果 | 已证实 |
+| 旧版 2.1.88 | `restored-src/src/services/tools/toolExecution.ts:1128-1208` | 执行前将 permissionDecision.updatedInput 合并到 processedInput/callInput，再传给 tool.call | 已证实 |
+| 新版 2.1.304 | `cli-2.1.304/modules/chunk-451m4237.js`，约 offset 3466 | SDK 宿主 can_use_tool 的 allow 结果 schema 接受可选 object 类型 updatedInput | 已证实 |
+| 新版 2.1.304 | `cli-2.1.304/modules/chunk-4b60tdnk.js`，约 offset 3981200 | allow 后会把 updatedInput 对照工具 inputSchema 重新校验；不合法时记录 PERMISSION_UPDATED_INPUT 并回填 error tool_result，不执行工具 | 已证实 |
+| agent-cil main | `packages/runtime/src/agent-loop.js` 的 `#executeTool()` | 原先只校验模型提供的输入；allow/approval 返回的 updatedInput 被忽略，工具始终执行原始输入 | 已证实（自有代码） |
+
+### 本轮修正
+
+自有 Runtime 现在保留 allow/ask 返回的输入替换；ask 的审批处理器可以查看策略预处理后的输入，也可以返回新的候选输入。每次输入发生实质变化时，Runtime 都会：
+
+1. 重新运行 ToolRegistry 输入校验；不符合 schema 时返回带 `is_error: true` 的 `tool_result`，不执行工具。
+2. 以最终候选输入重新调用 permission policy（上下文中的 `phase` 为 `recheck`）；如果策略拒绝，拒绝是终态，不能由后续输入替换覆盖。
+3. 如果最终输入仍需要用户批准，则把该输入交给审批处理器。审批处理器再改动输入时，重新检查权限；若策略仍要求确认，就对新输入再次请求批准。
+4. 限制连续输入改写次数，避免非稳定策略无限循环；超限时 fail closed。
+
+测试覆盖策略更新后被拒绝、审批更新后被拒绝、deny 携带 `updatedInput`、schema 不合法、最终输入需要再次审批，以及策略不断改写输入的上限。
+
+这补上了自有 permission policy 的输入替换后二次授权检查，但**不等于完整复刻新版权限系统**。新版还包含专用的 deny/ask 规则匹配、命令解析和路径权限语义；这些能力必须逐项从源码与行为证据确认，不能用通用回调的二次调用来冒充完整兼容。
+
+## 6. 对自有 Runtime 的设计启示
 
 这里提炼的是可验证的工程需求，不要求复制第三方实现：
 
