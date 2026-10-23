@@ -42,6 +42,9 @@ jobs:
           node scripts/verify-installed-cli.mjs "$cli"
           # Exercise model transport and TTY approval via the installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/legacy-model-transport-cli.test.js
+          # Exercise OpenAI Chat function calls, an initial failing Bash test,
+          # approved fix and passing retest using the real installed npm CLI.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 
   legacy-cli-2-1-88-smoke:
     runs-on: ubuntu-latest
