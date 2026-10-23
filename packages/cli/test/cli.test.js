@@ -58,6 +58,7 @@ test('parses model, endpoint, token, system, cwd, print and prompt options', () 
     '--model', 'claude-test-model',
     '--base-url=https://example.test',
     '--max-tokens', '2048',
+    '--max-turns=12',
     '--system', 'Be precise.',
     '--cwd', '/tmp/project',
     'explain', 'this repository',
@@ -66,6 +67,7 @@ test('parses model, endpoint, token, system, cwd, print and prompt options', () 
   assert.equal(options.model, 'claude-test-model');
   assert.equal(options.baseUrl, 'https://example.test');
   assert.equal(options.maxTokens, 2048);
+  assert.equal(options.maxTurns, 12);
   assert.equal(options.system, 'Be precise.');
   assert.equal(options.cwd, resolve('/tmp/project'));
   assert.equal(options.prompt, 'explain this repository');
@@ -75,6 +77,10 @@ test('rejects unknown options and invalid max token values', () => {
   assert.throws(() => parseArgs(['--unknown']), CliArgumentError);
   assert.throws(() => parseArgs(['--max-tokens', '0']), CliArgumentError);
   assert.throws(() => parseArgs(['--model']), CliArgumentError);
+  assert.throws(() => parseArgs(['--max-turns', '0']), CliArgumentError);
+  assert.throws(() => parseArgs(['--max-turns=101']), CliArgumentError);
+  assert.throws(() => parseArgs(['--max-turns', 'one']), CliArgumentError);
+  assert.equal(parseArgs(['hello']).maxTurns, 8);
 });
 
 test('CLI rejects a remote plaintext API endpoint during startup', async () => {
@@ -984,6 +990,146 @@ test('CLI SIGINT aborts an in-flight streaming model request and exits with 130'
     if (watchdog) clearTimeout(watchdog);
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
     server.closeAllConnections?.();
+    await new Promise(resolve => server.close(resolve));
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+
+test('CLI returns a failure status when model output or tool rounds end without a final answer', {
+  timeout: 20000,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-incomplete-'));
+  const requests = [];
+  let fixture = 'max_tokens';
+  const sse = (type, fields = {}) =>
+    'event: ' + type + '\n' + 'data: ' + JSON.stringify({ type, ...fields }) + '\n\n';
+  const modelResponse = () => fixture === 'max_tokens'
+    ? [
+      sse('message_start', { message: { usage: { input_tokens: 2 } } }),
+      sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'PARTIAL_ANSWER' } }),
+      sse('content_block_stop', { index: 0 }),
+      sse('message_delta', { delta: { stop_reason: 'max_tokens' }, usage: { output_tokens: 4 } }),
+      sse('message_stop'),
+    ].join('')
+    : [
+      sse('message_start', { message: { usage: { input_tokens: 2 } } }),
+      sse('content_block_start', {
+        index: 0, content_block: { type: 'tool_use', id: 'read-limit-1', name: 'Read', input: {} },
+      }),
+      sse('content_block_delta', {
+        index: 0, delta: { type: 'input_json_delta', partial_json: '{"file_path":"example.txt"}' },
+      }),
+      sse('content_block_stop', { index: 0 }),
+      sse('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 4 } }),
+      sse('message_stop'),
+    ].join('');
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    response.writeHead(200, { 'content-type': 'text/event-stream', connection: 'close' });
+    response.end(modelResponse());
+  });
+  try {
+    await writeFile(join(workspace, 'example.txt'), 'Example content.');
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const cliPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+    const run = extraArgs => new Promise((resolveRun, rejectRun) => {
+      const child = spawn(process.execPath, [
+        cliPath, '--print', 'Check the workspace',
+        '--cwd', workspace, '--base-url', 'http://127.0.0.1:' + address.port,
+        '--model', 'local-incomplete-test', ...extraArgs,
+      ], { env: { ...process.env, ANTHROPIC_API_KEY: 'local-test-key' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      const watchdog = setTimeout(() => child.kill('SIGKILL'), 7000);
+      child.once('error', error => { clearTimeout(watchdog); rejectRun(error); });
+      child.once('close', (code, signal) => {
+        clearTimeout(watchdog);
+        resolveRun({ code, signal, stdout, stderr });
+      });
+    });
+
+    const truncated = await run(['--max-tokens', '4']);
+    assert.equal(truncated.signal, null);
+    assert.equal(truncated.code, 1, truncated.stderr);
+    assert.equal(truncated.stdout.trim(), 'PARTIAL_ANSWER');
+    assert.match(truncated.stderr, /reached --max-tokens before finishing/);
+    assert.equal(requests.length, 1);
+
+    fixture = 'max_turns';
+    const exhausted = await run(['--max-turns', '1']);
+    assert.equal(exhausted.signal, null);
+    assert.equal(exhausted.code, 1, exhausted.stderr);
+    assert.match(exhausted.stderr, /reached --max-turns \(1\) without a final response/);
+    assert.equal(requests.length, 2, 'the agent must stop after the configured one model round');
+    assert.equal(requests[1].tools.some(tool => tool.name === 'Read'), true);
+    assert.equal(requests[1].max_tokens, 4096);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('CLI propagates HTTP 429 and 503 model errors with a nonzero exit status', {
+  timeout: 20000,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-http-errors-'));
+  let status = 429;
+  const server = createServer(async (req, res) => {
+    for await (const _chunk of req) { /* consume request */ }
+    res.writeHead(status, { 'content-type': 'application/json', connection: 'close' });
+    res.end(JSON.stringify({ error: {
+      type: status === 429 ? 'rate_limit_error' : 'overloaded_error',
+      message: status === 429 ? 'Too many requests.' : 'Service unavailable.',
+    } }));
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const addr = server.address();
+    assert.ok(addr && typeof addr === 'object');
+    const cliPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+    for (const expected of [429, 503]) {
+      status = expected;
+      const output = await new Promise((resolveRun, rejectRun) => {
+        const child = spawn(process.execPath, [
+          cliPath, '--print', 'hello', '--cwd', workspace,
+          '--base-url', 'http://127.0.0.1:' + addr.port,
+        ], { env: { ...process.env, ANTHROPIC_API_KEY: 'not-for-logs' }, stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.setEncoding('utf8');
+        child.stderr.setEncoding('utf8');
+        child.stdout.on('data', chunk => { stdout += chunk; });
+        child.stderr.on('data', chunk => { stderr += chunk; });
+        const watchdog = setTimeout(() => child.kill('SIGKILL'), 7000);
+        child.once('error', error => { clearTimeout(watchdog); rejectRun(error); });
+        child.once('close', (code, signal) => {
+          clearTimeout(watchdog);
+          resolveRun({ code, signal, stdout, stderr });
+        });
+      });
+      assert.equal(output.signal, null);
+      assert.equal(output.code, 1, output.stderr);
+      assert.match(output.stderr, new RegExp('HTTP ' + expected));
+      assert.equal(output.stderr.includes('not-for-logs'), false);
+      assert.equal(output.stdout.trim(), '');
+    }
+  } finally {
     await new Promise(resolve => server.close(resolve));
     await rm(workspace, { recursive: true, force: true });
   }
