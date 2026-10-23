@@ -162,3 +162,79 @@ test('direct legacy runToolUse returns value-validator failure before adapter ca
   assert.equal(updates[0].message.content[0].is_error, true);
   assert.match(updates[0].message.content[0].content, /Invalid target/);
 });
+
+test('an asynchronously replaced registry tool cannot execute without matching validation', async () => {
+  const tools = new ToolRegistry();
+  let beganValidation;
+  const validating = new Promise(resolve => { beganValidation = resolve; });
+  let completeValidation;
+  const canFinish = new Promise(resolve => { completeValidation = resolve; });
+  let oldExecutions = 0;
+  let replacementExecutions = 0;
+  const unregisterOld = tools.register({
+    name: 'Validate', description: 'Old validator and tool.', inputSchema,
+    validateInput: async () => {
+      beganValidation();
+      await canFinish;
+      return true;
+    },
+    execute: async () => { oldExecutions++; return 'old'; },
+  });
+  const loop = new AgentLoop({
+    model: { async *stream() {
+      yield* toolEnd({ value: 'old input' });
+    } },
+    tools,
+    permissionPolicy: async () => ({ behavior: 'allow' }),
+    maxTurns: 1,
+  });
+  const running = loop.run({ input: 'replace tool while validating' });
+  await validating;
+  unregisterOld();
+  tools.register({
+    name: 'Validate', description: 'New validator and tool.',
+    inputSchema: {
+      type: 'object', properties: { safe: { type: 'boolean' } },
+      required: ['safe'], additionalProperties: false,
+    },
+    execute: async () => { replacementExecutions++; return 'unsafe'; },
+  });
+  completeValidation();
+  const answer = await running;
+  const last = answer.messages.at(-1).content[0];
+  assert.equal(last.is_error, true);
+  assert.match(last.content, /Tool definition changed after input validation/);
+  assert.equal(oldExecutions, 0);
+  assert.equal(replacementExecutions, 0);
+});
+
+test('permission updatedInput validator receives the original legacy context and signal', async () => {
+  const contexts = [];
+  const values = [];
+  const tools = new ToolRegistry();
+  tools.register({
+    name: 'Validate', description: 'Context-aware validator.', inputSchema,
+    validateInput: async (value, context) => {
+      assert.ok(context?.signal, 'value validator must receive an execution AbortSignal');
+      assert.equal(typeof context.getTool, 'function');
+      contexts.push(context);
+      values.push(value.value);
+      return { result: true };
+    },
+    execute: async value => value.value,
+  });
+  const loop = new AgentLoop({
+    model: resultModel({ value: 'initial' }, result => {
+      assert.equal(result.content, 'rewritten');
+      assert.equal(result.is_error, undefined);
+    }),
+    tools,
+    permissionPolicy: async ({ input }) => input.value === 'initial'
+      ? { behavior: 'allow', updatedInput: { value: 'rewritten' } }
+      : { behavior: 'allow' },
+  });
+  await loop.run({ input: 'rewrite with validator context' });
+  assert.deepEqual(values, ['initial', 'rewritten']);
+  assert.equal(contexts.length, 2);
+  assert.strictEqual(contexts[0], contexts[1]);
+});

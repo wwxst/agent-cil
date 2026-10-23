@@ -33,7 +33,9 @@ CLI entry / args / config
 - [x] 自有 AgentLoop、ToolRegistry、参数校验、权限决策与 Messages SSE adapter
 - [x] 第一版可执行 CLI：参数/模型配置、流式与多轮对话、Read/Write/Edit/Glob/Grep/Bash 基础工具（见 [PR #13](https://github.com/wwxst/agent-cil/pull/13)）
 - [ ] 对齐官方 CLI SDK stream-json 输入输出及真实宿主控制协议
-- [ ] 完成权限 updatedInput、取消和错误传播的新版行为核对（见 [PR #9](https://github.com/wwxst/agent-cil/pull/9)）
+- [x] 完成 `updatedInput` 输入替换后的 schema 复验和重新授权（已合并 [#9](https://github.com/wwxst/agent-cil/pull/9)）
+- [x] 将 2.1.88 权限上下文、并发工具调度、`runToolUse` / `Stream`、权限规则与执行前校验的可运行子集接入 CLI（已合并 [#14–#18](https://github.com/wwxst/agent-cil/pull/18)）
+- [ ] 继续核对新版未实现的完整权限、Hook、取消和异常行为
 - [ ] 完善 Session 恢复与 MCP；只有核心功能需要时才提前推进
 
 ## 代码入口
@@ -41,7 +43,8 @@ CLI entry / args / config
 - [CLI 使用与当前限制](packages/cli/README.md)
 - [协议层](packages/protocol/README.md)：JSONL、控制请求关联、子进程通信和 Query 生命周期。
 - [Runtime](packages/runtime/README.md)：AgentLoop、模型流适配、工具注册、校验、权限和 Session 原型。
-- [旧版核心源码迁入 PR #12](https://github.com/wwxst/agent-cil/pull/12)：保留旧版入口、Query、工具调度与权限处理的原始路径，作为后续逐模块升级依据。
+- [旧版核心源码迁入 PR #12](https://github.com/wwxst/agent-cil/pull/12)：目前仍未合并，需先核实原始版权声明与再分发授权；已合并的旧版移植子集参见 #14–#18。
+- [CLI 入口新旧版对照](docs/reverse-engineering/cli-entry-comparison.md)：入口快路径、启动分流与当前实现差异。
 - [旧版/新版 Agent Loop 对照](docs/reverse-engineering/agent-loop-comparison.md)
 - [工具执行对照](docs/reverse-engineering/tool-execution-comparison.md)
 - [版本与证据基线](docs/reverse-engineering/baseline.md)
@@ -78,7 +81,7 @@ npm test
 
 ## 旧版源码的使用方式
 
-旧仓库中的 package 与 restored-src 是本项目的重要研究和实现资产。按实际模块需要复用、迁入和修改，优先继承成熟实现；不必无差别复制整个恢复树，也不应只看函数名就判断理解了调用链。每个迁入模块都要追踪上下游、依赖、状态和错误/取消路径，再通过测试确认行为。
+旧仓库中的 package 与 restored-src 是本项目的重要研究和实现资产。按实际模块需要复用、迁入和修改，优先继承成熟实现；不必无差别复制整个恢复树，也不应只看函数名就判断理解了调用链。每个迁入模块都要追踪上下游、依赖、状态和错误/取消路径，再通过测试确认行为。复用前同时核对实际适用的源码许可证、权利归属及必要版权声明；仓库由本人维护不自动证明其中第三方代码的再分发授权。
 
 所有开发改动通过独立分支和 PR 提交到 [agent-cil](https://github.com/wwxst/agent-cil)。本项目不开发前端或 Desktop UI。
 

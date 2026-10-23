@@ -28,11 +28,13 @@ export class Stream {
     if (this.#queue.length > 0) {
       return Promise.resolve({ done: false, value: this.#queue.shift() });
     }
-    if (this.#isDone) {
-      return Promise.resolve({ done: true, value: undefined });
-    }
+    // Worker failures must survive done() even if nobody was waiting when
+    // error() was called. Drain queued progress first, then reject the reader.
     if (this.#hasError) {
       return Promise.reject(this.#hasError);
+    }
+    if (this.#isDone) {
+      return Promise.resolve({ done: true, value: undefined });
     }
     return new Promise((resolve, reject) => {
       this.#readResolve = resolve;

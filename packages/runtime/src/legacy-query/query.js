@@ -179,14 +179,20 @@ export async function query({
             runToolUse(
               block,
               assistantMessage,
-              (toolUse, { signal: verifiedSignal, onToolProgress }) =>
+              (toolUse, { signal: verifiedSignal, tool: validatedTool, toolUseContext, onToolProgress }) =>
                 executeTool(toolUse, {
                   history, turn, signal: verifiedSignal,
+                  validatedTool, validatorContext: toolUseContext,
                   assistantMessage, onToolProgress,
                 }),
               {
                 getTool: name => tools.get(name),
                 signal: toolSignal,
+                onUnknownTool: unknown => {
+                  emit('toolCallFinished', {
+                    turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
+                  });
+                },
                 onInputValidationFailed: () => {
                   emit('toolCallFinished', {
                     turn, toolUseId: block.id, toolName: block.name,

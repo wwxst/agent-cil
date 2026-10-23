@@ -489,3 +489,26 @@ test('active adapter sends 2.1.88 client request IDs only to first-party API', a
   assert.equal(seen[0].headers.get('x-api-key'), 'id-test-key');
   assert.equal(seen[1].headers.get('x-api-key'), 'id-test-key');
 });
+
+test('connection-retry delay preserves the caller-provided abort reason', async () => {
+  const controller = new AbortController();
+  const reason = new Error('custom cancellation reason');
+  let notifyAttempt;
+  const attempted = new Promise(resolve => { notifyAttempt = resolve; });
+  const adapter = new AnthropicMessagesAdapter({
+    apiKey: 'fake-key', model: 'abort-retry-test', maxRetries: 1,
+    fetchImpl: async () => {
+      notifyAttempt();
+      throw new TypeError('simulated pre-response disconnect');
+    },
+  });
+  const running = (async () => {
+    for await (const event of adapter.stream({
+      messages: [{ role: 'user', content: 'test abort' }],
+      signal: controller.signal,
+    })) void event;
+  })();
+  await attempted;
+  controller.abort(reason);
+  await assert.rejects(running, error => error === reason);
+});
