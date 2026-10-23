@@ -67,17 +67,20 @@ export async function query({
   if (typeof emit !== 'function' || typeof executeTool !== 'function') {
     throw new TypeError('Query event and tool execution callbacks are required.');
   }
+  if (!Number.isSafeInteger(maxTurns) || maxTurns < 1) {
+    throw new RangeError('maxTurns must be a positive safe integer.');
+  }
 
-      let history = structuredClone(messages);
-      if (input !== undefined) history.push({ role: 'user', content: input });
+      const initialHistory = structuredClone(messages);
+      if (input !== undefined) initialHistory.push({ role: 'user', content: input });
       const seenToolUseIds = new Set();
-      emit('runStarted', { messageCount: history.length });
+      emit('runStarted', { messageCount: initialHistory.length });
 
       // Old query.ts State: mutable across model/tool iterations. Only the
       // Node CLI subset is active; compaction/Hook/session fields are gated.
-      let state = { messages: history, turnCount: 1, transition: undefined };
+      let state = { messages: initialHistory, turnCount: 1, transition: undefined };
       while (true) {
-        const turn = state.turnCount;
+        const { messages: history, turnCount: turn } = state;
         abortIfNeeded(signal);
         emit('turnStarted', { turn, messageCount: history.length });
 
