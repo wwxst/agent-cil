@@ -1013,7 +1013,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       process.exitCode = 130;
     } else {
       lastIdleInterruptAt = now;
-      process.stderr.write('Press Ctrl+C again to exit.\\n');
+      process.stderr.write('Press Ctrl+C again to exit.\n');
     }
   };
   process.on('SIGINT', onSigint);
