@@ -251,7 +251,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
     };
   }
   if (signal?.aborted) throw cancelledToolCall(signal);
-  return validateMappedToolResult(mapped, toolUseId);
+  return validateMappedToolResult(mapped, toolUseId, typeof tool.call === 'function');
 }
 
 function cancelledToolCall(signal) {
@@ -276,7 +276,7 @@ function serializePlainToolOutput(value) {
   return serialized;
 }
 
-function validateMappedToolResult(block, toolUseId) {
+function validateMappedToolResult(block, toolUseId, isLegacyCall) {
   if (!block || typeof block !== 'object' || Array.isArray(block) ||
     block.type !== 'tool_result' || block.tool_use_id !== toolUseId) {
     throw new TypeError('Tool result mapper returned an invalid tool_result identity.');
@@ -308,8 +308,9 @@ function validateMappedToolResult(block, toolUseId) {
       }
     }
   }
-  const serialized = JSON.stringify(content);
-  if (typeof serialized !== 'string' || Buffer.byteLength(serialized) > 1024 * 1024) {
+  const serialized = typeof content === 'string' ? content : JSON.stringify(content);
+  if (isLegacyCall &&
+    (typeof serialized !== 'string' || Buffer.byteLength(serialized) > 1024 * 1024)) {
     // Original 2.1.88 spills large result contents to session storage.
     // That persistence dependency is unported, so refuse oversized blocks.
     throw new RangeError('Tool result exceeds the 1 MiB mapping limit.');
