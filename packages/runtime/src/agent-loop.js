@@ -227,6 +227,11 @@ export class AgentLoop extends EventEmitter {
               {
                 getTool: name => this.#tools.get(name),
                 signal: toolSignal,
+                onUnknownTool: unknown => {
+                  this.emit('toolCallFinished', {
+                    turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
+                  });
+                },
               },
             ),
         });
