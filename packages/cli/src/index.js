@@ -988,14 +988,32 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   let history = [];
   let activeController;
+  // Port 2.1.88 hooks/useExitOnCtrlCD.ts + useDoublePress.ts:
+  // cancel an active turn first; when idle, require a second Ctrl+C within
+  // the original 800ms window before ending the interactive session.
+  const DOUBLE_PRESS_TIMEOUT_MS = 800;
+  let lastIdleInterruptAt = 0;
   const onSigint = () => {
     if (activeController && !activeController.signal.aborted) {
+      lastIdleInterruptAt = 0;
       const error = new Error('Interrupted by user.');
       error.name = 'AbortError';
       activeController.abort(error);
-    } else {
-      rl?.close();
+      return;
+    }
+    if (activeController) {
+      // A second keypress while the first abort is in progress must not
+      // close readline; the model/tool cancellation must settle first.
+      return;
+    }
+    if (!rl || rl.closed) return;
+    const now = Date.now();
+    if (lastIdleInterruptAt !== 0 && now - lastIdleInterruptAt <= DOUBLE_PRESS_TIMEOUT_MS) {
+      rl.close();
       process.exitCode = 130;
+    } else {
+      lastIdleInterruptAt = now;
+      process.stderr.write('Press Ctrl+C again to exit.\\n');
     }
   };
   process.on('SIGINT', onSigint);
