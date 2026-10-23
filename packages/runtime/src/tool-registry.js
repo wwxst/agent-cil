@@ -54,8 +54,10 @@ export class ToolRegistry {
       (typeof mapToolResultToToolResultBlockParam === 'function')) {
       throw new ToolRegistryError('Legacy call and result mapper must be registered together.');
     }
-    if ((typeof call === 'function') === (typeof execute === 'function')) {
-      throw new ToolRegistryError('Register either legacy call + mapper or execute, but not both.');
+    // During a staged port an existing built-in can retain execute() for
+    // direct callers while AgentLoop uses its migrated call()+mapper pair.
+    if (typeof call !== 'function' && typeof execute !== 'function') {
+      throw new ToolRegistryError('Tool requires either legacy call + mapper or execute.');
     }
 
     let schemaCopy;
