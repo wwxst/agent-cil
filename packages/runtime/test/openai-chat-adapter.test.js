@@ -75,12 +75,12 @@ test('OpenAI stream sends Bearer auth, schema tools, and reconstructs split func
     name: 'Read', description: 'Read file', input_schema: { type: 'object' },
   }]);
   assert.deepEqual(events.map(x => x.type),
-    ['text_delta', 'tool_use', 'message_end', 'usage']);
+    ['text_delta', 'tool_use', 'usage', 'message_end']);
   assert.deepEqual(events[1], {
     type: 'tool_use', id: 'call_read_123', name: 'Read',
     input: { file_path: 'a.js' },
   });
-  assert.equal(events[2].stopReason, 'tool_use');
+  assert.equal(events[3].stopReason, 'tool_use');
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, 'https://api.openai.com/v1/chat/completions');
   const headers = requests[0].options.headers;
