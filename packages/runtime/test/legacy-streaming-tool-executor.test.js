@@ -162,3 +162,50 @@ test('integrated AgentLoop serializes edited file operations and returns both to
   assert.deepEqual(invoked, ['Write', 'Read']);
   assert.equal(peak, 1);
 });
+
+
+test('ported scheduler streams tool progress before final result', async () => {
+  const gate = defer();
+  const executor = new StreamingToolExecutor({
+    getTool: () => ({ isConcurrencySafe: () => true }),
+    execute: async function* (b) {
+      yield { progress: { toolUseId: b.id, completed: 1 } };
+      await gate.promise;
+      yield { message: { role: 'user', content: [result(b.id, 'finished')] } };
+    },
+  });
+  executor.addTool(block('task-1', 'Read'));
+  const seen = [];
+  const reading = (async () => {
+    for await (const item of executor.getRemainingResults()) {
+      if (item.progress) seen.push('progress');
+      if (item.message) seen.push('finished');
+    }
+  })();
+  await flush();
+  assert.deepEqual(seen, ['progress']);
+  gate.resolve();
+  await reading;
+  assert.deepEqual(seen, ['progress', 'finished']);
+});
+
+test('ported scheduler discards pending tool results during a streaming fallback', async () => {
+  const gate = defer();
+  const invoked = [];
+  const executor = new StreamingToolExecutor({
+    getTool: name => ({ isConcurrencySafe: () => name === 'Read' }),
+    execute: async b => {
+      invoked.push(b.id);
+      await gate.promise;
+      return result(b.id, 'should not be delivered');
+    },
+  });
+  executor.addTool(block('read-1', 'Read'));
+  executor.addTool(block('write-2', 'Write'));
+  executor.discard();
+  gate.resolve();
+  const seen = [];
+  for await (const item of executor.getRemainingResults()) seen.push(item);
+  assert.deepEqual(seen, []);
+  assert.deepEqual(invoked, ['read-1'], 'unstarted exclusive tool should not be executed after discard');
+});
