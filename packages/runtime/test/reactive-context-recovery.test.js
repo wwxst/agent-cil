@@ -250,3 +250,57 @@ test('two summary context rejections discard two different whole groups, not the
   assert.equal(result.compacted, true);
   assert.deepEqual(result.messages.slice(1), more.slice(-4));
 });
+
+
+test('2.1.88 prompt-too-long summary allows initial request plus three retries', async () => {
+  const { getPromptTooLongTokenGap } =
+    await import('../src/legacy-compact/auto-compact.js');
+  assert.equal(getPromptTooLongTokenGap(new ModelContextLengthError(
+    'prompt is too long: 24000 tokens > 20000')), 4000);
+  const many = [user('inspect project')];
+  for (let i = 1; i <= 9; i++) {
+    many.push(toolCall('old-' + i, 'Read'), toolResult('old-' + i));
+  }
+  let requests = 0;
+  const model = { async *stream({ purpose, tools }) {
+    assert.equal(purpose, 'compact');
+    assert.deepEqual(tools, []);
+    requests++;
+    if (requests <= 3) throw new ModelContextLengthError(
+      'prompt is too long: 1300 tokens > 1200');
+    yield { type: 'text_delta', text: 'Completed earlier reads and edits safely.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const compact = createAutoCompact({ thresholdTokens: 120 });
+  const result = await compact.compact({ messages: many, model, force: true });
+  assert.equal(requests, 4);
+  assert.equal(result.compacted, true);
+});
+
+test('token gap prunes enough whole API rounds, not a fixed 20 percent', async () => {
+  const { getPromptTooLongTokenGap } =
+    await import('../src/legacy-compact/auto-compact.js');
+  assert.equal(getPromptTooLongTokenGap(new ModelContextLengthError(
+    'prompt is too long: 5000 tokens > 2000')), 3000);
+  const many = [user('inspect project')];
+  for (let i = 1; i <= 9; i++) {
+    many.push(toolCall('old-' + i, 'Read'), toolResult('old-' + i));
+  }
+  const requests = [];
+  const model = { async *stream({ messages }) {
+    requests.push(messages);
+    if (requests.length === 1) throw new ModelContextLengthError(
+      'prompt is too long: 5000 tokens > 2000');
+    const ids = messages.filter(m => m.role === 'assistant')
+      .flatMap(m => m.content.filter(b => b.type === 'tool_use').map(b => b.id));
+    // Each earlier tool_result is significant: token-gap pruning needs
+    // multiple whole groups, instead of dropping just one 20%-fallback group.
+    assert.ok(ids.length < 6, 'expected token gap to prune several tool rounds');
+    yield { type: 'text_delta', text: 'Earlier reads were performed; keep recent tool history.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const compact = createAutoCompact({ thresholdTokens: 200 });
+  const result = await compact.compact({ messages: many, model, force: true });
+  assert.equal(result.compacted, true);
+  assert.equal(requests.length, 2);
+});
