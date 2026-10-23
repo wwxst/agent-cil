@@ -2,19 +2,12 @@ import { EventEmitter } from 'node:events';
 import { isDeepStrictEqual } from 'node:util';
 import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
-import { StreamingToolExecutor } from './legacy-tools/streaming-tool-executor.js';
-import { runToolUse, invokeToolCallAndMapResult } from './legacy-tools/tool-execution.js';
+import { invokeToolCallAndMapResult } from './legacy-tools/tool-execution.js';
+import { query } from './legacy-query/query.js';
+export { ModelProtocolError } from './legacy-query/query.js';
 import { resolveToolSpecificPermission } from './legacy-permissions/tool-specific-permission.js';
 
-const STOP_REASONS = new Set(['end_turn', 'tool_use', 'max_tokens']);
 const MAX_PERMISSION_INPUT_REWRITES = 8;
-
-export class ModelProtocolError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = 'ModelProtocolError';
-  }
-}
 
 function isRecord(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -114,166 +107,16 @@ export class AgentLoop extends EventEmitter {
 
   async run({ messages = [], input, signal } = {}) {
     if (this.#active) throw new Error('This AgentLoop already has an active run.');
-    if (!Array.isArray(messages)) throw new TypeError('messages must be an array.');
-    if (messages.some(message => !isRecord(message))) throw new TypeError('Every message must be an object.');
-    if (messages.length === 0 && input === undefined) {
-      throw new TypeError('Provide either an initial message history or input.');
-    }
-
     this.#active = true;
     try {
-      let history = structuredClone(messages);
-      if (input !== undefined) history.push({ role: 'user', content: input });
-      const seenToolUseIds = new Set();
-      this.emit('runStarted', { messageCount: history.length });
-
-      for (let turn = 1; turn <= this.#maxTurns; turn += 1) {
-        abortIfNeeded(signal);
-        this.emit('turnStarted', { turn, messageCount: history.length });
-
-        const content = [];
-        const toolUses = [];
-        let stopReason;
-        let messageEnded = false;
-
-        try {
-          const stream = this.#model.stream({
-            messages: structuredClone(history),
-            tools: this.#tools.describe(),
-            signal,
-            turn,
-          });
-          if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') {
-            throw new ModelProtocolError('model.stream() must return an async iterable.');
-          }
-
-          for await (const event of stream) {
-            abortIfNeeded(signal);
-            if (!isRecord(event) || typeof event.type !== 'string') {
-              throw new ModelProtocolError('Model emitted a malformed stream event.');
-            }
-            if (messageEnded) throw new ModelProtocolError('Model emitted an event after message_end.');
-
-            if (event.type === 'text_delta') {
-              if (typeof event.text !== 'string') throw new ModelProtocolError('text_delta.text must be a string.');
-              if (event.text.length === 0) continue;
-              const last = content[content.length - 1];
-              if (last?.type === 'text') last.text += event.text;
-              else content.push({ type: 'text', text: event.text });
-              this.emit('textDelta', { turn, text: event.text });
-            } else if (event.type === 'tool_use') {
-              if (typeof event.id !== 'string' || event.id.trim().length === 0) {
-                throw new ModelProtocolError('tool_use.id must be a non-empty string.');
-              }
-              if (seenToolUseIds.has(event.id)) throw new ModelProtocolError('Duplicate tool_use id: ' + event.id);
-              if (typeof event.name !== 'string' || event.name.trim().length === 0) {
-                throw new ModelProtocolError('tool_use.name must be a non-empty string.');
-              }
-              if (!isRecord(event.input)) throw new ModelProtocolError('tool_use.input must be a JSON object.');
-              seenToolUseIds.add(event.id);
-              const toolUse = { type: 'tool_use', id: event.id, name: event.name, input: structuredClone(event.input) };
-              content.push(toolUse);
-              toolUses.push(toolUse);
-            } else if (event.type === 'message_end') {
-              const reason = event.stopReason ?? event.stop_reason;
-              if (!STOP_REASONS.has(reason)) {
-                throw new ModelProtocolError('message_end has an unsupported stop reason.');
-              }
-              stopReason = reason;
-              messageEnded = true;
-            } else if (event.type === 'usage') {
-              this.emit('usage', { turn, usage: event.usage });
-            } else {
-              throw new ModelProtocolError('Unsupported model stream event: ' + event.type);
-            }
-          }
-        } catch (error) {
-          this.emit('modelError', { turn, error });
-          if (signal?.aborted) abortIfNeeded(signal);
-          throw error;
-        }
-
-        if (!messageEnded) throw new ModelProtocolError('Model stream ended without message_end.');
-        if (toolUses.length > 0 && stopReason !== 'tool_use') {
-          throw new ModelProtocolError('A message containing tool_use must end with stop_reason tool_use.');
-        }
-        if (toolUses.length === 0 && stopReason === 'tool_use') {
-          throw new ModelProtocolError('Model ended with stop_reason tool_use but emitted no tool_use blocks.');
-        }
-
-        const assistantMessage = { role: 'assistant', content, stop_reason: stopReason };
-        history.push(assistantMessage);
-        this.emit('assistantMessage', { turn, message: structuredClone(assistantMessage) });
-
-        if (toolUses.length === 0) {
-          const result = { messages: history, turns: turn, stopReason, finalMessage: assistantMessage };
-          this.emit('turnFinished', { turn, stopReason, toolResultCount: 0 });
-          this.emit('finished', result);
-          return result;
-        }
-
-        // 2.1.88 StreamingToolExecutor: queue safe tools concurrently, keep
-        // Write/Edit/Bash exclusive, and preserve the existing PR #9 permission
-        // chain through #executeTool as the runToolUse adapter. No tool begins
-        // before message_end and protocol validation have completed.
-        const executor = new StreamingToolExecutor({
-          getTool: name => this.#tools.get(name),
-          signal,
-          execute: (block, { signal: toolSignal }) =>
-            runToolUse(
-              block,
-              assistantMessage,
-              (toolUse, { signal: verifiedSignal, onToolProgress }) =>
-                this.#executeTool(toolUse, {
-                  history, turn, signal: verifiedSignal,
-                  assistantMessage, onToolProgress,
-                }),
-              {
-                getTool: name => this.#tools.get(name),
-                signal: toolSignal,
-                onInputValidationFailed: () => {
-                  this.emit('toolCallFinished', {
-                    turn, toolUseId: block.id, toolName: block.name,
-                    isError: true, inputValidationFailed: true,
-                  });
-                },
-              },
-            ),
-        });
-        for (const toolUse of toolUses) {
-          abortIfNeeded(signal);
-          executor.addTool(toolUse);
-        }
-        const toolResults = [];
-        for await (const update of executor.getRemainingResults()) {
-          abortIfNeeded(signal);
-          if (update.progress !== undefined) this.emit('toolProgress', { turn, progress: update.progress });
-          if (update.message) {
-            const blocks = update.message.content;
-            if (!Array.isArray(blocks)) throw new ModelProtocolError('Legacy scheduler emitted an invalid tool result.');
-            for (const block of blocks) {
-              if (block?.type !== 'tool_result') {
-                throw new ModelProtocolError('Legacy scheduler emitted an unexpected message.');
-              }
-              toolResults.push(block);
-            }
-          }
-        }
-        abortIfNeeded(signal);
-        if (toolResults.length !== toolUses.length) {
-          throw new ModelProtocolError('Legacy scheduler returned a mismatched number of tool results.');
-        }
-        history.push({ role: 'user', content: toolResults });
-        this.emit('turnFinished', { turn, stopReason, toolResultCount: toolResults.length });
-
-        if (turn === this.#maxTurns) {
-          const result = { messages: history, turns: turn, stopReason: 'max_turns', finalMessage: assistantMessage };
-          this.emit('finished', result);
-          return result;
-        }
-      }
-
-      throw new Error('AgentLoop reached an unreachable state.');
+      return await query({
+        messages, input, signal,
+        model: this.#model,
+        tools: this.#tools,
+        maxTurns: this.#maxTurns,
+        executeTool: (toolUse, context) => this.#executeTool(toolUse, context),
+        emit: (eventName, event) => this.emit(eventName, event),
+      });
     } finally {
       this.#active = false;
     }
