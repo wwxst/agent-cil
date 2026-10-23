@@ -357,6 +357,13 @@ export class AnthropicMessagesAdapter {
         if (!['text', 'tool_use', 'thinking', 'redacted_thinking'].includes(block.type)) {
           throw new ModelAdapterError('Messages API sent unsupported content block type: ' + String(block.type));
         }
+        // Per DeepSeek's published compatibility table, redacted_thinking is
+        // not accepted in request history. Reject immediately on receipt,
+        // before any subsequent tool_use can cause filesystem side effects.
+        if (deepSeekEndpoint && block.type === 'redacted_thinking') {
+          throw new ModelAdapterError(
+            'DeepSeek Anthropic-compatible API does not support redacted_thinking; refusing incomplete tool-turn replay.');
+        }
         if (blocks.has(payload.index)) throw new ModelAdapterError('Messages API reused an active content block index.');
         const state = { type: block.type };
         if (block.type === 'thinking') {
