@@ -12,6 +12,8 @@
  * not a disconnected reference copy.
  */
 import { Stream } from './stream.js';
+import { validateJsonSchema } from '../validation.js';
+import { validateToolInputValues } from '../tool-registry.js';
 
 function createUserMessage(block) {
   return { role: 'user', content: [block] };
@@ -126,10 +128,11 @@ export function streamedCheckPermissionsAndCallTool(
 }
 
 /**
- * Adapter for the not-yet-portable checkPermissionsAndCallTool() body.
- * All actual schema checks, updatedInput rewrites, reauthorization and tool
- * execution still run in AgentLoop.#executeTool until the original chain is
- * independently compiled and tested.
+ * Runnable validation prefix of old checkPermissionsAndCallTool().
+ * The original order is schema validation → tool-specific value validation →
+ * permission/approval → call → result. The last two stages still dispatch to
+ * the verified PR #9 permission executor until Bun/Hook/MCP dependencies are
+ * available. Permission rewritten inputs are revalidated inside AgentLoop.
  */
 async function checkPermissionsAndCallTool(
   tool,
@@ -139,11 +142,48 @@ async function checkPermissionsAndCallTool(
   toolUseContext,
   onToolProgress,
 ) {
+  // From old 2.1.88 checkPermissionsAndCallTool(): schema.safeParse
+  // runs first, tool.validateInput runs second; neither may request approval
+  // or execute a tool on failure. Our registry stores the JSON Schema sent
+  // to Messages API, so use the existing JSON Schema validator instead of
+  // introducing a second Zod schema that could drift from the wire format.
+  const schemaErrors = tool.inputSchema
+    ? validateJsonSchema(toolUse.input, tool.inputSchema)
+    : [];
+  if (schemaErrors.length > 0) {
+    toolUseContext.onInputValidationFailed?.({
+      toolName: tool.name, toolUseId: toolUse.id, errors: schemaErrors,
+    });
+    return [{ message: errorResult(toolUse,
+      '<tool_use_error>InputValidationError: Invalid tool input: ' +
+      schemaErrors.join(' ') + '</tool_use_error>') }];
+  }
+
+  const valueErrors = await validateToolInputValues(tool, toolUse.input, toolUseContext);
+  if (toolUseContext.signal?.aborted) {
+    const error = toolUseContext.signal.reason instanceof Error
+      ? toolUseContext.signal.reason
+      : new Error('Tool execution aborted.');
+    error.name = 'AbortError';
+    throw error;
+  }
+  if (valueErrors.length > 0) {
+    toolUseContext.onInputValidationFailed?.({
+      toolName: tool.name, toolUseId: toolUse.id, errors: valueErrors,
+    });
+    return [{ message: errorResult(toolUse,
+      '<tool_use_error>Invalid tool input: ' + valueErrors.join(' ') + '</tool_use_error>') }];
+  }
+
+  // PreToolUse hooks and original checkPermissionsAndCallTool authorization
+  // require their stateful dependency closure; the PR #9 permission adapter
+  // remains the only authority to allow a real tool call.
   const block = await executeTool(toolUse, {
     signal: toolUseContext.signal,
     onToolProgress,
     tool,
     assistantMessage,
+    toolUseContext,
   });
   if (!block || block.type !== 'tool_result' || block.tool_use_id !== toolUse.id) {
     throw new Error('Tool execution adapter returned a mismatched tool_result.');
