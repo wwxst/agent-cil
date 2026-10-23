@@ -3,6 +3,13 @@ import { test } from 'node:test';
 import { AgentLoop, ModelProtocolError } from '../src/agent-loop.js';
 import { ToolRegistry } from '../src/tool-registry.js';
 
+// Explicitly declare this test policy independent of partial assistant
+// messages; production CLI does the same. Unmarked custom policies defer.
+function earlyPermission(fn) {
+  Object.defineProperty(fn, 'supportsStreamingPreflight', { value: true });
+  return fn;
+}
+
 function gate() {
   let release;
   const promise = new Promise(resolve => { release = resolve; });
@@ -60,7 +67,7 @@ test('trusted Read starts before message_end, but tool result follows the comple
   } };
   const loop = new AgentLoop({
     model, tools: registry(),
-    permissionPolicy: async () => ({ behavior: 'allow' }),
+    permissionPolicy: earlyPermission(async () => ({ behavior: 'allow' })),
   });
   loop.on('toolCallStarted', ({ toolName }) => {
     order.push('tool-start:' + toolName);
@@ -92,9 +99,9 @@ test('Write and Bash never run or request approval while model stream is incompl
       write: async () => { assert.ok(ended); writes++; return 'written'; },
       bash: async () => { assert.ok(ended); shells++; return 'tested'; },
     }),
-    permissionPolicy: async ({ name }) => ({
+    permissionPolicy: earlyPermission(async ({ name }) => ({
       behavior: name === 'Write' || name === 'Bash' ? 'ask' : 'allow',
-    }),
+    })),
     approvalHandler: async ({ name }) => {
       assert.ok(ended, 'approval must not open before stream end');
       calls.push(name); approvals++;
@@ -125,7 +132,7 @@ test('an unsafe first tool blocks later Read speculation to preserve scheduler b
       read: async () => { assert.ok(ended); reads++; return 'read'; },
       write: async () => { assert.ok(ended); writes++; return 'write'; },
     }),
-    permissionPolicy: async () => ({ behavior: 'allow' }),
+    permissionPolicy: earlyPermission(async () => ({ behavior: 'allow' })),
   });
   await loop.run({ input: 'write then read' });
   assert.equal(reads, 1);
@@ -146,7 +153,7 @@ test('Read needing approval is deferred; no permissionRequired before message_en
       } else { for (const event of final()) yield event; }
     } },
     tools: registry({ read: async () => { reads++; return 'read'; } }),
-    permissionPolicy: async () => ({ behavior: 'ask' }),
+    permissionPolicy: earlyPermission(async () => ({ behavior: 'ask' })),
     approvalHandler: async () => { assert.ok(ended); approvals++; return true; },
   });
   await loop.run({ input: 'read protected file' });
@@ -164,9 +171,9 @@ test('changed permission after preflight never triggers early approval or side e
       } else { for (const event of final()) yield event; }
     } },
     tools: registry({ read: async () => { reads++; return 'read'; } }),
-    permissionPolicy: async () => ({
+    permissionPolicy: earlyPermission(async () => ({
       behavior: ++decisionCalls === 1 ? 'allow' : 'ask',
-    }),
+    })),
     approvalHandler: async () => { approvalCalls++; return true; },
   });
   const result = await loop.run({ input: 'read' });
@@ -200,7 +207,7 @@ test('truncated stream discards an early Read and aborts its signal without exec
       },
       write: async () => { writeCount++; return 'BAD'; },
     }),
-    permissionPolicy: async () => ({ behavior: 'allow' }),
+    permissionPolicy: earlyPermission(async () => ({ behavior: 'allow' })),
   });
   await assert.rejects(loop.run({ messages, input: 'start' }), /SSE connection lost/);
   await timely(aborted.promise);
@@ -229,7 +236,7 @@ test('AbortSignal cancels early Read without scheduling later Write or altering 
       },
       write: async () => { writes++; return 'BAD'; },
     }),
-    permissionPolicy: async () => ({ behavior: 'allow' }),
+    permissionPolicy: earlyPermission(async () => ({ behavior: 'allow' })),
   });
   await assert.rejects(loop.run({ input: 'read', signal: controller.signal }), /interrupted by user/);
   await timely(aborted.promise);
@@ -257,7 +264,7 @@ test('unknown tool/invalid read-only metadata cannot opt into early execution', 
       readonly: false,
       read: async () => { assert.ok(ended); executed = true; return 'read'; },
     }),
-    permissionPolicy: async () => ({ behavior: 'allow' }),
+    permissionPolicy: earlyPermission(async () => ({ behavior: 'allow' })),
   });
   await loop.run({ input: 'read' });
   assert.equal(executed, true);
@@ -296,7 +303,7 @@ test('two early safe reads overlap but their results preserve model order', asyn
     }
   } };
   const loop = new AgentLoop({
-    model, tools, permissionPolicy: async () => ({ behavior: 'allow' }),
+    model, tools, permissionPolicy: earlyPermission(async () => ({ behavior: 'allow' })),
   });
   await loop.run({ input: 'read two files' });
   assert.deepEqual(observed.sort(), ['started:a', 'started:b']);
@@ -330,8 +337,8 @@ test('failed early Read cannot bypass a deferred Bash approval refusal', async (
       },
       bash: async () => { bashCount++; return 'BAD'; },
     }),
-    permissionPolicy: async ({ name }) =>
-      ({ behavior: name === 'Bash' ? 'ask' : 'allow' }),
+    permissionPolicy: earlyPermission(async ({ name }) =>
+      ({ behavior: name === 'Bash' ? 'ask' : 'allow' })),
     approvalHandler: async () => {
       assert.ok(modelEnded);
       approvalCount++;
@@ -342,4 +349,30 @@ test('failed early Read cannot bypass a deferred Bash approval refusal', async (
   assert.equal(result.turns, 2);
   assert.equal(bashCount, 0);
   assert.equal(approvalCount, 1);
+});
+
+
+test('history-dependent permission policies cannot be previewed before assistant completion', async () => {
+  let started = 0, ended = false, round = 0;
+  const loop = new AgentLoop({
+    model: { async *stream({ messages }) {
+      if (round++ === 0) {
+        yield { type: 'text_delta', text: 'assistant classified as forbidden' };
+        yield readUse();
+        await Promise.resolve();
+        assert.equal(started, 0, 'unmarked policy must never authorize a partial assistant');
+        ended = true;
+        yield end();
+      } else { for (const event of final()) yield event; }
+    } },
+    tools: registry({ read: async () => { started++; return 'secret'; } }),
+    // This policy explicitly depends on the complete assistant message.
+    permissionPolicy: async ({ messages }) => ({
+      behavior: messages.at(-1)?.role === 'assistant' ? 'deny' : 'allow',
+    }),
+  });
+  const result = await loop.run({ input: 'read forbidden content' });
+  assert.equal(ended, true);
+  assert.equal(started, 0, 'old post-message_end permission behavior must be preserved');
+  assert.equal(result.messages[2].content[0].is_error, true);
 });
