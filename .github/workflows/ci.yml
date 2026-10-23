@@ -17,8 +17,10 @@ jobs:
         with:
           node-version: 22
       - run: npm test
-      - name: Syntax-check source and tests
-        run: find packages -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Syntax-check source, tests, and optional live-provider harness
+        run: |
+          find packages -name '*.js' -print0 | xargs -0 -n1 node --check
+          node --check scripts/verify-live-provider.mjs
       - name: Validate packed installation and real CLI entry point
         shell: bash
         run: |
