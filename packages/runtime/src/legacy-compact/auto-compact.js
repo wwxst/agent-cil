@@ -45,7 +45,7 @@ export function getPromptTooLongTokenGap(error) {
   if (!(error instanceof ModelContextLengthError) || typeof rawMessage !== 'string') {
     return undefined;
   }
-  const match = rawMessage.match(/prompt is too long[^0-9]*(\\d+)\\s*tokens?\\s*>\\s*(\\d+)/i);
+  const match = rawMessage.match(/prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)/i);
   if (!match) return undefined;
   const actual = Number(match[1]), limit = Number(match[2]);
   const gap = actual - limit;
