@@ -134,6 +134,7 @@ export class StreamingToolExecutor {
       // tools after interruption, but never executes them.
       for (const tool of this.#tools) {
         if (tool.status !== 'queued') continue;
+        tool.wasQueuedWhenCancelled = true;
         tool.results = [syntheticError(tool.id, 'user_interrupted')];
         tool.status = 'completed';
       }
@@ -305,6 +306,12 @@ export class StreamingToolExecutor {
       } finally { clearTimeout(timer); }
     }
     const results = this.#tools.map(tool => {
+      if (tool.wasQueuedWhenCancelled) {
+        return {
+          type: 'tool_result', tool_use_id: tool.id, is_error: true,
+          content: '<tool_use_error>Interrupted: tool was not started; no tool execution was attempted.</tool_use_error>',
+        };
+      }
       const blocks = tool.status === 'completed' || tool.status === 'yielded'
         ? tool.results?.flatMap(m =>
           m?.role === 'user' && Array.isArray(m.content)
