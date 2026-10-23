@@ -69,6 +69,9 @@ export class StreamingToolExecutor {
     this.#getTool = getTool;
     this.#signal = signal;
     this.#siblingController = new AbortController();
+    // Wake the result consumer if cancellation arrived while awaiting a
+    // pending worker. Query can then record an interrupted checkpoint.
+    signal?.addEventListener('abort', () => this.#notifyProgress(), { once: true });
   }
 
   discard() {
@@ -125,9 +128,18 @@ export class StreamingToolExecutor {
   // Original queue traversal: a queued exclusive tool is a barrier. Safe
   // tools may execute concurrently only when no exclusive tool is running.
   #processQueue() {
-    // Once cancelled, never start an uncalled queued tool. The interruption
-    // checkpoint will synthesize a matching "not started" tool_result.
-    if (this.#discarded || this.#signal?.aborted) return;
+    if (this.#discarded) return;
+    if (this.#signal?.aborted) {
+      // Original 2.1.88 executor yields synthetic tool_results for queued
+      // tools after interruption, but never executes them.
+      for (const tool of this.#tools) {
+        if (tool.status !== 'queued') continue;
+        tool.results = [syntheticError(tool.id, 'user_interrupted')];
+        tool.status = 'completed';
+      }
+      this.#notifyProgress();
+      return;
+    }
     for (const tool of this.#tools) {
       if (tool.status !== 'queued') continue;
       if (this.#canExecuteTool(tool.isConcurrencySafe)) {
@@ -191,12 +203,14 @@ export class StreamingToolExecutor {
         for await (const update of iterator) {
           const reason = this.#abortReason(tool);
           if (reason && !selfErrored) {
-            // A valid completed result is better evidence than an abort
-            // flag that was set immediately after the side effect finished.
-            // Otherwise mark the result uncertain, never simply "rejected".
-            messages.push(update?.message || (tool.callStarted
-              ? uncertainSideEffectResult(tool.id)
-              : syntheticError(tool.id, reason, this.#erroredToolDescription)));
+            // Preserve the old explicit 'interrupt' contract for tools
+            // opting into cancellation. New AbortError flow distinguishes
+            // already-returned results from side effects still uncertain.
+            messages.push(this.#signal?.reason === 'interrupt'
+              ? syntheticError(tool.id, reason, this.#erroredToolDescription)
+              : update?.message || (tool.callStarted
+                ? uncertainSideEffectResult(tool.id)
+                : syntheticError(tool.id, reason, this.#erroredToolDescription)));
             break;
           }
           if (update?.progress !== undefined) {
@@ -221,7 +235,8 @@ export class StreamingToolExecutor {
         }
       } catch (error) {
         const reason = this.#abortReason(tool);
-        messages.push(reason === 'user_interrupted' && tool.callStarted
+        messages.push(reason === 'user_interrupted' && tool.callStarted &&
+          this.#signal?.reason !== 'interrupt'
           ? uncertainSideEffectResult(tool.id)
           : syntheticError(tool.id, reason || 'sibling_error', this.#erroredToolDescription));
       }
@@ -313,15 +328,20 @@ export class StreamingToolExecutor {
   #hasUnfinishedTools() { return this.#tools.some(t => t.status !== 'yielded'); }
 
   async *getRemainingResults() {
-    if (this.#discarded || this.#signal?.aborted) return;
-    while (!this.#discarded && !this.#signal?.aborted && this.#hasUnfinishedTools()) {
+    if (this.#discarded) return;
+    while (!this.#discarded && this.#hasUnfinishedTools()) {
       this.#processQueue();
       let producedUpdate = false;
       for (const update of this.getCompletedResults()) {
         producedUpdate = true;
         yield update;
       }
-      if (this.#discarded || this.#signal?.aborted) return;
+      if (this.#discarded) return;
+      // In an AbortError-based CLI cancellation, do not wait indefinitely
+      // for a hostile tool; Query uses takeInterruptedResults() with a bounded
+      // settle deadline. The explicit legacy 'interrupt' reason preserves
+      // the older blocking-tool contract.
+      if (this.#signal?.aborted && this.#signal.reason !== 'interrupt') return;
       // A later safe tool can already be completed but blocked on an earlier
       // result. Await the unfinished worker rather than spinning synchronously.
       if (this.#hasExecutingTools() && !producedUpdate) {
@@ -341,7 +361,7 @@ export class StreamingToolExecutor {
         }
       }
     }
-    if (!this.#discarded && !this.#signal?.aborted) {
+    if (!this.#discarded) {
       for (const update of this.getCompletedResults()) yield update;
     }
   }
