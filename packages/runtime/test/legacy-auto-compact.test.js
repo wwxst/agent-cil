@@ -359,6 +359,29 @@ test('2.1.88 measured usage counts cache input/output once and estimates only tr
   assert.ok(tokenCountWithEstimation(transcript) < estimateMessageTokens(transcript));
 });
 
+test('partial streaming usage is not treated as a completed context measurement', async () => {
+  const { getTokenCountFromUsage, tokenCountWithEstimation } =
+    await import('../src/legacy-compact/auto-compact.js');
+  assert.equal(getTokenCountFromUsage({ input_tokens: 150000 }), undefined,
+    'message_start input-only snapshot is not a final usage anchor');
+  assert.equal(getTokenCountFromUsage({ input_tokens: 7.5, output_tokens: 1.5 }), undefined);
+  assert.equal(getTokenCountFromUsage({ input_tokens: 7, output_tokens: 2,
+    cache_read_input_tokens: 1.5 }), undefined);
+  assert.equal(getTokenCountFromUsage({ input_tokens: 7, output_tokens: 2,
+    cache_read_input_tokens: 3, cache_creation_input_tokens: 4 }), 16);
+  const transcript = structuredClone(raw);
+  transcript[3].usage = { input_tokens: 150000 };
+  assert.equal(tokenCountWithEstimation(transcript),
+    estimateMessageTokens(transcript));
+  const compactor = createAutoCompact({ thresholdTokens: 60000 });
+  let samples = 0;
+  const output = await compactor.compact({ messages: transcript, model: {
+    async *stream() { samples++; throw new Error('must not summarize'); },
+  } });
+  assert.equal(output.compacted, false);
+  assert.equal(samples, 0);
+});
+
 test('compaction clears only stale usage anchor, preserving signed recent content', async () => {
   const { tokenCountWithEstimation } =
     await import('../src/legacy-compact/auto-compact.js');
