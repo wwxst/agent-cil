@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { AgentLoop } from '../../runtime/src/agent-loop.js';
+import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import {
   CliArgumentError,
   createBuiltinTools,
@@ -1396,6 +1397,80 @@ test('ported legacy acceptEdits mode is the active CLI policy without bypassing 
     assert.equal(escaped.behavior, 'deny');
     assert.match(escaped.reason, /escapes the workspace/);
     assert.equal((await edits({ name: 'Read', input: { file_path: 'safe.txt' } })).behavior, 'allow');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+
+test('ported 2.1.88 whole-tool rules drive actual CLI policy after file safety checks', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-legacy-rules-'));
+  try {
+    const base = createCliPermissionContext({ allowEdits: true });
+    const rules = applyPermissionUpdates(base, [
+      { type: 'addRules', behavior: 'allow', destination: 'session', rules: [
+        { toolName: 'Bash' }, { toolName: 'Write' },
+      ] },
+      { type: 'addRules', behavior: 'ask', destination: 'session', rules: [
+        { toolName: 'Write' },
+      ] },
+      { type: 'addRules', behavior: 'deny', destination: 'projectSettings', rules: [
+        { toolName: 'Edit' },
+      ] },
+    ]);
+    const policy = createCliPermissionPolicy({ workspace, permissionContext: rules });
+    assert.equal((await policy({ name: 'Write', input: { file_path: 'safe.txt' } })).behavior, 'ask',
+      'ask rule overrides allow and acceptEdits mode');
+    assert.equal((await policy({ name: 'Edit', input: { file_path: 'safe.txt' } })).behavior, 'deny',
+      'explicit deny overrides acceptEdits mode');
+    assert.equal((await policy({ name: 'Bash', input: { command: 'echo hi' } })).behavior, 'allow',
+      'explicit user-owned whole-tool allow rule is evaluated');
+    assert.equal((await policy({ name: 'Read', input: { file_path: 'safe.txt' } })).behavior, 'allow');
+
+    for (const name of ['Read', 'Write', 'Edit']) {
+      const escaped = await policy({ name, input: { file_path: '../escape.txt' } });
+      assert.equal(escaped.behavior, 'deny', 'rule must never override path escape for ' + name);
+      assert.match(escaped.reason, /File target is not authorized/);
+    }
+    const invalidGlob = await policy({ name: 'Glob', input: { pattern: '../*.js' } });
+    assert.equal(invalidGlob.behavior, 'deny');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('ported whole-tool deny still blocks executed Write when AgentLoop rechecks replaced input', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-legacy-recheck-'));
+  try {
+    const rules = applyPermissionUpdates(createCliPermissionContext({ allowEdits: true }), [
+      { type: 'addRules', behavior: 'deny', destination: 'session',
+        rules: [{ toolName: 'Write' }] },
+    ]);
+    const policy = createCliPermissionPolicy({ workspace, permissionContext: rules });
+    const tools = await createBuiltinTools({ workspace });
+    let asked = 0;
+    const model = { async *stream({ messages }) {
+      if (messages.length === 1) {
+        yield { type: 'tool_use', id: 'deny-write', name: 'Write',
+          input: { file_path: 'denied.txt', content: 'must not be written' } };
+        yield { type: 'message_end', stopReason: 'tool_use' };
+      } else {
+        const block = messages.at(-1).content[0];
+        assert.equal(block.tool_use_id, 'deny-write');
+        assert.equal(block.is_error, true);
+        assert.match(block.content, /Permission to use Write has been denied/);
+        yield { type: 'text_delta', text: 'denied correctly' };
+        yield { type: 'message_end', stopReason: 'end_turn' };
+      }
+    } };
+    const loop = new AgentLoop({
+      model, tools, permissionPolicy: policy,
+      approvalHandler: async () => { asked += 1; return { approved: true }; },
+    });
+    const output = await loop.run({ input: 'try to write' });
+    assert.equal(output.stopReason, 'end_turn');
+    assert.equal(asked, 0, 'deny rules must not request approval');
+    await assert.rejects(readFile(join(workspace, 'denied.txt')), { code: 'ENOENT' });
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
