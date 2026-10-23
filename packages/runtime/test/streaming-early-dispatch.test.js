@@ -262,3 +262,84 @@ test('unknown tool/invalid read-only metadata cannot opt into early execution', 
   await loop.run({ input: 'read' });
   assert.equal(executed, true);
 });
+
+
+test('two early safe reads overlap but their results preserve model order', async () => {
+  const bothStarted = gate(), firstDone = gate();
+  const observed = [];
+  let running = 0, round = 0;
+  const tools = registry({
+    read: async ({ key }) => {
+      running++;
+      observed.push('started:' + key);
+      if (running === 2) bothStarted.release();
+      if (key === 'a') {
+        await timely(bothStarted.promise);
+        await timely(firstDone.promise);
+      } else {
+        firstDone.release();
+      }
+      running--;
+      return 'value:' + key;
+    },
+  });
+  const model = { async *stream({ messages }) {
+    if (round++ === 0) {
+      yield { type: 'tool_use', id: 'first', name: 'Read', input: { key: 'a' } };
+      yield { type: 'tool_use', id: 'second', name: 'Read', input: { key: 'b' } };
+      await timely(bothStarted.promise);
+      yield end();
+    } else {
+      assert.deepEqual(messages.at(-1).content.map(x => x.tool_use_id), ['first', 'second']);
+      assert.deepEqual(messages.at(-1).content.map(x => x.content), ['value:a', 'value:b']);
+      for (const event of final()) yield event;
+    }
+  } };
+  const loop = new AgentLoop({
+    model, tools, permissionPolicy: async () => ({ behavior: 'allow' }),
+  });
+  await loop.run({ input: 'read two files' });
+  assert.deepEqual(observed.sort(), ['started:a', 'started:b']);
+});
+
+test('failed early Read cannot bypass a deferred Bash approval refusal', async () => {
+  const readStarted = gate();
+  let modelEnded = false, bashCount = 0, approvalCount = 0, round = 0;
+  const model = { async *stream({ messages }) {
+    if (round++ === 0) {
+      yield readUse();
+      yield bashUse();
+      await timely(readStarted.promise);
+      assert.equal(bashCount, 0);
+      assert.equal(approvalCount, 0);
+      modelEnded = true;
+      yield end();
+    } else {
+      const result = messages.at(-1).content;
+      assert.equal(result[0].is_error, true);
+      assert.equal(result[1].is_error, true);
+      for (const event of final()) yield event;
+    }
+  } };
+  const loop = new AgentLoop({
+    model,
+    tools: registry({
+      read: async () => {
+        readStarted.release();
+        throw new Error('read failed');
+      },
+      bash: async () => { bashCount++; return 'BAD'; },
+    }),
+    permissionPolicy: async ({ name }) =>
+      ({ behavior: name === 'Bash' ? 'ask' : 'allow' }),
+    approvalHandler: async () => {
+      assert.ok(modelEnded);
+      approvalCount++;
+      return { approved: false };
+    },
+  });
+  const result = await loop.run({ input: 'inspect then run tests' });
+  assert.equal(result.turns, 2);
+  assert.equal(bashCount, 0);
+  assert.equal(approvalCount, 1);
+});
