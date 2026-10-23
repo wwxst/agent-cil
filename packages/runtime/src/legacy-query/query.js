@@ -103,6 +103,11 @@ export async function query({
             if (!result || !Array.isArray(result.messages)) {
               throw new ModelProtocolError('Compaction returned invalid messages.');
             }
+            // The 2.1.88 autoCompactIfNeeded contract returns a failed
+            // proactive attempt as wasCompacted:false; it must not stop the
+            // current tool or model task. Surface the error for observability,
+            // while retaining the original full history.
+            if (result.error) emit('contextCompactError', { turn, error: result.error });
             if (result.compacted) {
               history = structuredClone(result.messages);
               state.messages = history;
