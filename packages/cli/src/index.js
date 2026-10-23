@@ -30,6 +30,7 @@ export const HELP = [
   '      --base-url <url>    Messages API base URL (default: ANTHROPIC_BASE_URL or https://api.anthropic.com)',
   '      --max-tokens <n>    Maximum output tokens (default: 4096)',
   '      --max-turns <n>     Maximum model rounds per prompt (default: 8)',
+  '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
   '',
@@ -69,6 +70,7 @@ export function parseArgs(argv) {
     baseUrl: undefined,
     maxTokens: 4096,
     maxTurns: 8,
+    maxRetries: 2,
     system: undefined,
     cwd: process.cwd(),
     positional: [],
@@ -113,6 +115,12 @@ export function parseArgs(argv) {
       options.maxTurns = Number(raw);
       if (!Number.isSafeInteger(options.maxTurns) || options.maxTurns < 1 || options.maxTurns > 100) {
         throw new CliArgumentError('--max-turns must be an integer between 1 and 100.');
+      }
+    } else if (arg === '--max-retries' || arg.startsWith('--max-retries=')) {
+      const raw = arg === '--max-retries' ? takeValue(arg, i++) : arg.slice('--max-retries='.length);
+      options.maxRetries = Number(raw);
+      if (!Number.isSafeInteger(options.maxRetries) || options.maxRetries < 0 || options.maxRetries > 5) {
+        throw new CliArgumentError('--max-retries must be an integer between 0 and 5.');
       }
     } else if (arg === '--system') {
       options.system = takeValue(arg, i++);
@@ -743,6 +751,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     model: options.model || env.ANTHROPIC_MODEL || 'claude-sonnet-4-5',
     baseUrl: options.baseUrl || env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
     maxTokens: options.maxTokens,
+    maxRetries: options.maxRetries,
     system: options.system,
   });
   const tools = await createBuiltinTools({ workspace });
