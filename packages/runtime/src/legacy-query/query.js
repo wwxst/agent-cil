@@ -81,6 +81,9 @@ export async function query({
       const initialHistory = structuredClone(messages);
       if (input !== undefined) initialHistory.push({ role: 'user', content: input });
       const seenToolUseIds = new Set();
+      // Stable identity for the whole internal tool chain, not the CLI
+      // process lifetime: new user prompts must not inherit rapid refills.
+      const chainId = {};
       emit('runStarted', { messageCount: initialHistory.length });
 
       // Old query.ts State: mutable across model/tool iterations. Only the
@@ -98,7 +101,7 @@ export async function query({
         if (compactContext) {
           const before = history;
           try {
-            const result = await compactContext({ messages: history, model, signal });
+            const result = await compactContext({ messages: history, model, signal, chainId, turn });
             abortIfNeeded(signal);
             if (!result || !Array.isArray(result.messages)) {
               throw new ModelProtocolError('Compaction returned invalid messages.');
@@ -282,7 +285,7 @@ export async function query({
             recoveredTurn = turn;
             try {
               const compacted = await compactContext({
-                messages: history, model, signal, force: true,
+                messages: history, model, signal, force: true, chainId, turn,
               });
               abortIfNeeded(signal);
               if (compacted?.compacted && Array.isArray(compacted.messages)) {
