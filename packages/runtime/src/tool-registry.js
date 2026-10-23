@@ -83,15 +83,20 @@ export class ToolRegistry {
     }));
   }
 
-  async validateInput(name, input) {
+  async validateInput(name, input, context, expectedTool) {
     const tool = this.#tools.get(name);
     if (!tool) return ['Tool is not registered: ' + name];
+    if (expectedTool && tool !== expectedTool) return ['Tool definition changed during validation.'];
     if (!isRecord(input)) return ['Tool input must be a JSON object.'];
 
     const schemaErrors = validateJsonSchema(input, tool.inputSchema);
     if (schemaErrors.length > 0) return schemaErrors;
 
-    return validateToolInputValues(tool, input);
+    const errors = await validateToolInputValues(tool, input, context);
+    if (expectedTool && this.#tools.get(name) !== expectedTool) {
+      return ['Tool definition changed during validation.'];
+    }
+    return errors;
   }
 }
 

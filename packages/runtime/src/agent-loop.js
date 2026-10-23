@@ -223,11 +223,18 @@ export class AgentLoop extends EventEmitter {
             runToolUse(
               block,
               assistantMessage,
-              (toolUse, { signal: verifiedSignal }) =>
-                this.#executeTool(toolUse, { history, turn, signal: verifiedSignal }),
+              (toolUse, { signal: verifiedSignal, tool: validatedTool, toolUseContext }) =>
+                this.#executeTool(toolUse, {
+                  history, turn, signal: verifiedSignal, validatedTool, validatorContext: toolUseContext,
+                }),
               {
                 getTool: name => this.#tools.get(name),
                 signal: toolSignal,
+                onUnknownTool: unknown => {
+                  this.emit('toolCallFinished', {
+                    turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
+                  });
+                },
                 onInputValidationFailed: () => {
                   this.emit('toolCallFinished', {
                     turn, toolUseId: block.id, toolName: block.name,
@@ -276,10 +283,17 @@ export class AgentLoop extends EventEmitter {
     }
   }
 
-  async #executeTool(toolUse, { history, turn, signal }) {
+  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext }) {
     const tool = this.#tools.get(toolUse.name);
     if (!tool) {
       const result = toolError(toolUse, 'Unknown tool: ' + toolUse.name);
+      this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: toolUse.name, isError: true });
+      return result;
+    }
+    // The schema and custom validator just ran against validatedTool in the
+    // legacy execution prefix. Never substitute a different registry entry.
+    if (!validatedTool || tool !== validatedTool) {
+      const result = toolError(toolUse, 'Tool definition changed after input validation; refusing to execute.');
       this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: toolUse.name, isError: true });
       return result;
     }
@@ -346,7 +360,9 @@ export class AgentLoop extends EventEmitter {
       if (normalized.error) return inputUpdateError(source, normalized.error);
       if (isDeepStrictEqual(normalized.value, executionInput)) return { changed: false };
 
-      const errors = await this.#tools.validateInput(toolUse.name, normalized.value);
+      const errors = await this.#tools.validateInput(
+        toolUse.name, normalized.value, validatorContext, validatedTool,
+      );
       abortIfNeeded(signal);
       if (errors.length > 0) return inputUpdateError(source, errors.join(' '));
 
