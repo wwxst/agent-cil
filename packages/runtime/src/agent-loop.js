@@ -227,6 +227,12 @@ export class AgentLoop extends EventEmitter {
               {
                 getTool: name => this.#tools.get(name),
                 signal: toolSignal,
+                onInputValidationFailed: () => {
+                  this.emit('toolCallFinished', {
+                    turn, toolUseId: block.id, toolName: block.name,
+                    isError: true, inputValidationFailed: true,
+                  });
+                },
               },
             ),
         });
@@ -277,13 +283,9 @@ export class AgentLoop extends EventEmitter {
       return result;
     }
 
-    const validationErrors = await this.#tools.validateInput(toolUse.name, toolUse.input);
-    abortIfNeeded(signal);
-    if (validationErrors.length > 0) {
-      const result = toolError(toolUse, 'Invalid tool input: ' + validationErrors.join(' '));
-      this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true });
-      return result;
-    }
+    // Initial schema/value validation is now performed by the ported
+    // 2.1.88 checkPermissionsAndCallTool() before permission is consulted.
+    // The permission updatedInput path below must continue to revalidate.
 
     const requestPermissionDecision = async (input, phase) => {
       try {
