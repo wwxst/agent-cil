@@ -52,6 +52,9 @@ export async function* runToolUse(toolUse, assistantMessage, executeTool, toolUs
   // The original runToolUse validates lookup before entering the tool
   // execution stream; preserve its tool_result error framing.
   if (!tool) {
+    // The legacy framing remains here, but the host loop must still observe
+    // one terminal lifecycle event for an unknown tool.
+    toolUseContext.onUnknownTool?.(toolUse);
     yield {
       message: errorResult(
         toolUse,
