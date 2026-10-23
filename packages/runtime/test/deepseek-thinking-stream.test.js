@@ -149,12 +149,17 @@ test('DeepSeek cannot silently remove unsupported redacted history on tool conti
     delta(1, { type: 'input_json_delta', partial_json: '{"key":"a"}' }) +
     close(1) + end('tool_use');
   const requests = [], tools = new ToolRegistry();
-  tools.register({ name: 'Read', description: 'Fixture', execute: async () => 'x' });
+  let executed = 0;
+  tools.register({ name: 'Read', description: 'Fixture', execute: async () => {
+    executed++;
+    return 'x';
+  } });
   await assert.rejects(new AgentLoop({
     model: adapterFor([first], requests),
     tools, permissionPolicy: async () => ({ behavior: 'allow' }),
   }).run({ input: 'read' }), /DeepSeek.*redacted_thinking/);
   assert.equal(requests.length, 1, 'must reject before a malformed second request');
+  assert.equal(executed, 0, 'unsupported model blocks must not trigger tools');
 });
 
 test('stream protocol rejects unknown blocks, mismatched signature, malformed redaction and truncation', async () => {
