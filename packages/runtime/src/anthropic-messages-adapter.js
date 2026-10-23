@@ -31,6 +31,34 @@ export class ModelAdapterError extends Error {
   }
 }
 
+/**
+ * Typed pre-response context rejection, not a general HTTP retry signal.
+ * Matches the legacy isPromptTooLongMessage/error classification, while
+ * allowing DeepSeek's Anthropic-compatible 400 context-window errors.
+ */
+export class ModelContextLengthError extends ModelAdapterError {
+  constructor(message, { status, cause } = {}) {
+    super(message, { cause });
+    this.name = 'ModelContextLengthError';
+    this.status = status;
+    this.code = 'context_length_exceeded';
+  }
+}
+
+export function isContextLengthRejection(status, bodyText) {
+  if (![400, 413, 422].includes(status)) return false;
+  let details;
+  try { details = JSON.parse(bodyText); } catch { return false; }
+  const error = details?.error;
+  if (!isRecord(error)) return false;
+  const code = typeof error.code === 'string' ? error.code.toLowerCase() : '';
+  const type = typeof error.type === 'string' ? error.type.toLowerCase() : '';
+  const message = typeof error.message === 'string' ? error.message.toLowerCase() : '';
+  if (['context_length_exceeded', 'context_window_exceeded', 'prompt_too_long'].includes(code) ||
+    ['context_length_exceeded', 'prompt_too_long'].includes(type)) return true;
+  return /(?:prompt (?:is )?too long|context (?:length|window|limit) (?:exceeded|overflow|too long)|maximum context length|too many input tokens|input tokens? exceed(?:s|ed)? (?:the )?(?:limit|maximum)|token count exceeds (?:the )?(?:maximum|limit))/.test(message);
+}
+
 function mapStopReason(reason) {
   if (reason === 'end_turn' || reason === 'tool_use' || reason === 'max_tokens') return reason;
   if (reason === 'stop_sequence' || reason === 'refusal') return 'end_turn';
@@ -307,7 +335,11 @@ export class AnthropicMessagesAdapter {
     }
     if (!response.ok) {
       const responseText = typeof response.text === 'function' ? await response.text() : '';
-      throw new ModelAdapterError(readErrorMessage(responseText, response.status));
+      const message = readErrorMessage(responseText, response.status);
+      if (isContextLengthRejection(response.status, responseText)) {
+        throw new ModelContextLengthError(message, { status: response.status });
+      }
+      throw new ModelAdapterError(message);
     }
     if (!response.body || typeof response.body[Symbol.asyncIterator] !== 'function') {
       throw new ModelAdapterError('Messages API response has no async-iterable SSE body.');
