@@ -215,3 +215,82 @@ test('disabled compaction does not inspect or rewrite unsupported provider messa
   assert.equal(result.compacted, false);
   assert.equal(result.messages, unsupported, 'disabled mode preserves object identity');
 });
+
+
+test('2.1.88 proactive summary quality failure does not abort a healthy multi-turn Query', async () => {
+  const history = structuredClone(raw);
+  const snapshot = structuredClone(history);
+  let summaryRequests = 0, normalRequests = 0, contextErrors = 0;
+  const autoCompact = createAutoCompact({ thresholdTokens: 300 });
+  const model = { async *stream({ purpose, tools, messages }) {
+    if (purpose === 'compact') {
+      summaryRequests++;
+      assert.deepEqual(tools, []);
+      // Valid model completion, but an oversized summary cannot materially
+      // shrink the request. Original autoCompactIfNeeded catches and resumes.
+      yield { type: 'text_delta', text: 'redundant context '.repeat(700) };
+      yield { type: 'message_end', stopReason: 'end_turn' };
+      return;
+    }
+    normalRequests++;
+    assert.deepEqual(messages, [...snapshot, user('continue')]);
+    yield { type: 'text_delta', text: 'Healthy turn completed.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const loop = new AgentLoop({
+    model,
+    tools: new ToolRegistry(),
+    compactContext: context => autoCompact.compact(context),
+  });
+  loop.on('contextCompactError', () => { contextErrors++; });
+  const response = await loop.run({ messages: history, input: 'continue' });
+  assert.equal(response.finalMessage.content[0].text, 'Healthy turn completed.');
+  assert.equal(normalRequests, 1);
+  assert.equal(summaryRequests, 1);
+  assert.equal(contextErrors, 1);
+  assert.equal(autoCompact.consecutiveFailures, 1);
+  assert.deepEqual(history, snapshot);
+});
+
+test('minimum summary envelope prevents futile low-threshold proactive requests', async () => {
+  let found;
+  const stub = 'This conversation continues after context compaction. Earlier completed work:\n' +
+    'x'.repeat(12) + '\nRecent messages follow unchanged.';
+  // Search for a stable boundary where the old suffix-only 80% check would
+  // pass yet the fixed summary envelope makes the goal impossible.
+  for (let count = 1; count < 4000; count++) {
+    const candidate = [
+      user('task'),
+      assistant('old', 'old-sig'), result('old', 'older output '.repeat(50)),
+      assistant('newer', 'sig-n'), result('newer', 'r'.repeat(count)),
+      assistant('fresh', 'sig-f'), result('fresh', 'short'),
+    ];
+    const split = selectCompletedPrefix(candidate, 2);
+    if (!split) continue;
+    const estimated = estimateMessageTokens(candidate);
+    if (estimateMessageTokens(split.recent) < estimated * 0.8 &&
+      estimateMessageTokens([user(stub), ...split.recent]) >= estimated * 0.8) {
+      found = candidate;
+      break;
+    }
+  }
+  assert.ok(found, 'fixture must land strictly between old and fixed guards');
+  const compact = createAutoCompact({ thresholdTokens: 100 });
+  let calls = 0;
+  const output = await compact.compact({
+    messages: found,
+    model: { async *stream() { calls++; throw new Error('unexpected summary call'); } },
+  });
+  assert.equal(output.compacted, false);
+  assert.equal(output.messages, found);
+  assert.equal(calls, 0);
+  assert.equal(compact.consecutiveFailures, 0);
+});
+
+test('force=true retains explicit error propagation for unrecoverable provider overflow', async () => {
+  const compact = createAutoCompact({ thresholdTokens: 300 });
+  const model = { async *stream() { throw new Error('provider summary rejected'); } };
+  await assert.rejects(compact.compact({ messages: raw, model, force: true }),
+    /provider summary rejected/);
+  assert.equal(compact.consecutiveFailures, 1);
+});
