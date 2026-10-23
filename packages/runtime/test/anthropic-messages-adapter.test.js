@@ -458,3 +458,34 @@ test('a successful HTTP connection is never replayed after malformed SSE output'
   }, /ended before message_stop/);
   assert.equal(attempts, 1, 'never replay after stream has already started');
 });
+
+
+test('active adapter sends 2.1.88 client request IDs only to first-party API', async () => {
+  const seen = [];
+  for (const baseUrl of [
+    'https://api.anthropic.com',
+    'https://custom.example.test',
+  ]) {
+    const adapter = new AnthropicMessagesAdapter({
+      apiKey: 'id-test-key',
+      model: 'source-port-fixture',
+      baseUrl,
+      maxRetries: 0,
+      fetchImpl: async (url, options) => {
+        seen.push({ url, headers: new Headers(options.headers) });
+        return { ok: true, status: 200, body: makeSseBody(successfulStream()) };
+      },
+    });
+    const events = [];
+    for await (const item of adapter.stream({
+      messages: [{ role: 'user', content: 'test' }],
+    })) events.push(item);
+    assert.ok(events.some(x => x.type === 'message_end'));
+  }
+  assert.equal(seen.length, 2);
+  assert.match(seen[0].headers.get('x-client-request-id'),
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  assert.equal(seen[1].headers.has('x-client-request-id'), false);
+  assert.equal(seen[0].headers.get('x-api-key'), 'id-test-key');
+  assert.equal(seen[1].headers.get('x-api-key'), 'id-test-key');
+});
