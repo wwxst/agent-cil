@@ -1312,3 +1312,47 @@ test('CLI --allow-edits executes workspace Write/Edit but still denies Bash and 
     await rm(escapeFile, { force: true });
   }
 });
+
+test('Read offset/limit selects lines from files larger than the whole-file cap', {
+  timeout: 15000,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-read-lines-'));
+  try {
+    const repeated = 'skip\n'.repeat(230000);
+    await writeFile(join(workspace, 'large.txt'), repeated + 'TARGET α\nTAIL\n');
+    await writeFile(join(workspace, 'small.txt'), 'first\r\nsecond\r\nthird');
+    await writeFile(join(workspace, 'binary.txt'), Buffer.from([65, 0, 66, 10]));
+    const tools = await createBuiltinTools({ workspace });
+    const read = tools.get('Read');
+
+    await assert.rejects(
+      read.execute({ file_path: 'large.txt' }),
+      /File exceeds the 1 MiB read limit/,
+    );
+    assert.equal(
+      await read.execute({ file_path: 'large.txt', offset: 230000, limit: 1 }),
+      'TARGET α\n',
+    );
+    assert.equal(
+      await read.execute({ file_path: 'large.txt', offset: 230001, limit: 1 }),
+      'TAIL\n',
+    );
+    assert.equal(
+      await read.execute({ file_path: 'small.txt', offset: 1, limit: 2 }),
+      'second\r\nthird',
+    );
+    assert.equal(await read.execute({ file_path: 'small.txt', offset: 4, limit: 1 }), '');
+    assert.equal(await read.execute({ file_path: 'small.txt', limit: 1 }), 'first\r\n');
+    assert.equal(await read.execute({ file_path: 'small.txt' }), 'first\r\nsecond\r\nthird');
+
+    await assert.rejects(read.execute({ file_path: 'binary.txt', limit: 1 }), /binary file/);
+    await assert.rejects(
+      read.execute({ file_path: 'large.txt', offset: 0, limit: 230001 }),
+      /Selected lines exceed the 1 MiB read limit/,
+    );
+    assert.match((await tools.validateInput('Read', { file_path: 'small.txt', offset: -1 })).join(' '), /minimum/);
+    assert.match((await tools.validateInput('Read', { file_path: 'small.txt', limit: 0 })).join(' '), /minimum/);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
