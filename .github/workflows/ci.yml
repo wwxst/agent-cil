@@ -9,6 +9,16 @@ permissions:
   contents: read
 
 jobs:
+  windows-live-harness:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify .js CLI startup and Read/Edit acceptance on Windows
+        run: node --test packages/cli/test/live-provider-launch.test.js
+
   runtime-tests:
     runs-on: ubuntu-latest
     steps:
@@ -42,8 +52,10 @@ jobs:
           node scripts/verify-installed-cli.mjs "$cli"
           # Exercise model transport and TTY approval via the installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/legacy-model-transport-cli.test.js
-          # Exercise OpenAI Chat function calls, an initial failing Bash test,
-          # approved fix and passing retest using the real installed npm CLI.
+          # Verify signed thinking, 3 model rounds and Read/Edit behavior
+          # through the freshly packed and installed executable.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-thinking-cli.test.js
+          # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 
   legacy-cli-2-1-88-smoke:

@@ -36,3 +36,43 @@ This procedure targets the **official** DeepSeek endpoint and model. Do not tran
 3. Only a successful run of `scripts/verify-live-provider.mjs` against a credentialed, reachable provider counts as a **live model acceptance test**. It has not been run automatically in CI.
 
 Never print, upload, or persist the key when reporting success or failure. Replace keys that have been shared in chat or logs.
+
+## Recorded live acceptance: PR #25 (2026-10-23)
+
+- Branch: `fix/deepseek-thinking-stream`.
+- Tested commit: `562bfb674e4791b51955c454e758c5c907855061`.
+- Environment: Windows, Node.js `v24.13.1`.
+- Endpoint: `https://api.deepseek.com/anthropic`.
+- Model: `deepseek-flash`.
+- The API key was supplied only through the validation child process environment and is omitted from this record.
+
+Running `node scripts/verify-live-provider.mjs ./packages/cli/src/index.js`
+unchanged on Windows failed with `spawn EFTYPE` before any model request.
+For this run, a temporary copy of the validation script changed only
+`spawn(executable, args, ...)` to
+`spawn(process.execPath, [executable, ...args], ...)`, passing the absolute CLI
+entrypoint path. All prompts, model parameters and acceptance assertions were
+unchanged. The temporary copy was removed after the run; the checked-in
+validation script was not changed.
+
+The live validation exited with status **0** and reported:
+
+```text
+PASS: credentialed streaming response from selected model.
+PASS: live Read -> Edit -> Read coding task, workspace content verified.
+```
+
+The second check verified that the temporary `math.js` contained the expected
+addition implementation and that tool events included at least two `Read`
+calls and an `Edit` call. The test workspace was removed by the script.
+
+At the same tested commit, `npm test` exited with status **0**:
+206 tests total, 199 passed, 7 skipped and 0 failed. The Windows command above
+still requires a Node-based child-process launcher; this record captures the
+successful provider validation with that execution-only adaptation.
+
+## Permanent Windows launcher fix (PR #25 follow-up)
+
+`scripts/verify-live-provider.mjs` now launches explicit `.js`, `.cjs` and `.mjs` CLI entrypoint paths via `process.execPath` (Node.js), rather than asking Windows to spawn the script directly. This fixes the prior `spawn EFTYPE` with the unmodified verification script. Other executable commands retain direct invocation; `shell:true` is deliberately not used, so the free-form prompt never passes through a shell.
+
+The original **live-provider acceptance** above remains attributed to the tested commit `562bfb6` and its temporary Windows-only launch adjustment. The permanent fix has a separate credential-free, cross-platform regression `packages/cli/test/live-provider-launch.test.js`: it starts the actual validation harness pointing at the Node CLI entrypoint, drives a local SSE model through `Read → Edit → Read`, checks tool history, final file contents via the harness, and exits successfully. CI runs that regression on both Ubuntu and a `windows-latest` GitHub runner. These fixture tests do **not** constitute a second credentialed DeepSeek acceptance.

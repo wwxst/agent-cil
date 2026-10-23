@@ -3,7 +3,7 @@
  * Credentialed live-provider acceptance for agent-cil.
  *
  * No API key or provider URL is embedded in this file or sent to GitHub CI.
- * Run manually with provider-specific API key and model in the local
+ * Run manually with ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY in the local
  * environment and an installed CLI binary in PATH (or argv[2]).
  *
  * This is intentionally NOT part of CI, where no live provider credential
@@ -62,11 +62,21 @@ async function runCli({ workspace, prompt, label }) {
     '--max-tokens', '1024', '--provider', provider, '--model', model,
     '--base-url', baseUrl, '--cwd', workspace, prompt,
   ];
-  const child = spawn(executable, args, {
-    env: { ...process.env, ANTHROPIC_API_KEY: provider === 'anthropic' ? apiKey : undefined,
+  // Windows cannot spawn .js entrypoints as executable programs (EFTYPE).
+  // Also use Node explicitly on POSIX so this acceptance runs with the same
+  // interpreter as the caller, regardless of executable bits or shebangs.
+  // Do not use shell:true: the free-form model prompt is an argument.
+  const isNodeScript = /\.(?:c|m)?js$/i.test(executable);
+  const command = isNodeScript ? process.execPath : executable;
+  const launchArgs = isNodeScript ? [executable, ...args] : args;
+  const child = spawn(command, launchArgs, {
+    env: { ...process.env,
+      ANTHROPIC_API_KEY: provider === 'anthropic' ? apiKey : undefined,
       DEEPSEEK_API_KEY: provider === 'deepseek' ? apiKey : undefined,
-      OPENAI_API_KEY: provider === 'openai' ? apiKey : undefined },
+      OPENAI_API_KEY: provider === 'openai' ? apiKey : undefined,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
   });
   let stdout = '';
   let stderr = '';

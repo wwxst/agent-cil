@@ -114,6 +114,23 @@ export async function query({
               if (last?.type === 'text') last.text += event.text;
               else content.push({ type: 'text', text: event.text });
               emit('textDelta', { turn, text: event.text });
+            } else if (event.type === 'thinking') {
+              // 2.1.88 query.ts thinking trajectory rule: retain blocks in
+              // assistant history across tool_result continuation unchanged.
+              // Only text_delta is user-visible; thinking is never printed.
+              if (typeof event.thinking !== 'string' ||
+                (event.signature !== undefined && typeof event.signature !== 'string')) {
+                throw new ModelProtocolError('Invalid protected thinking event.');
+              }
+              content.push({
+                type: 'thinking', thinking: event.thinking,
+                ...(event.signature !== undefined ? { signature: event.signature } : {}),
+              });
+            } else if (event.type === 'redacted_thinking') {
+              if (typeof event.data !== 'string') {
+                throw new ModelProtocolError('Invalid redacted_thinking event.');
+              }
+              content.push({ type: 'redacted_thinking', data: event.data });
             } else if (event.type === 'tool_use') {
               if (typeof event.id !== 'string' || event.id.trim().length === 0) {
                 throw new ModelProtocolError('tool_use.id must be a non-empty string.');
