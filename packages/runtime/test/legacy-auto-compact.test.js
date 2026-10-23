@@ -363,7 +363,7 @@ test('compaction clears only stale usage anchor, preserving signed recent conten
   const { tokenCountWithEstimation } =
     await import('../src/legacy-compact/auto-compact.js');
   const input = structuredClone(raw);
-  input[4].usage = { input_tokens: 125000, output_tokens: 200 };
+  input[3].usage = { input_tokens: 125000, output_tokens: 200 };
   const controller = createAutoCompact({ thresholdTokens: 60000 });
   let summaryCalls = 0;
   const model = { async *stream() {
@@ -379,14 +379,14 @@ test('compaction clears only stale usage anchor, preserving signed recent conten
     'retained pre-compact usage must not be reused');
   assert.equal(answer.messages[2].content[0].signature, 'sig-2');
   assert.equal(answer.messages[4].content[0].signature, 'sig-3');
-  assert.equal(input[4].usage.input_tokens, 125000, 'source transcript is unchanged');
+  assert.equal(input[3].usage.input_tokens, 125000, 'source transcript is unchanged');
   assert.equal(tokenCountWithEstimation(answer.messages),
     estimateMessageTokens(answer.messages));
 });
 
 test('context-window and output reservation limit high configured compact threshold', async () => {
   const input = structuredClone(raw);
-  input[4].usage = { input_tokens: 950, output_tokens: 5 };
+  input[3].usage = { input_tokens: 950, output_tokens: 5 };
   const controller = createAutoCompact({
     thresholdTokens: 2000,
     contextWindowTokens: 1100,
