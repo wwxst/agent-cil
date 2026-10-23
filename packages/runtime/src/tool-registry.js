@@ -17,7 +17,7 @@ export class ToolRegistryError extends Error {
 export class ToolRegistry {
   #tools = new Map();
 
-  register({ name, description, inputSchema = { type: 'object' }, validateInput, execute } = {}) {
+  register({ name, description, inputSchema = { type: 'object' }, validateInput, isConcurrencySafe, interruptBehavior, execute } = {}) {
     if (typeof name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(name)) {
       throw new ToolRegistryError('Tool name must contain 1-128 letters, digits, underscores or hyphens.');
     }
@@ -28,6 +28,12 @@ export class ToolRegistry {
     if (!isRecord(inputSchema)) throw new ToolRegistryError('Tool inputSchema must be a JSON schema object.');
     if (validateInput !== undefined && typeof validateInput !== 'function') {
       throw new ToolRegistryError('validateInput must be a function when provided.');
+    }
+    if (isConcurrencySafe !== undefined && typeof isConcurrencySafe !== 'function') {
+      throw new ToolRegistryError('isConcurrencySafe must be a function when provided.');
+    }
+    if (interruptBehavior !== undefined && typeof interruptBehavior !== 'function') {
+      throw new ToolRegistryError('interruptBehavior must be a function when provided.');
     }
     if (typeof execute !== 'function') throw new ToolRegistryError('Tool execute must be a function.');
 
@@ -43,6 +49,8 @@ export class ToolRegistry {
       description,
       inputSchema: schemaCopy,
       validateInput,
+      isConcurrencySafe,
+      interruptBehavior,
       execute,
     });
     this.#tools.set(name, tool);
