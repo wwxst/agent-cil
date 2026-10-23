@@ -209,6 +209,7 @@ export class OpenAIChatAdapter {
     }
     const calls = new Map();
     let finished = false;
+    let finalStopReason;
     let gotDone = false;
     for await (const frame of parseSseStream(response.body, { signal })) {
       abortIfNeeded(signal);
@@ -290,12 +291,16 @@ export class OpenAIChatAdapter {
           yield { type: 'tool_use', id: call.id, name: call.name, input };
         }
         finished = true;
-        yield { type: 'message_end', stopReason:
-          reason === 'length' ? 'max_tokens' : (calls.size ? 'tool_use' : 'end_turn') };
+        // Chat Completions may emit a final choices:[] usage-only chunk
+        // before [DONE]. Query rejects events after message_end, so delay
+        // the terminal event until every usage delta has been delivered.
+        finalStopReason = reason === 'length' ? 'max_tokens'
+          : (calls.size ? 'tool_use' : 'end_turn');
       }
     }
     if (!gotDone || !finished) {
       throw new OpenAIChatError('OpenAI stream ended without final finish_reason and [DONE].');
     }
+    yield { type: 'message_end', stopReason: finalStopReason };
   }
 }
