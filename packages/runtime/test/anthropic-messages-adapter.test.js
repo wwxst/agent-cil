@@ -306,11 +306,11 @@ test('rejects out-of-order SSE frames and incompatible content deltas', async ()
       message: /incompatible content_block_delta for tool_use/,
     },
     {
-      name: 'unsupported thinking block is not silently dropped',
+      name: 'unsupported unknown block is not silently dropped',
       data: start + sse('content_block_start', {
-        index: 0, content_block: { type: 'thinking', thinking: '' },
+        index: 0, content_block: { type: 'unrecognized_block', data: '' },
       }),
-      message: /unsupported content block type: thinking/,
+      message: /unsupported content block type: unrecognized_block/,
     },
     {
       name: 'unknown streaming event is not silently dropped',
