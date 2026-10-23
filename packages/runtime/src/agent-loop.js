@@ -171,7 +171,7 @@ export class AgentLoop extends EventEmitter {
     }
   }
 
-  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress, speculative = false }) {
+  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress, onToolExecutionStarted, speculative = false }) {
     const tool = this.#tools.get(toolUse.name);
     if (!tool) {
       const result = toolError(toolUse, 'Unknown tool: ' + toolUse.name);
@@ -419,6 +419,7 @@ export class AgentLoop extends EventEmitter {
       const result = await invokeToolCallAndMapResult(tool, executionInput, {
         toolUseId: toolUse.id, signal, messages: history, assistantMessage,
         onProgress: onToolProgress,
+        onExecutionStart: onToolExecutionStarted,
       });
       abortIfNeeded(signal);
       this.emit('toolCallFinished', {
