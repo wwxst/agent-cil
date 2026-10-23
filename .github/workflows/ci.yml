@@ -58,6 +58,9 @@ jobs:
           # Prove Read begins while DeepSeek SSE still has no message_stop;
           # Write/Edit remain deferred, and malformed streams cannot edit.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/streaming-readonly-cli.test.js
+          # A completed Edit + tool_result must survive a failed follow-up
+          # model request in the installed interactive CLI; never replay Edit.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/tool-turn-recovery-cli.test.js
           # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 
