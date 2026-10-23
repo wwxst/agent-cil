@@ -267,3 +267,69 @@ test('integrates with AgentLoop across tool_result and the next API request', as
   assert.equal(requests[1].messages[2].content[0].content, 'tool says: from api');
   assert.equal(Object.hasOwn(requests[1].messages[1], 'stop_reason'), false);
 });
+
+test('rejects out-of-order SSE frames and incompatible content deltas', async () => {
+  const start = sse('message_start', { message: { usage: {} } });
+  const textStart = sse('content_block_start', {
+    index: 0, content_block: { type: 'text', text: '' },
+  });
+  const cases = [
+    {
+      name: 'content block before message_start',
+      data: textStart,
+      message: /before message_start/,
+    },
+    {
+      name: 'duplicate message_start',
+      data: start + start,
+      message: /duplicate message_start/,
+    },
+    {
+      name: 'message_delta before a content block closes',
+      data: start + textStart + sse('message_delta', { delta: { stop_reason: 'end_turn' } }),
+      message: /unfinished content blocks/,
+    },
+    {
+      name: 'tool JSON delta inside a text block',
+      data: start + textStart + sse('content_block_delta', {
+        index: 0, delta: { type: 'input_json_delta', partial_json: '{}' },
+      }),
+      message: /incompatible content_block_delta for text/,
+    },
+    {
+      name: 'text delta inside a tool block',
+      data: start + sse('content_block_start', {
+        index: 0, content_block: { type: 'tool_use', id: 't1', name: 'echo', input: {} },
+      }) + sse('content_block_delta', {
+        index: 0, delta: { type: 'text_delta', text: 'wrong block' },
+      }),
+      message: /incompatible content_block_delta for tool_use/,
+    },
+    {
+      name: 'unsupported thinking block is not silently dropped',
+      data: start + sse('content_block_start', {
+        index: 0, content_block: { type: 'thinking', thinking: '' },
+      }),
+      message: /unsupported content block type: thinking/,
+    },
+    {
+      name: 'unknown streaming event is not silently dropped',
+      data: start + sse('unexpected_type', {}),
+      message: /unsupported SSE event: unexpected_type/,
+    },
+  ];
+  for (const scenario of cases) {
+    const adapter = new AnthropicMessagesAdapter({
+      apiKey: 'test-key',
+      model: 'claude-test',
+      fetchImpl: async () => ({
+        ok: true, status: 200, body: makeSseBody(scenario.data, 3),
+      }),
+    });
+    await assert.rejects(async () => {
+      for await (const event of adapter.stream({
+        messages: [{ role: 'user', content: 'hello' }],
+      })) void event;
+    }, scenario.message, scenario.name);
+  }
+});
