@@ -44,6 +44,13 @@ test('parses SSE events across split UTF-8 chunks and CRLF boundaries', async ()
   assert.deepEqual(events, [{ event: 'greeting', data: '你好\nsecond line' }]);
 });
 
+test('parses valid SSE streams that use lone CR line endings', async () => {
+  const stream = makeSseBody('event: greeting\rdata: first\rdata: second\r\r', 1);
+  const events = [];
+  for await (const event of parseSseStream(stream)) events.push(event);
+  assert.deepEqual(events, [{ event: 'greeting', data: 'first\nsecond' }]);
+});
+
 test('converts Messages API text, tool JSON deltas, usage, and stop reason', async () => {
   let request;
   let keyProviderCalls = 0;
@@ -74,6 +81,7 @@ test('converts Messages API text, tool JSON deltas, usage, and stop reason', asy
   assert.equal(request.options.headers['x-api-key'], 'test-secret-key');
   assert.equal(request.options.headers['anthropic-version'], '2023-06-01');
   assert.equal(request.options.headers.accept, 'text/event-stream');
+  assert.equal(request.options.redirect, 'error', 'API-key requests must not follow redirects to an untrusted endpoint');
   const body = JSON.parse(request.options.body);
   assert.equal(body.model, 'claude-test-model');
   assert.equal(body.max_tokens, 256);
@@ -183,6 +191,19 @@ test('honors cancellation before starting a request', async () => {
 test('rejects invalid constructor configuration and API-key provider output', async () => {
   assert.throws(() => new AnthropicMessagesAdapter({ model: 'x' }), /Provide apiKey or apiKeyProvider/);
   assert.throws(() => new AnthropicMessagesAdapter({ apiKey: 'key', model: 'x', baseUrl: 'file:///tmp' }), /HTTP or HTTPS/);
+  assert.throws(
+    () => new AnthropicMessagesAdapter({ apiKey: 'key', model: 'x', baseUrl: 'http://api.example.test' }),
+    /must use HTTPS unless it targets localhost or a loopback address/,
+  );
+  assert.doesNotThrow(() => new AnthropicMessagesAdapter({
+    apiKey: 'key', model: 'x', baseUrl: 'http://127.0.0.1:4312',
+  }));
+  assert.doesNotThrow(() => new AnthropicMessagesAdapter({
+    apiKey: 'key', model: 'x', baseUrl: 'http://localhost:4312',
+  }));
+  assert.doesNotThrow(() => new AnthropicMessagesAdapter({
+    apiKey: 'key', model: 'x', baseUrl: 'http://[::1]:4312',
+  }));
 
   const adapter = new AnthropicMessagesAdapter({
     apiKeyProvider: async () => '',
@@ -245,4 +266,195 @@ test('integrates with AgentLoop across tool_result and the next API request', as
   assert.equal(requests[1].messages[2].content[0].type, 'tool_result');
   assert.equal(requests[1].messages[2].content[0].content, 'tool says: from api');
   assert.equal(Object.hasOwn(requests[1].messages[1], 'stop_reason'), false);
+});
+
+test('rejects out-of-order SSE frames and incompatible content deltas', async () => {
+  const start = sse('message_start', { message: { usage: {} } });
+  const textStart = sse('content_block_start', {
+    index: 0, content_block: { type: 'text', text: '' },
+  });
+  const cases = [
+    {
+      name: 'content block before message_start',
+      data: textStart,
+      message: /before message_start/,
+    },
+    {
+      name: 'duplicate message_start',
+      data: start + start,
+      message: /duplicate message_start/,
+    },
+    {
+      name: 'message_delta before a content block closes',
+      data: start + textStart + sse('message_delta', { delta: { stop_reason: 'end_turn' } }),
+      message: /unfinished content blocks/,
+    },
+    {
+      name: 'tool JSON delta inside a text block',
+      data: start + textStart + sse('content_block_delta', {
+        index: 0, delta: { type: 'input_json_delta', partial_json: '{}' },
+      }),
+      message: /incompatible content_block_delta for text/,
+    },
+    {
+      name: 'text delta inside a tool block',
+      data: start + sse('content_block_start', {
+        index: 0, content_block: { type: 'tool_use', id: 't1', name: 'echo', input: {} },
+      }) + sse('content_block_delta', {
+        index: 0, delta: { type: 'text_delta', text: 'wrong block' },
+      }),
+      message: /incompatible content_block_delta for tool_use/,
+    },
+    {
+      name: 'unsupported thinking block is not silently dropped',
+      data: start + sse('content_block_start', {
+        index: 0, content_block: { type: 'thinking', thinking: '' },
+      }),
+      message: /unsupported content block type: thinking/,
+    },
+    {
+      name: 'unknown streaming event is not silently dropped',
+      data: start + sse('unexpected_type', {}),
+      message: /unsupported SSE event: unexpected_type/,
+    },
+  ];
+  for (const scenario of cases) {
+    const adapter = new AnthropicMessagesAdapter({
+      apiKey: 'test-key',
+      model: 'claude-test',
+      fetchImpl: async () => ({
+        ok: true, status: 200, body: makeSseBody(scenario.data, 3),
+      }),
+    });
+    await assert.rejects(async () => {
+      for await (const event of adapter.stream({
+        messages: [{ role: 'user', content: 'hello' }],
+      })) void event;
+    }, scenario.message, scenario.name);
+  }
+});
+
+test('retries transient HTTP failures before SSE begins and preserves the request', async () => {
+  const captured = [];
+  const finalBody = [
+    sse('message_start', { message: { usage: { input_tokens: 2 } } }),
+    sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+    sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'Recovered' } }),
+    sse('content_block_stop', { index: 0 }),
+    sse('message_delta', { delta: { stop_reason: 'end_turn' } }),
+    sse('message_stop', {}),
+  ].join('');
+  const adapter = new AnthropicMessagesAdapter({
+    apiKey: 'test-key',
+    model: 'claude-test',
+    maxRetries: 2,
+    fetchImpl: async (_url, options) => {
+      captured.push(JSON.parse(options.body));
+      if (captured.length < 3) {
+        return {
+          ok: false,
+          status: captured.length === 1 ? 429 : 503,
+          headers: { get: name => name === 'retry-after' ? '0' : null },
+          body: { cancel: async () => { /* release failed response */ } },
+        };
+      }
+      return { ok: true, status: 200, body: makeSseBody(finalBody) };
+    },
+  });
+  const events = [];
+  for await (const event of adapter.stream({
+    messages: [{ role: 'user', content: 'continue' }],
+  })) events.push(event);
+  assert.equal(captured.length, 3);
+  assert.deepEqual(captured[0], captured[1]);
+  assert.deepEqual(captured[1], captured[2]);
+  assert.equal(events.find(event => event.type === 'text_delta')?.text, 'Recovered');
+  assert.deepEqual(events.at(-1), { type: 'message_end', stopReason: 'end_turn' });
+});
+
+test('retries are bounded and disabled by server instructions or long cooldowns', async () => {
+  for (const scenario of [
+    { status: 401, retryAfter: null, shouldRetry: null },
+    { status: 429, retryAfter: null, shouldRetry: 'false' },
+    { status: 429, retryAfter: '3600', shouldRetry: null },
+  ]) {
+    let count = 0;
+    const adapter = new AnthropicMessagesAdapter({
+      apiKey: 'key',
+      model: 'claude-test',
+      maxRetries: 2,
+      fetchImpl: async () => {
+        count += 1;
+        return {
+          ok: false,
+          status: scenario.status,
+          headers: { get: name => name === 'retry-after'
+            ? scenario.retryAfter : name === 'x-should-retry' ? scenario.shouldRetry : null },
+          text: async () => JSON.stringify({ error: { message: 'Permanent for now' } }),
+        };
+      },
+    });
+    await assert.rejects(async () => {
+      for await (const event of adapter.stream({
+        messages: [{ role: 'user', content: 'hello' }],
+      })) void event;
+    }, /Permanent for now/);
+    assert.equal(count, 1, JSON.stringify(scenario));
+  }
+  assert.throws(
+    () => new AnthropicMessagesAdapter({ apiKey: 'key', model: 'test', maxRetries: 6 }),
+    /maxRetries must be an integer between 0 and 5/,
+  );
+});
+
+test('HTTP retry backoff is cancellable before another API request', async () => {
+  const controller = new AbortController();
+  let attempts = 0;
+  const adapter = new AnthropicMessagesAdapter({
+    apiKey: 'key',
+    model: 'claude-test',
+    maxRetries: 2,
+    fetchImpl: async () => {
+      attempts += 1;
+      return {
+        ok: false, status: 503,
+        headers: { get: () => null },
+        body: { cancel: async () => {} },
+      };
+    },
+  });
+  const timer = setTimeout(() => controller.abort(), 25);
+  try {
+    await assert.rejects(async () => {
+      for await (const event of adapter.stream({
+        messages: [{ role: 'user', content: 'hello' }],
+        signal: controller.signal,
+      })) void event;
+    }, { name: 'AbortError' });
+    assert.equal(attempts, 1);
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+test('a successful HTTP connection is never replayed after malformed SSE output', async () => {
+  let attempts = 0;
+  const adapter = new AnthropicMessagesAdapter({
+    apiKey: 'key',
+    model: 'claude-test',
+    maxRetries: 2,
+    fetchImpl: async () => {
+      attempts += 1;
+      return {
+        ok: true, status: 200,
+        body: makeSseBody(sse('message_start', { message: { usage: {} } })),
+      };
+    },
+  });
+  await assert.rejects(async () => {
+    for await (const event of adapter.stream({
+      messages: [{ role: 'user', content: 'hello' }],
+    })) void event;
+  }, /ended before message_stop/);
+  assert.equal(attempts, 1, 'never replay after stream has already started');
 });

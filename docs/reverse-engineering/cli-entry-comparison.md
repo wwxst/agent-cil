@@ -2,7 +2,7 @@
 
 ## 范围与证据等级
 
-本记录来自上传的 2.1.304 静态提取模块，以及公开仓库 `wwxst/-` 中固定的 2.1.88 恢复源码。没有执行第三方 CLI，也没有读取凭证或发起模型请求。
+本记录来自上传的 2.1.304 静态提取模块，以及公开仓库 `wwxst/-` 中固定的 2.1.88 恢复源码。本文件的入口对比来自静态源码；之后 PR #11 已在 CI 隔离验证旧版 2.1.88 发布产物的版本快路径，但未读取凭证或发起真实模型请求。
 
 - **已证实（静态）**：源码位置与控制流可以直接定位。
 - **已证实（自有代码）**：可直接从 agent-cil 当前代码确认。
@@ -23,7 +23,7 @@
 
 入口文件在 fast path 之前也有顶层环境变量修改；因此“version fast path 不动态导入其他模块”不等于“整个进程在执行入口前完全没有副作用”。
 
-旧版发布包元数据位于 `wwxst/-/package/package.json`，标记 `@anthropic-ai/claude-code@2.1.88`、`bin: cli.js`、Node.js `>=18`。但 `restored-src` 没有独立 package/build 配置，不能将其认定为可从恢复源码重建的工程；本轮没有实际运行发布包。
+旧版发布包元数据位于 `wwxst/-/package/package.json`，标记 `@anthropic-ai/claude-code@2.1.88`、`bin: cli.js`、Node.js `>=18`。但 `restored-src` 没有独立 package/build 配置，不能将其认定为可从恢复源码重建的工程；随后已在 PR #11 中隔离运行发布包的版本快路径。
 
 ## 2. 新版 CLI 2.1.304
 
@@ -47,25 +47,17 @@
 3. 新版入口有显式 cwd 可用性检查，并在常规路径分离 dispatch defaults；旧版入口文件未见同样的入口级 cwd 检查或这套参数预分离。不能据此断言旧版其他模块没有相关校验。
 4. 两版都保留轻量入口和按需动态导入的启动策略；这属于结构延续，不代表所有启动行为相同。
 
-## 3. 当前 agent-cil 的对应实现
+## 3. 当前 agent-cil 的对应实现（2026-10-23）
 
-当前 `main` 的 `package.json` 只有 `test`、`check` 脚本，没有 `bin` 字段；仓库也没有 `packages/cli`。现有实现是库模块：
+当前 `main` 已包含可执行 npm bin `agent-cil`，入口位于 `packages/cli/src/index.js`（PR #13）。它支持 `--version`、`--help`、`--model`、`--base-url`、`--max-tokens`、`--cwd`、`--print`、TTY 多轮会话，以及 Read、Write、Edit、Glob、Grep、Bash 工具；缺少凭证时版本/帮助仍可通过轻量快路径执行。
 
-- `packages/protocol/src/process-transport.js`：自有子进程 transport。
-- `packages/protocol/src/query-session.js`：初始化屏障、输入门控和双向 control request 分发。
-- `packages/protocol/src/query-lifecycle.js`：result / idle / requires_action 等生命周期观察。
-- `packages/runtime/src/agent-loop.js`：adapter-driven Agent Loop。
-- `packages/runtime/src/anthropic-messages-adapter.js`：直接模型 API 的 SSE adapter，不是 Claude Code CLI 的 SDK JSONL 协议。
+实际调用链为 `CLI → AnthropicMessagesAdapter (Messages SSE) → AgentLoop → StreamingToolExecutor → runToolUse → 执行前校验 → 权限决策与工具调用 → tool_result`。权限更新输入后二次校验由 #9 提供；已合并的 #14–#18 将旧版成熟逻辑的可运行子集接入上述链路，并以回归测试约束调用顺序、并发、取消和授权行为。
 
-因此当前 `main` 不能作为完整可执行 CLI 直接启动，也不能把 `AnthropicMessagesAdapter` 当作官方 `--input-format stream-json --output-format stream-json` 协议的替代品。此前的 PR #8 曾添加一个一次性 `--print` 入口，但它没有实现新版 SDK JSONL 契约，现已关闭且未合并；它不构成已交付 CLI 能力。
+`packages/protocol/` 的 Query JSONL 与子进程传输仍属原型；直连 Messages SSE **不是**官方 CLI 的 SDK `stream-json` 契约，尚未宣称对应兼容性。也未宣称 2.1.304 全量功能已经移植。
 
-## 4. 结论与下一步
+## 4. 验证边界与下一步
 
-| 领域 | 当前结论 | 下一步 |
-| --- | --- | --- |
-| 旧版源码基线 | 恢复源码不能独立构建；发布 bundle 存在，但本轮未运行；代码授权未证明可宽松复用 | 在隔离环境对官方发布包做无凭证 fast-path smoke test；只记录行为，不复制代码 |
-| 新旧 CLI 入口 | 轻量入口/动态导入结构延续；新版新增或扩展 preflight、cwd 检查、dispatch-defaults 分离 | 继续核实参数语义和启动失败的 stdout/stderr/退出码 |
-| 当前自有 CLI | main 没有可执行 bin，也没有 SDK JSONL 输入输出主路径 | 等入口与协议行为对照充分后，再做一个有明确验收契约的 CLI 入口 PR |
-| 当前代码优先级 | 权限更新输入差异已从新旧源码确认；PR #9 提出 schema 复验修正，尚未合并 | 先完成权限与工具执行语义；Session/MCP 暂停扩张 |
-
-当前没有证据支持将恢复出来的 Claude Code 源码直接复制到自有产品。可复用的是经核实的行为契约与测试结论；代码复用需要另行确认授权。
+- **已验证**：#11 的旧版固定 bundle 版本快路径；当前 CLI 的 npm pack 安装、版本/帮助、Node 测试、语法，以及本地 SSE 服务的多轮工具调用和权限拒绝场景。
+- **未验证**：真实托管模型的凭证请求；旧版完整常规启动与源码重建；官方 SDK stream-json 完整交互协议。
+- **开发策略**：继续对照旧版 `query.ts`、`toolExecution.ts` 及新版 2.1.304 的真实链路，优先移植已获授权、可编译、可验证的成熟实现。Session/MCP 依核心 CLI 需要推进，不开发前端或 Desktop UI。
+- **版权边界**：复用源码需先核实权利与再分发条件，保留必要声明；#12 的原始源码切片尚未通过这项合并审查。

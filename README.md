@@ -1,82 +1,92 @@
 # Agent CIL
 
-**当前只开发自有 CLI，不开发前端 UI 或 Desktop 窗口。** 以 CLI 2.1.304 的静态逆向证据为主、2.1.88 旧版源码为行为参照，先逐模块确认新旧差异，再在 `agent-cil` 中独立实现必要行为。旧版恢复源码不是可复现构建工程，且没有证明其代码可按宽松开源许可证复用，因此不直接复制第三方代码。
+自有 Agent CLI 项目。旧版 CLI 2.1.88 是实现参照，新版 CLI 2.1.304 是功能与行为升级目标。优先复用旧仓库中已有的 package 发布代码和 restored-src 恢复源码，按模块迁入、修复依赖、补齐新版差异并验证；不从零重建通用 Runtime。
 
-## 当前基线
+**当前只开发 CLI，不开发前端或 Desktop UI。** Desktop 与 SDK Wrapper 仅用于确认 CLI 的调用边界和协议契约。
+
+## 版本基线
 
 | 样本 | 版本 / 范围 |
 | --- | --- |
-| Claude Desktop | 3.1623.1 |
-| 内嵌 SDK wrapper | 0.3.304 |
-| CLI build pin | 2.1.304 (win32-x64) |
-| 旧版参考 | CLI 2.1.88 |
+| 新版目标 CLI | 2.1.304 |
+| 新版 Desktop SDK Wrapper（仅作边界参考） | 0.3.304 |
+| 旧版实现参照 | CLI 2.1.88 |
 
-新版静态调用链：
+## 核心调用链
 
-~~~text
-Desktop IPC / session manager
-  → SDK Query / JSONL process transport
-  → CLI agent loop
-  → streaming model request
-  → tool_use → permission / tool dispatch
-  → tool_result → next round
-~~~
+```text
+CLI entry / args / config
+  → user input
+  → model streaming request
+  → assistant text + tool_use
+  → permission decision / approval
+  → tool execution
+  → tool_result appended to history
+  → next model turn or final response
+```
 
-CLI 负责 Agent 主循环、模型请求和工具调度；Desktop/SDK 负责进程与会话生命周期、双向控制回调、权限宿主桥接以及运行 target。Host、VM、SSH/WSL 是不同执行路径，不能假定它们共享相同启动方式。
+官方 CLI 与 Desktop SDK Wrapper 是不同组件。当前先实现独立 CLI 的可用闭环；不把 Desktop IPC、图形界面或平台宿主集成当成交付前置条件。
 
-## 仓库状态
+## 当前实现
 
-- [x] 建立样本版本、架构、协议与阶段计划文档
-- [x] 初步对照旧版与新版 Agent Loop、工具执行和模型请求路径
-- [x] 实现 JSONL 编解码器与控制请求关联器
-- [x] 实现子进程 transport 与 fake child 生命周期测试
-- [x] 为协议基础添加确定性自动化测试
-- [x] 实现 CLI Query 初始化屏障和双向控制回调分发
-- [x] 实现 result / idle / requires_action 生命周期跟踪
-- [x] 实现独立 Agent Loop、Tool Registry、schema 子集验证与 fail-closed 权限层
-- [x] 实现 warm Session、JSON 文件持久化与 interrupted-turn recovery
-- [x] 实现 Anthropic Messages SSE adapter 与 fake-fetch 契约测试
-- [x] 初步审计旧版恢复源码的可构建性、来源与授权限制
-- [x] 对照 CLI 入口、Agent Loop、工具调度和 permission updatedInput 的关键路径
-- [ ] 按真实源码证据继续核对权限、Session 和 Query 的剩余行为
-- [ ] 对真实 SDK stream-json 协议建立经源码确认的兼容子集
-
-Session manager、MCP 和平台包装当前只保留已有原型；新扩张暂停，直到新旧行为对照证明必要性。
+- [x] JSONL 编解码、控制请求关联、子进程 transport 和 Query 生命周期原型
+- [x] 自有 AgentLoop、ToolRegistry、参数校验、权限决策与 Messages SSE adapter
+- [x] 第一版可执行 CLI：参数/模型配置、流式与多轮对话、Read/Write/Edit/Glob/Grep/Bash 基础工具（见 [PR #13](https://github.com/wwxst/agent-cil/pull/13)）
+- [ ] 对齐官方 CLI SDK stream-json 输入输出及真实宿主控制协议
+- [x] 完成 `updatedInput` 输入替换后的 schema 复验和重新授权（已合并 [#9](https://github.com/wwxst/agent-cil/pull/9)）
+- [x] 将 2.1.88 权限上下文、并发工具调度、`runToolUse` / `Stream`、权限规则与执行前校验的可运行子集接入 CLI（已合并 [#14–#18](https://github.com/wwxst/agent-cil/pull/18)）
+- [ ] 继续核对新版未实现的完整权限、Hook、取消和异常行为
+- [ ] 完善 Session 恢复与 MCP；只有核心功能需要时才提前推进
 
 ## 代码入口
 
-- [@agent-cil/protocol](packages/protocol/README.md)：JSONL framing、控制请求关联、子进程 transport 与 Query 生命周期。
-- [@agent-cil/runtime](packages/runtime/README.md)：provider-neutral Agent Loop、Anthropic Messages SSE adapter、工具注册、输入校验、权限决策、Session 与多轮 tool_result 回填。
-- [anthropic-messages-adapter.md](docs/design/anthropic-messages-adapter.md)：API 请求映射、SSE 事件转换、凭证边界和当前不支持的事件。
-- [agent-loop-runtime.md](docs/design/agent-loop-runtime.md)：运行时事件契约、工具权限边界、测试范围和未实现项。
-- [session-persistence.md](docs/design/session-persistence.md)：Session / Turn 数据模型、revision 检查、文件原子写入和中断恢复语义。
-- [agent-loop-comparison.md](docs/reverse-engineering/agent-loop-comparison.md)：旧版 2.1.88 与新版 2.1.304 的代码级对照。
-- [protocol-runtime-slice.md](docs/design/protocol-runtime-slice.md)：协议实现范围、证据对应和验收条件。
-- [process-transport.md](docs/design/process-transport.md)：子进程状态机、stdio 生命周期和测试边界。
-- [query-protocol-session.md](docs/design/query-protocol-session.md)：初始化、双向控制请求和 run-end 生命周期。
-- [baseline.md](docs/reverse-engineering/baseline.md)：样本版本、完整性、旧版恢复源码的构建完整性与授权/复用边界。
-- [cli-entry-comparison.md](docs/reverse-engineering/cli-entry-comparison.md)：CLI 2.1.88 / 2.1.304 的入口、启动分流与当前自有代码缺口。
-- [architecture.md](docs/reverse-engineering/architecture.md)：新版 Desktop、SDK、CLI 的组件职责。
-- [protocol-contracts.md](docs/reverse-engineering/protocol-contracts.md)：控制请求、权限、MCP 与生命周期契约。
-- [symbol-map.md](docs/reverse-engineering/symbol-map.md)：旧新版职责映射。
-- [tool-execution-comparison.md](docs/reverse-engineering/tool-execution-comparison.md)：工具调度、取消、输入校验和 MCP 发现路径。
-- [roadmap.md](docs/roadmap.md)：分阶段实现和验收标准。
+- [CLI 使用与当前限制](packages/cli/README.md)
+- [协议层](packages/protocol/README.md)：JSONL、控制请求关联、子进程通信和 Query 生命周期。
+- [Runtime](packages/runtime/README.md)：AgentLoop、模型流适配、工具注册、校验、权限和 Session 原型。
+- [旧版核心源码迁入 PR #12](https://github.com/wwxst/agent-cil/pull/12)：目前仍未合并，需先核实原始版权声明与再分发授权；已合并的旧版移植子集参见 #14–#18。
+- [CLI 入口新旧版对照](docs/reverse-engineering/cli-entry-comparison.md)：入口快路径、启动分流与当前实现差异。
+- [旧版/新版 Agent Loop 对照](docs/reverse-engineering/agent-loop-comparison.md)
+- [工具执行对照](docs/reverse-engineering/tool-execution-comparison.md)
+- [版本与证据基线](docs/reverse-engineering/baseline.md)
+- [协议契约](docs/reverse-engineering/protocol-contracts.md)
 
-## 开发与测试
+## 安装与运行
 
-要求 Node.js 22 或更高版本；协议包不需要第三方运行依赖。
+要求 Node.js 22 或更高版本。
 
-~~~bash
+```bash
+npm link
+export ANTHROPIC_API_KEY="..."
+agent-cil --model claude-sonnet-4-5
+```
+
+单次调用：
+
+```bash
+agent-cil --print "Summarize this repository"
+cat question.txt | agent-cil --print
+```
+
+第一版通过 `ANTHROPIC_API_KEY`、`ANTHROPIC_MODEL` 和 `ANTHROPIC_BASE_URL` 配置模型；远程 API 地址必须使用 HTTPS，本机 loopback 开发地址允许 HTTP；写文件、编辑文件和执行命令需要交互式批准，非交互模式默认拒绝这些操作。文件工具会检查路径越界及真实路径解析结果，直接指向符号链接的目标会被拒绝，搜索工具不会遍历符号链接条目。它还不支持官方 CLI 的 OAuth、完整配置系统、SDK stream-json、MCP、Session resume 或全部高级工具。
+
+## 开发与验证
+
+```bash
 npm test
-~~~
+```
 
-测试覆盖 JSONL 与 SSE 分块 UTF-8、CRLF、坏帧恢复、控制响应关联、进程与 Query 生命周期、Anthropic SSE 事件映射、多轮 API 工具调用、权限拒绝/批准/取消、schema 校验、Session 文件持久化、冷恢复、revision 冲突与 interrupted-turn reconciliation。
+测试包含协议帧、流式 SSE、Agent Loop 多轮工具回填、权限与 schema、Session 原型，以及 CLI 参数、版本快路径、文件操作、搜索、符号链接越界保护和基于本地 SSE 服务的 CLI 端到端工具回填/非交互权限拒绝验证。
 
-## 研究与实现边界
+模拟模型与模拟工具只能证明对应的确定性行为。真实模型请求仍需配置有效凭证；没有执行真实请求时，不宣称完成端到端兼容验证。
 
-新仓库只提交原创分析、接口契约、独立 CLI 实现和测试。不要提交逆向压缩包、第三方二进制、提取的第三方源码/Source Map、凭证或运行时缓存。旧版源码只用于理解与对照；当前没有证据证明恢复代码可合法复制，也没有完整的恢复源码构建工程。静态代码中存在某分支，不代表某账号或某次运行一定启用；未经动态验证的结论会明确标记。
+## 旧版源码的使用方式
+
+旧仓库中的 package 与 restored-src 是本项目的重要研究和实现资产。按实际模块需要复用、迁入和修改，优先继承成熟实现；不必无差别复制整个恢复树，也不应只看函数名就判断理解了调用链。每个迁入模块都要追踪上下游、依赖、状态和错误/取消路径，再通过测试确认行为。复用前同时核对实际适用的源码许可证、权利归属及必要版权声明；仓库由本人维护不自动证明其中第三方代码的再分发授权。
+
+所有开发改动通过独立分支和 PR 提交到 [agent-cil](https://github.com/wwxst/agent-cil)。本项目不开发前端或 Desktop UI。
 
 ## 参考仓库
 
-- [旧版 CLI 2.1.88 参考源码](https://github.com/wwxst/-)
-- [既有 Agent Desktop 项目（仅作产品/工程参考）](https://github.com/wwxst/agent-desktop)
+- [旧版 CLI 2.1.88 源码](https://github.com/wwxst/-)
+- [新版逆向资料与 CLI 2.1.304 证据](https://github.com/wwxst/agent-cil)
+- [既有 Agent Desktop 项目（仅作边界参考）](https://github.com/wwxst/agent-desktop)

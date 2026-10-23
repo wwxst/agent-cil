@@ -20,7 +20,7 @@
 2. **把结构变化与行为变化分开。** 文件拆分、模块数量和打包格式变化不代表产品行为变化。
 3. **每条差异都附证据。** 至少记录旧版路径/符号、新版路径/符号、输入输出、调用方、测试状态。
 4. **明确缺失证据。** 旧版未发现某实现，不等于新版新增；新版存在代码分支，也不等于生产环境一定启用。
-5. **只保留兼容所需的契约。** 新客户端按自己的接口实现，不直接复制整段第三方源码或依赖混淆变量名。
+5. **成熟源码优先、授权先行。** 对确有使用/修改/分发权限的旧版成熟实现优先直接移植并修复依赖，保留必要原版权声明；对于权利未确认的第三方代码，仅研究行为，不默认复制到发布仓库。
 
 ## 3. 首批需要映射的职责
 
@@ -36,28 +36,19 @@
 | P1 | MCP 桥接 | SDK wrapper 与 Desktop MCP adapter | 旧版 MCP client/server、stdio 与配置 |
 | P2 | Host/VM/SSH | Desktop target managers 与 spawn adapters | 旧版 CLI target / environment 分支 |
 
-## 4. 当前模块级审计
+## 4. 对照状态
 
-以下结论来自旧版恢复源码、新版 2.1.304 提取模块和 agent-cil main 的实际代码。静态调用关系不等于动态运行兼容性。
+本表只记录第一轮资料盘点与新版静态证据。尚未完成按函数、schema、消息序列和测试逐项核对；因此当前不宣称新版相对 2.1.88 的具体功能增删清单。后续每次完成一项映射时，应更新本文件并提交对应的独立证据与测试。
 
-| 模块 | 新旧差异结论 | agent-cil 当前实现 | 决定 |
-| --- | --- | --- | --- |
-| CLI 入口/参数 | 已确认：新版入口在版本快路径前有 relay/preflight/参数检查，显式检查 cwd，并从参数中分离 dispatch defaults；旧版入口的 version fast path 在动态导入 profiler 前执行 | main 只有库模块和 npm test/check，没有 bin、CLI package 或可执行入口 | 保留已有协议/runtime 代码；CLI 入口要先按真实 argv/exit/stdout/stderr 契约设计，不能把通用 --print 入口称为兼容实现。详见 cli-entry-comparison.md |
-| Agent Loop | 已确认：主循环职责延续；旧版有 maxTurns、compact/recovery、streaming executor/fallback；新版在相似主循环之外增加更细的执行上下文和工具生命周期 | AgentLoop 以 model.stream 抽象驱动；工具按序执行，无 compact/hook/官方 Query 集成 | 保留为最小自有运行时，不把它当作 Claude Code loop 的等价实现；仅按证据补齐具体语义 |
-| 工具调度 | 已确认：旧版按 isConcurrencySafe 调度并用 discard 管理 fallback；新版进一步追踪 per-tool AbortController、drain 状态和同轮工具关联 | ToolRegistry 只有本地静态注册，AgentLoop 串行执行；未知工具回填 error tool_result | 保留基本调度和错误回填；暂不复制复杂并发状态机，先验证 CLI 实际需要的取消/执行顺序 |
-| 权限 | 已确认：旧版允许 permission/approval 返回 updatedInput；新版 schema 接受 updatedInput，并在执行前校验其符合工具 schema | main 原来忽略 updatedInput；PR #9 提出修正，但尚未合并 | 保留 allow/deny/ask fail-closed 模型；strict deny-rule 复验、permission interrupt 与 hook 语义仍待对照 |
-| Session/Query | 已确认 SDK/CLI 使用双向 JSONL、control_request/request_id 和不同的 result/idle/close/interrupt 概念；尚未建立所有 Session ID 与 transcript schema 的一对一映射 | QueryProtocolSession/QueryRunLifecycle 有 fake-transport 测试；SessionManager 是自有 JSON journal | 保留已实现原型；暂停扩张，不宣称原生 resume/transcript 兼容 |
-| 模型请求 | 新版主循环路径可到达流式 beta.messages.create；旧版通过 deps.callModel 抽象隔离 provider 调用 | AnthropicMessagesAdapter 是直连 API 的 SSE adapter，测试用 fake fetch | 保留 adapter，但不能把它视为 Claude Code CLI 的 SDK stream-json 协议 |
-| MCP/运行环境 | 已确认存在宿主内存 MCP bridge 与独立 server 路径；Host/VM/SSH 的启动方式并不相同 | agent-cil 尚无 MCP bridge 和 target-specific runtime | 暂停开发，待协议和具体 CLI 需求证明必要性后再做 |
+## 5. 2026-10-23 CLI 主路径落地情况
 
-## 5. 旧版可运行性与代码复用边界
+| 部分 | 已进入 main 的实现 | 验证边界 |
+| --- | --- | --- |
+| CLI 入口、参数与模型流 | PR #13，`packages/cli/src/index.js` + Messages SSE adapter | npm pack 安装、帮助/版本、本地 SSE 集成测试通过；真实托管 API 未验 |
+| 权限更新输入 | PR #9，schema 复验、重新授权、拒绝与改写次数限制 | 工具输入替换及拒绝回归测试 |
+| 旧版权限上下文与规则 | PR #14、#17，活动 CLI 策略直接使用已移植规则逻辑 | 仅 whole-tool 规则子集；不等于全部 2.1.304 权限引擎 |
+| 并行工具调度与流式执行 | PR #15、#16，旧版 `StreamingToolExecutor`、`Stream`、`runToolUse` 活动调用链 | 并发顺序、取消、异常、CLI 工具回填测试 |
+| 工具执行前校验 | PR #18，schema 与值校验先于权限，保留工具实例与校验上下文 | 未移植完整 Hooks/MCP/telemetry 等依赖闭包 |
+| 旧版发布 bundle | PR #11，固定来源版本快路径 | 隔离版本测试通过；非完整运行验收 |
 
-公开旧版仓库包含 2.1.88 发布 bundle 和 Source Map，但 `restored-src/` 没有 package.json、tsconfig、lockfile、build/test 配置。恢复源码不是可复现构建工程。包内许可证说明 Anthropic 保留所有权利，仓库级宽松开源许可未获证实。因此当前只把旧版作为行为参照；未经授权不复制其源码、Source Map 或二进制。完整盘点见 baseline.md。
-
-## 6. 证据缺口与后续顺序
-
-1. 在隔离、无凭证环境对旧版发布包做版本/帮助 fast-path smoke test；目前尚未运行，不把静态推断写成基准测试。
-2. 继续核实 2.1.304 权限更新输入、deny-rule 复验、拒绝与 interrupt 语义。
-3. 在入口和协议契约明确后，建立 SDK stream-json 的最小兼容子集及真实帧测试。
-4. 完成 Session/Query ID、恢复和 MCP request/取消的逐流程映射前，不增加新的 Session/MCP 抽象。
-5. 所有新实现使用独立自有代码，并以契约测试验证；CI 通过只证明自有测试通过，不证明与第三方 CLI 完全兼容。
+尚未作为可执行替代路径的完整旧版 `query.ts`、`toolExecution.ts` 和相关依赖，应按完整调用链决定下一步移植。旧版恢复源码的直接入库 PR #12 仍在授权审查，CI 通过不等同于再分发许可。只开发 CLI，不开发 Desktop UI。

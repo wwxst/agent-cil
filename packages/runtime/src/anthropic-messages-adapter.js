@@ -1,3 +1,32 @@
+import { setTimeout as delay } from 'node:timers/promises';
+
+// Bounded pre-stream retries, adapted from the 2.1.88 source's retry policy.
+// Never replay a request after a successful HTTP response starts streaming.
+const MAX_RETRY_DELAY_MS = 30000;
+const RETRYABLE_HTTP_STATUS = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
+
+function retryDelayMs(response, retryIndex) {
+  const retryAfter = response.headers?.get?.('retry-after');
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    const parsedMs = Number.isFinite(seconds) && seconds >= 0
+      ? seconds * 1000
+      : Date.parse(retryAfter) - Date.now();
+    if (Number.isFinite(parsedMs) && parsedMs >= 0) {
+      // A long server-requested cooldown should be surfaced rather than
+      // silently ignored, or replaced with a faster client-side retry.
+      return parsedMs > MAX_RETRY_DELAY_MS ? null : Math.ceil(parsedMs);
+    }
+  }
+  return Math.min(500 * 2 ** retryIndex, MAX_RETRY_DELAY_MS);
+}
+
+function shouldRetryHttp(response) {
+  if (!RETRYABLE_HTTP_STATUS.has(response.status)) return false;
+  if (response.headers?.get?.('x-should-retry') === 'false') return false;
+  return true;
+}
+
 function isRecord(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -58,22 +87,32 @@ export async function* parseSseStream(body, { signal } = {}) {
     return undefined;
   };
 
+  const drainLines = final => {
+    const events = [];
+    while (buffer.length > 0) {
+      const newline = buffer.search(/[\r\n]/);
+      if (newline < 0) break;
+      const terminator = buffer[newline];
+      if (terminator === '\r' && newline === buffer.length - 1 && !final) break;
+      let width = 1;
+      if (terminator === '\r' && buffer[newline + 1] === '\n') width = 2;
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + width);
+      const event = consumeLine(line);
+      if (event) events.push(event);
+    }
+    return events;
+  };
+
   for await (const chunk of body) {
     abortIfNeeded(signal);
     buffer += decoder.decode(chunk, { stream: true });
-    let newline;
-    while ((newline = buffer.indexOf('\n')) !== -1) {
-      let line = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      if (line.endsWith('\r')) line = line.slice(0, -1);
-      const event = consumeLine(line);
-      if (event) yield event;
-    }
+    for (const event of drainLines(false)) yield event;
   }
 
   buffer += decoder.decode();
+  for (const event of drainLines(true)) yield event;
   if (buffer.length > 0) {
-    if (buffer.endsWith('\r')) buffer = buffer.slice(0, -1);
     const event = consumeLine(buffer);
     if (event) yield event;
   }
@@ -108,6 +147,7 @@ export class AnthropicMessagesAdapter {
   #baseUrl;
   #version;
   #fetch;
+  #maxRetries;
 
   constructor({
     apiKey,
@@ -117,6 +157,7 @@ export class AnthropicMessagesAdapter {
     system,
     baseUrl = 'https://api.anthropic.com',
     apiVersion = '2023-06-01',
+    maxRetries = 2,
     fetchImpl = globalThis.fetch,
   } = {}) {
     if (apiKey !== undefined && (typeof apiKey !== 'string' || apiKey.trim().length === 0)) {
@@ -139,8 +180,21 @@ export class AnthropicMessagesAdapter {
       throw new TypeError('baseUrl must be a valid HTTP(S) URL.');
     }
     if (!['http:', 'https:'].includes(parsedBaseUrl.protocol)) throw new TypeError('baseUrl must use HTTP or HTTPS.');
+    if (parsedBaseUrl.protocol === 'http:') {
+      const hostname = parsedBaseUrl.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+      const isLoopback = hostname === 'localhost'
+        || hostname.endsWith('.localhost')
+        || hostname === '::1'
+        || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+      if (!isLoopback) {
+        throw new TypeError('baseUrl must use HTTPS unless it targets localhost or a loopback address.');
+      }
+    }
     if (typeof apiVersion !== 'string' || apiVersion.trim().length === 0) throw new TypeError('apiVersion must be a non-empty string.');
     if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a fetch-compatible function.');
+    if (!Number.isSafeInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
+      throw new RangeError('maxRetries must be an integer between 0 and 5.');
+    }
 
     this.#apiKey = apiKey;
     this.#apiKeyProvider = apiKeyProvider;
@@ -150,6 +204,7 @@ export class AnthropicMessagesAdapter {
     this.#baseUrl = parsedBaseUrl.toString().replace(/\/+$/, '');
     this.#version = apiVersion;
     this.#fetch = fetchImpl;
+    this.#maxRetries = maxRetries;
   }
 
   async *stream({ messages, tools = [], signal } = {}) {
@@ -194,21 +249,41 @@ export class AnthropicMessagesAdapter {
     if (requestTools.length > 0) body.tools = requestTools;
 
     let response;
-    try {
-      response = await this.#fetch(this.#baseUrl + '/v1/messages', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'anthropic-version': this.#version,
-          'x-api-key': apiKey,
-          accept: 'text/event-stream',
-        },
-        body: JSON.stringify(body),
-        signal,
-      });
-    } catch (error) {
-      if (signal?.aborted) abortIfNeeded(signal);
-      throw new ModelAdapterError('Failed to connect to the Messages API.', { cause: error });
+    for (let retry = 0; ; retry += 1) {
+      abortIfNeeded(signal);
+      try {
+        response = await this.#fetch(this.#baseUrl + '/v1/messages', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'anthropic-version': this.#version,
+            'x-api-key': apiKey,
+            accept: 'text/event-stream',
+          },
+          body: JSON.stringify(body),
+          signal,
+          redirect: 'error',
+        });
+      } catch (error) {
+        if (signal?.aborted) abortIfNeeded(signal);
+        throw new ModelAdapterError('Failed to connect to the Messages API.', { cause: error });
+      }
+
+      if (!response || typeof response.ok !== 'boolean') {
+        throw new ModelAdapterError('Fetch adapter returned an invalid response.');
+      }
+      if (response.ok || retry >= this.#maxRetries || !shouldRetryHttp(response)) break;
+      const waitMs = retryDelayMs(response, retry);
+      if (waitMs === null) break;
+      // Release the failed response before retrying. A successful HTTP response
+      // is never retried; SSE truncation/error may have already emitted content.
+      await response.body?.cancel?.();
+      try {
+        await delay(waitMs, undefined, { signal });
+      } catch (error) {
+        if (signal?.aborted) abortIfNeeded(signal);
+        throw error;
+      }
     }
 
     if (!response || typeof response.ok !== 'boolean') {
@@ -245,6 +320,7 @@ export class AnthropicMessagesAdapter {
         throw new ModelAdapterError('Messages API stream error: ' + message);
       }
       if (type === 'message_start') {
+        if (messageStarted) throw new ModelAdapterError('Messages API sent duplicate message_start.');
         messageStarted = true;
         const initialUsage = payload.message?.usage;
         if (isRecord(initialUsage)) {
@@ -252,12 +328,18 @@ export class AnthropicMessagesAdapter {
           yield { type: 'usage', usage: structuredClone(usage) };
         }
       } else if (type === 'content_block_start') {
+        if (!messageStarted || stopReason !== undefined) {
+          throw new ModelAdapterError('Messages API started a content block before message_start or after stop_reason.');
+        }
         const block = payload.content_block;
         if (!Number.isSafeInteger(payload.index) || payload.index < 0 || !isRecord(block)) {
           throw new ModelAdapterError('Messages API sent a malformed content_block_start.');
         }
         if (block.type === 'server_tool_use') {
           throw new ModelAdapterError('Server-side tool use is not supported by this client-tool adapter.');
+        }
+        if (block.type !== 'text' && block.type !== 'tool_use') {
+          throw new ModelAdapterError('Messages API sent unsupported content block type: ' + String(block.type));
         }
         if (blocks.has(payload.index)) throw new ModelAdapterError('Messages API reused an active content block index.');
         const state = { type: block.type };
@@ -278,16 +360,24 @@ export class AnthropicMessagesAdapter {
           yield { type: 'text_delta', text: block.text };
         }
       } else if (type === 'content_block_delta') {
+        if (!messageStarted || stopReason !== undefined) {
+          throw new ModelAdapterError('Messages API sent content delta outside the active message.');
+        }
         const state = blocks.get(payload.index);
         const delta = payload.delta;
         if (!state || !isRecord(delta)) throw new ModelAdapterError('Messages API sent a delta for an unknown content block.');
-        if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+        if (delta.type === 'text_delta' && state.type === 'text' && typeof delta.text === 'string') {
           yield { type: 'text_delta', text: delta.text };
         } else if (delta.type === 'input_json_delta' && state.type === 'tool_use'
           && typeof delta.partial_json === 'string') {
           state.partialJson += delta.partial_json;
+        } else {
+          throw new ModelAdapterError('Messages API sent an incompatible content_block_delta for ' + state.type + '.');
         }
       } else if (type === 'content_block_stop') {
+        if (!messageStarted || stopReason !== undefined) {
+          throw new ModelAdapterError('Messages API stopped a content block outside the active message.');
+        }
         const state = blocks.get(payload.index);
         if (!state) throw new ModelAdapterError('Messages API stopped an unknown content block.');
         if (state.type === 'tool_use') {
@@ -304,6 +394,9 @@ export class AnthropicMessagesAdapter {
         }
         blocks.delete(payload.index);
       } else if (type === 'message_delta') {
+        if (!messageStarted || blocks.size > 0) {
+          throw new ModelAdapterError('Messages API sent message_delta before message_start or with unfinished content blocks.');
+        }
         if (typeof payload.delta?.stop_reason === 'string') stopReason = payload.delta.stop_reason;
         if (isRecord(payload.usage)) {
           usage = { ...usage, ...payload.usage };
@@ -316,6 +409,8 @@ export class AnthropicMessagesAdapter {
         messageStopped = true;
         yield { type: 'message_end', stopReason: mapStopReason(stopReason) };
         return;
+      } else {
+        throw new ModelAdapterError('Messages API sent an unsupported SSE event: ' + String(type));
       }
     }
 

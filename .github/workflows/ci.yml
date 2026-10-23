@@ -19,3 +19,73 @@ jobs:
       - run: npm test
       - name: Syntax-check source and tests
         run: find packages -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Validate packed installation and real CLI entry point
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(npm pack --ignore-scripts --silent)"
+          install_dir="$(mktemp -d)"
+          trap 'rm -rf "$install_dir" "$archive"' EXIT
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$install_dir" "./$archive"
+          cli="$install_dir/node_modules/.bin/agent-cil"
+          echo "Packed CLI executable metadata:"
+          ls -l "$cli"
+          test -x "$cli"
+          echo "Packed CLI version:"
+          "$cli" --version
+          test "$("$cli" --version)" = "agent-cil 0.1.0"
+          echo "Packed CLI help:"
+          "$cli" --help | head -n 30
+          "$cli" --help | grep -q -- '--allow-edits'
+          node scripts/verify-installed-cli.mjs "$cli"
+
+  legacy-cli-2-1-88-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download the bundle from the pinned reference commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/wwxst/-/57d4d4d05121f84601af119091455832d37de5df/package"
+          curl --fail --location --silent --show-error "$base/cli.js" -o "$RUNNER_TEMP/cli.js"
+          curl --fail --location --silent --show-error "$base/package.json" -o "$RUNNER_TEMP/package.json"
+          curl --fail --location --silent --show-error "$base/LICENSE.md" -o "$RUNNER_TEMP/LICENSE.md"
+
+          actual_blob="$(git hash-object "$RUNNER_TEMP/cli.js")"
+          expected_blob="397ffc36211479cca414cfb245df35f3db232336"
+          printf 'git_blob_sha=%s\n' "$actual_blob"
+          test "$actual_blob" = "$expected_blob"
+
+          node -e '
+            const fs = require("node:fs");
+            const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (p.name !== "@anthropic-ai/claude-code" || p.version !== "2.1.88" || p.bin?.claude !== "cli.js") {
+              throw new Error("Unexpected reference package identity or entry point");
+            }
+            console.log(JSON.stringify({ name: p.name, version: p.version, bin: p.bin, engines: p.engines, license: p.license }));
+          ' "$RUNNER_TEMP/package.json"
+          printf '%s\n' '--- package license notice ---'
+          cat "$RUNNER_TEMP/LICENSE.md"
+
+      - name: Run only the version fast path with an empty environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/empty-home"
+          set +e
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/empty-home" TMPDIR="$RUNNER_TEMP" \
+            timeout 10s node "$RUNNER_TEMP/cli.js" --version \
+            > "$RUNNER_TEMP/legacy-cli.stdout" 2> "$RUNNER_TEMP/legacy-cli.stderr"
+          status=$?
+          set -e
+          printf 'exit_code=%s\n' "$status"
+          printf '%s\n' '--- stdout ---'
+          cat "$RUNNER_TEMP/legacy-cli.stdout"
+          printf '%s\n' '--- stderr ---'
+          cat "$RUNNER_TEMP/legacy-cli.stderr"
+          test "$status" -eq 0
+          test "$(cat "$RUNNER_TEMP/legacy-cli.stdout")" = '2.1.88 (Claude Code)'
+          test ! -s "$RUNNER_TEMP/legacy-cli.stderr"

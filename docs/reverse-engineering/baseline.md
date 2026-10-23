@@ -56,26 +56,13 @@
 
 这里引用的是样本资料包内的记录，不把报告中的签名/哈希检查扩大解释为“本仓库已独立重建或运行验证”。
 
-## 5. 旧版源码完整性、可运行性与复用边界
+## 5. 旧版 2.1.88 源码与可执行基线
 
-检查对象：公开仓库 `wwxst/-`，main 对应快照提交 `57d4d4d05121f84601af119091455832d37de5df`；该仓库 tree 为 5,723 个条目。
-
-### 完整性与可运行性
-
-- 仓库包含 `package/cli.js`、`package/cli.js.map`、`package/package.json` 和 `claude-code-2.1.88.tgz`，因此存在 2.1.88 发布产物与源码映射。
-- `package/package.json` 标记 `@anthropic-ai/claude-code@2.1.88`、入口 `cli.js`、Node.js `>=18`；这只能证明发布包的声明，不等于恢复源码可以独立构建。
-- `restored-src/` 下只有 `src/`、`node_modules/`、`vendor/` 三个顶层目录。没有 `package.json`、`tsconfig`、lockfile、构建脚本、lint/test 配置或可复现的发布流水线。
-- 恢复源码包含 1,902 个 src 文件（其中 1,884 个 TS/TSX，按资料包清单统计），直接从 Source Map 的 `sourcesContent` 提取；资料包 README 明确说明未整理成可独立构建的工程，且源码导入 `bun:bundle`、构建宏和路径别名。
-- **当前未在本环境运行旧版 CLI**，因此没有真实的 `--version`、`--help`、退出码或基准行为记录。下一步若要做发布产物 smoke test，应在隔离环境、无凭证、无网络业务调用的条件下执行，并保留原始 stdout/stderr/exit code。
-
-### 授权与可复用范围
-
-- GitHub 仓库 API 未返回明确的仓库级开源许可证。
-- `package/package.json` 的 license 字段为 `SEE LICENSE IN README.md`；同仓库 `package/LICENSE.md` 写明 Anthropic PBC 保留所有权利，使用受官方 Legal Agreements 约束。
-- 因此，不能把恢复出来的第三方源码视为 MIT/Apache 等宽松许可证代码，也不能因为它公开可读就默认有权复制、修改、再发布或用于商业产品。
-- 在取得明确授权/法务确认前，`agent-cil` 只记录路径、调用关系、数据结构、行为差异和测试结果；自有实现以独立代码重建已确认的行为契约，不提交旧版源码、Source Map、打包 CLI 或其依赖。
-
-**结论：** 旧版是高价值的静态行为参照，并存在可执行的官方发布 bundle；但恢复出的 `restored-src` 不是可复现构建的完整源工程。其代码复用授权也未被证明。当前应采用“行为基线 + 独立实现”，而不是把恢复源码直接当作可合法复制的开发基线。
+- 固定参照提交：`wwxst/-@57d4d4d05121f84601af119091455832d37de5df`。该仓库同时保留 `package/cli.js` 发布文件、包元数据及 `restored-src/` 恢复源码。
+- 恢复源码不是独立构建工程：`restored-src` 缺少其自身完整的 package / TypeScript / Bun 构建配置，存在未恢复的别名、宏、SDK 和 UI 依赖，不能把代码可读等同于可编译。
+- [PR #11](https://github.com/wwxst/agent-cil/pull/11) 已合并：GitHub Actions 在空凭证环境、超时限制下验证固定来源 `cli.js --version` 的退出码和输出；这**仅**证明该发布产物的版本快路径，不证明交互启动、真实模型调用或恢复源码的可构建性。
+- `package/LICENSE.md` 声明「© Anthropic PBC. All rights reserved」，并指向官方法律协议。旧仓库在本人名下并不自动消除其原有版权约束。只有核实实际权利与适用授权后，才可以直接复制、修改、再分发对应源码。当前 [PR #12](https://github.com/wwxst/agent-cil/pull/12) 的直接源码导入因此仍待确认。
+- 开发方向仍为**有权复用的成熟旧版实现优先移植**：以已经进入 CLI 活动调用链的权限、调度和工具执行子集（PR #14–#18）为例，保留来源说明、修复依赖、补充行为测试，不另起通用 Runtime。
 
 ## 6. 证据等级
 
