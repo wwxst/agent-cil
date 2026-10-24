@@ -40,8 +40,8 @@ export const HELP = [
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
   '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
   '      --allowedTools <name>    Allow tool or literal Bash(command), repeatable',
-  '      --disallowedTools <name> Deny tool or literal Bash(command), repeatable',
-  '      --askTools <name>        Ask tool or literal Bash(command), repeatable',
+  '      --disallowedTools <name> Deny tool or Bash(command/prefix/wildcard), repeatable',
+  '      --askTools <name>        Ask tool or Bash(command/prefix/wildcard), repeatable',
   '      --hooks-file <path> Explicitly trust a tool-hook settings JSON file (Pre/Post/Failure)',
   '      --session-id <uuid> Start a fresh, named persisted CLI session',
   '      --resume <uuid>     Resume a session; omit prompt to finish a committed tool round',
@@ -134,17 +134,21 @@ export function parseArgs(argv) {
       // connected. Wildcard/prefix/compound rule matching still needs the
       // original bashPermissions.ts AST dependency closure, so reject such
       // rules instead of approximating them with a dangerous regex.
-      const exactBash = parsed.toolName === 'Bash' &&
+      const bashContent = parsed.toolName === 'Bash' &&
         typeof parsed.ruleContent === 'string' &&
         parsed.ruleContent.length > 0 &&
         parsed.ruleContent.trim() === parsed.ruleContent &&
-        !parsed.ruleContent.includes('*') &&
         raw === permissionRuleValueToString(parsed);
+      // Literal exact Bash allow remains narrowly permitted. Original
+      // prefix/wildcard shell matching is connected for restrictive deny/ask
+      // rules only: an unrestricted allow would require original AST checks.
+      const bashRule = bashContent && (behavior !== 'allow' ||
+        !parsed.ruleContent.includes('*'));
       if (!['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'].includes(parsed.toolName) ||
-          !(wholeTool || exactBash)) {
+          !(wholeTool || bashRule)) {
         throw new CliArgumentError(flag +
-          ' accepts whole built-in tool names or literal Bash(command) rules only.' +
-          ' Bash wildcards/prefixes, other content-specific rules and MCP need the original security matcher.');
+          ' accepts whole built-in names or Bash(command);' +
+          ' wildcard/prefix Bash allow, other content-specific rules and MCP require original AST security checks.');
       }
       options.permissionRules[behavior].push(parsed);
     } else if (arg === '--hooks-file' || arg.startsWith('--hooks-file=')) {
