@@ -85,6 +85,7 @@ export class AgentLoop extends EventEmitter {
   #postToolUseFailureHooks;
   #hookMessages = [];
   #toolAttachments = [];
+  #toolNativeMessages = [];
   #hookStopReason;
   #hookWorkspace;
   #toolResultStorage;
@@ -150,6 +151,7 @@ export class AgentLoop extends EventEmitter {
     this.#active = true;
     this.#hookMessages = [];
     this.#toolAttachments = [];
+    this.#toolNativeMessages = [];
     this.#hookStopReason = undefined;
     try {
       const result = await query({
@@ -166,10 +168,24 @@ export class AgentLoop extends EventEmitter {
         // tool_results, not at asynchronous Hook completion time.
         getToolHookContext: ({ toolUses, turn }) =>
           normalizeToolHookAttachmentsForAPI(this.#hookMessages, toolUses, turn),
+        // Same ordering boundary as original query.ts: native newMessages
+        // are retained only after all authenticated sibling tool_results.
+        getToolNativeMessages: ({ toolUses, turn }) => {
+          const ordered = [];
+          for (const toolUse of toolUses) {
+            for (const event of this.#toolNativeMessages) {
+              if (event.turn === turn && event.toolUseId === toolUse.id) {
+                ordered.push(...structuredClone(event.blocks));
+              }
+            }
+          }
+          return ordered;
+        },
         emit: (eventName, event) => this.emit(eventName, event),
       });
       if (this.#hookMessages.length) result.hookMessages = structuredClone(this.#hookMessages);
       if (this.#toolAttachments.length) result.toolAttachments = structuredClone(this.#toolAttachments);
+      if (this.#toolNativeMessages.length) result.toolNativeMessages = structuredClone(this.#toolNativeMessages);
       return result;
     } finally {
       this.#active = false;
@@ -593,6 +609,15 @@ export class AgentLoop extends EventEmitter {
         onProgress: onToolProgress,
         toolResultStorage: this.#toolResultStorage,
         userModified: userModified || decision?.userModified === true,
+        onToolNewMessages: async ({sourceMessages, blocks}) => {
+          const event = {
+            turn, toolUseId: toolUse.id, toolName: tool.name,
+            sourceMessages: structuredClone(sourceMessages),
+            blocks: structuredClone(blocks),
+          };
+          this.#toolNativeMessages.push(event);
+          this.emit('toolNewMessages', event);
+        },
         onToolAttachment: async attachment => {
           // Original toolExecution.ts emits structured_output as a distinct
           // attachment; it is not an API user message or a tool_result.
