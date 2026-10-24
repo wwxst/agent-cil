@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs, createCliPermissionContext, createCliPermissionPolicy } from '../src/index.js';
 import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
 import { permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
+import { parsePermissionRule, matchWildcardPattern } from '../../runtime/src/legacy-permissions/shell-rule-matching.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -134,6 +135,44 @@ test('real installed CLI honors original allow/deny/ask rules without bypassing 
   }
 });
 
+test('verbatim source shell-rule parser preserves prefix, exact and wildcard semantics', () => {
+  assert.deepEqual(parsePermissionRule('git:*'), { type: 'prefix', prefix: 'git' });
+  assert.deepEqual(parsePermissionRule('git status'), { type: 'exact', command: 'git status' });
+  assert.deepEqual(parsePermissionRule('git *'), { type: 'wildcard', pattern: 'git *' });
+  assert.equal(matchWildcardPattern('git *', 'git'), true);
+  assert.equal(matchWildcardPattern('git *', 'git status'), true);
+  assert.equal(matchWildcardPattern('git *', 'git-lfs status'), false);
+  assert.equal(matchWildcardPattern('npm run *', 'npm run'), true);
+  assert.equal(matchWildcardPattern('npm run *', 'npm run lint'), true);
+  assert.equal(matchWildcardPattern('npm * run *', 'npm run'), false);
+});
+
+test('source prefix/wildcard Bash deny and ask rules are restrictive, not broad automatic allow', () => {
+  const parsed = parseArgs([
+    '--disallowedTools', 'Bash(git push:*)',
+    '--disallowedTools', 'Bash(node *)',
+    '--askTools', 'Bash(npm run *)',
+  ]);
+  const ctx = createCliPermissionContext({
+    permissionRules: {
+      ...parsed.permissionRules,
+      allow: [{ toolName: 'Bash', ruleContent: 'FOO=1 node --version' }],
+    },
+  });
+  for (const command of ['git push origin main', 'node --version', 'xargs git push --force']) {
+    assert.equal(bashToolCheckExactMatchPermission({command},ctx).behavior,'deny',command);
+  }
+  assert.equal(bashToolCheckExactMatchPermission({command:'npm run build'},ctx).behavior,'ask');
+  assert.equal(bashToolCheckExactMatchPermission({
+    command:'FOO=1 node --version',
+  },ctx).behavior,'ask','unported env stripping may not bypass restrictive scoped rules');
+  assert.equal(bashToolCheckExactMatchPermission({
+    command:'node-not-the-prefix --version',
+  },ctx).behavior,'ask');
+  assert.throws(() => parseArgs(['--allowedTools','Bash(git push:*)']),/wildcard\/prefix/);
+  assert.throws(() => parseArgs(['--allowedTools','Bash(npm run *)']),/wildcard\/prefix/);
+});
+
 test('original Bash exact rule only matches the entire command; deny > ask > allow', () => {
   const parsed = parseArgs([
     '--allowedTools', 'Bash(node --version)',
@@ -235,6 +274,11 @@ test('packed CLI Bash permission chain: exact allow, deny, ask, whole ask, unmat
       [['--askTools','Bash','--allowedTools','Bash(node --version)'], 'node --version'],
       [['--allowedTools','Bash(node --version)'], 'node --version && echo unsafe'],
       [['--allowedTools','Bash','--disallowedTools','Bash(node --version)'], 'FOO=1 node --version'],
+      [['--allowedTools','Bash','--disallowedTools','Bash(node:*)'], 'node --version'],
+      [['--allowedTools','Bash','--disallowedTools','Bash(node *)'], 'node --version'],
+      [['--allowedTools','Bash','--askTools','Bash(node *)'], 'node --version'],
+      [['--allowedTools','Bash(FOO=1 node --version)','--disallowedTools','Bash(node:*)'], 'FOO=1 node --version'],
+
     ]) {
       const rejected=await scenario(flags,command);
       assert.equal(rejected.is_error,true,JSON.stringify({flags,command,rejected}));
