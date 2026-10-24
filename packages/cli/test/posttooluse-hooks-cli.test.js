@@ -65,6 +65,18 @@ test('real installed CLI invokes original PostToolUse after Write and failure Ho
       const result=incoming[1].messages.at(-1).content[0];
       assert.equal(result.tool_use_id,'hook-result-'+name);
       assert.equal(result.is_error===true,expectedFailure);
+      const afterToolResults=incoming[1].messages.at(-1).content.slice(1);
+      assert.equal(afterToolResults.length,1,
+        'source normalizeAttachmentForAPI must include exactly one meta Hook context');
+      assert.equal(afterToolResults[0].type,'text');
+      const originalEventName=expectedFailure ? 'PostToolUseFailure' : 'PostToolUse';
+      assert.match(afterToolResults[0].text,/^<system-reminder>\\n/);
+      assert.match(afterToolResults[0].text,
+        new RegExp(originalEventName+':'+name+' hook additional context:'));
+      assert.match(afterToolResults[0].text,
+        expectedFailure ? /Tool error seen/ : /Post success note/);
+      // Original source hides success/error UI attachments from API.
+      assert.doesNotMatch(afterToolResults[0].text,/hook_success|hook_error_during_execution/);
       return result;
     } finally {
       if(watchdog)clearTimeout(watchdog);
