@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, createCliPermissionContext, createCliPermissionPolicy } from '../src/index.js';
 import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
+import { permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -217,6 +218,17 @@ test('packed CLI Bash permission chain: exact allow, deny, ask, whole ask, unmat
     const allowed=await scenario(['--allowedTools','Bash(node --version)'],'node --version');
     assert.notEqual(allowed.is_error,true);
     assert.match(JSON.stringify(allowed.content),/v\d+/);
+    // Original tool execution must not replay a side effect: one real Node
+    // shell action, one ordered result and one follow-up model request.
+    // Escape parentheses with the unchanged 2.1.88 rule serializer.
+    const sideEffect = 'node -e "require(\'fs\').appendFileSync(\'permission-once.txt\',\'x\')"';
+    const serializedRule = permissionRuleValueToString({
+      toolName:'Bash',ruleContent:sideEffect,
+    });
+    const executed = await scenario(['--allowedTools',serializedRule],sideEffect);
+    assert.notEqual(executed.is_error,true);
+    assert.equal(await readFile(join(root,'permission-once.txt'),'utf8'),'x');
+
     for(const [flags, command] of [
       [['--disallowedTools','Bash(node --version)','--allowedTools','Bash(node --version)'], 'node --version'],
       [['--askTools','Bash(node --version)','--allowedTools','Bash(node --version)'], 'node --version'],
