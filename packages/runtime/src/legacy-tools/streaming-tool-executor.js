@@ -352,6 +352,13 @@ export class StreamingToolExecutor {
 
   async *getRemainingResults() {
     if (this.#discarded) return;
+    // A user abort must also wake the result consumer itself. Waiting only
+    // on tool.promise can hang forever if a third-party tool ignores its
+    // AbortSignal; Query needs to reach takeInterruptedResults() and create
+    // bounded, explicitly-uncertain tool_result blocks instead.
+    const wakeOnAbort = () => this.#notifyProgress();
+    this.#signal?.addEventListener('abort', wakeOnAbort, { once: true });
+    try {
     while (!this.#discarded && this.#hasUnfinishedTools()) {
       this.#processQueue();
       let producedUpdate = false;
@@ -386,6 +393,9 @@ export class StreamingToolExecutor {
     }
     if (!this.#discarded) {
       for (const update of this.getCompletedResults()) yield update;
+    }
+    } finally {
+      this.#signal?.removeEventListener('abort', wakeOnAbort);
     }
   }
 }
