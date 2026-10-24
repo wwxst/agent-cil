@@ -52,6 +52,7 @@ function abortIfNeeded(signal) {
 export async function query({
   messages = [], input, signal, model, tools, maxTurns,
   executeTool, emit, canStartToolDuringStream, compactContext, getPostToolStop,
+  getToolHookContext,
 } = {}) {
   if (!Array.isArray(messages)) throw new TypeError('messages must be an array.');
   if (messages.some(message => !isRecord(message))) {
@@ -74,6 +75,9 @@ export async function query({
   }
   if (compactContext !== undefined && typeof compactContext !== 'function') {
     throw new TypeError('compactContext must be a function.');
+  }
+  if (getToolHookContext !== undefined && typeof getToolHookContext !== 'function') {
+    throw new TypeError('getToolHookContext must be a function.');
   }
   if (getPostToolStop !== undefined && typeof getPostToolStop !== 'function') {
     throw new TypeError('getPostToolStop must be a function.');
@@ -375,7 +379,20 @@ export async function query({
         if (toolResults.length !== toolUses.length) {
           throw new ModelProtocolError('Legacy scheduler returned a mismatched number of tool results.');
         }
-        history.push({ role: 'user', content: toolResults });
+        // 2.1.88 query.ts: after toolUpdates have all finished, normalize
+        // Hook attachments for API and merge with the tool-result user turn.
+        // Never interleave user messages with a partially collected batch.
+        // The first N blocks are *always* the exact ordered tool_results.
+        const hookContext = getToolHookContext
+          ? await getToolHookContext({ toolUses, turn, signal })
+          : [];
+        abortIfNeeded(signal);
+        if (!Array.isArray(hookContext) ||
+            hookContext.some(block =>
+              !block || block.type !== 'text' || typeof block.text !== 'string')) {
+          throw new ModelProtocolError('Original Hook normalization returned invalid API blocks.');
+        }
+        history.push({ role: 'user', content: [...toolResults, ...hookContext] });
         // A complete assistant tool call and all matching tool_result blocks
         // form a resumable checkpoint. This is the headless CLI equivalent of
         // the 2.1.88 query.ts stream exposing committed messages before a
