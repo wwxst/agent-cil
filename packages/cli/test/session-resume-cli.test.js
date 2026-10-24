@@ -1,0 +1,140 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parseArgs } from '../src/index.js';
+
+const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
+  fileURLToPath(new URL('../src/index.js',import.meta.url));
+function frame(type,data={}){
+  return 'event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n';
+}
+function writeToolStream(){
+  return frame('message_start',{message:{usage:{input_tokens:37}}})+
+    frame('content_block_start',{index:0,content_block:{
+      type:'tool_use',id:'session-write-once',name:'Write',input:{},
+    }})+
+    frame('content_block_delta',{index:0,delta:{
+      type:'input_json_delta',partial_json:JSON.stringify({
+        file_path:'saved.txt',content:'must persist exactly once',
+      }),
+    }})+
+    frame('content_block_stop',{index:0})+
+    frame('message_delta',{delta:{stop_reason:'tool_use'},usage:{output_tokens:19}})+
+    frame('message_stop');
+}
+function finalStream(){
+  return frame('message_start',{message:{usage:{input_tokens:60}}})+
+    frame('content_block_start',{index:0,content_block:{type:'text',text:''}})+
+    frame('content_block_delta',{index:0,delta:{
+      type:'text_delta',text:'Resumed without another Write.'}})+
+    frame('content_block_stop',{index:0})+
+    frame('message_delta',{delta:{stop_reason:'end_turn'},usage:{output_tokens:11}})+
+    frame('message_stop');
+}
+async function childProcess(argv, env, timeout=18000) {
+  const child=spawn(process.execPath,[cli,...argv],{
+    env:{...process.env, ...env},stdio:['ignore','pipe','pipe'],
+  });
+  const stdout=[],stderr=[];
+  child.stdout.on('data',c=>stdout.push(c));
+  child.stderr.on('data',c=>stderr.push(c));
+  const timer=setTimeout(()=>child.kill('SIGKILL'),timeout);
+  try {
+    const [code,signal]=await new Promise((resolve,reject)=>{
+      child.once('error',reject);
+      child.once('close',(code,signal)=>resolve([code,signal]));
+    });
+    return {code,signal,stdout:Buffer.concat(stdout).toString('utf8'),
+      stderr:Buffer.concat(stderr).toString('utf8')};
+  }finally{clearTimeout(timer);if(child.exitCode===null && !child.killed)child.kill('SIGKILL');}
+}
+
+test('real installed CLI: Write committed to JSONL before next failed model request; independent --resume process does not repeat Write', {
+  timeout:65000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-live-session-'));
+  const id=randomUUID();
+  let mode='first',requests=[];
+  const server=createServer(async(req,res)=>{
+    const chunks=[];for await(const c of req)chunks.push(c);
+    const body=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    requests.push({mode,body});
+    if(mode==='first'&&requests.filter(x=>x.mode==='first').length===1){
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.end(writeToolStream());
+    }else if(mode==='first'){
+      // Deliberate failure AFTER Write's successful tool_result has been
+      // checkpointed: the first process exits without a final answer.
+      res.writeHead(503,{'content-type':'application/json'});
+      res.end(JSON.stringify({error:{message:'intentional post-tool network outage'}}));
+    }else{
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.end(finalStream());
+    }
+  });
+  try{
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    const baseUrl='http://127.0.0.1:'+server.address().port+'/anthropic';
+    const flags=['--print','--provider','deepseek','--cwd',root,
+      '--max-turns','3','--max-retries','0','--compact-threshold','0',
+      '--base-url',baseUrl];
+    const env={DEEPSEEK_API_KEY:'mock-session-token'};
+    const first=await childProcess([
+      ...flags,'--session-id',id,'--allow-edits','Write saved.txt exactly once.',
+    ],env);
+    assert.equal(first.signal,null,first.stderr);
+    assert.equal(first.code,1,first.stdout+first.stderr);
+    assert.equal(await readFile(join(root,'saved.txt'),'utf8'),'must persist exactly once');
+    assert.equal(requests.filter(x=>x.mode==='first').length,2);
+    assert.match(first.stderr,new RegExp(id));
+    const journal=await readFile(join(root,'.agent-cil','sessions',id,'transcript.jsonl'),'utf8');
+    const records=journal.trim().split('\n').map(line=>JSON.parse(line));
+    assert.ok(records.length>=1);
+    assert.equal(records[0].kind,'tool');
+    assert.equal(records[0].messages[1].content[0].id,'session-write-once');
+    assert.equal(records[0].messages[2].content[0].tool_use_id,'session-write-once');
+    assert.equal(records[0].messages[2].content[0].is_error,undefined);
+
+    mode='resume';
+    const second=await childProcess([
+      ...flags,'--resume',id,'Continue from the completed tool result.',
+    ],env);
+    assert.equal(second.signal,null,second.stderr);
+    assert.equal(second.code,0,second.stdout+second.stderr);
+    assert.match(second.stdout,/Resumed without another Write/);
+    assert.equal(requests.filter(x=>x.mode==='resume').length,1,
+      'resumed CLI must not call model to rerun previously committed tool');
+    const resumed=requests.find(x=>x.mode==='resume').body.messages;
+    const stored=records.at(-1).messages;
+    assert.deepEqual(resumed.slice(0,stored.length),stored,
+      'resumed provider request receives committed exact transcript');
+    assert.equal(resumed.at(-1).content,'Continue from the completed tool result.');
+    assert.equal(await readFile(join(root,'saved.txt'),'utf8'),'must persist exactly once');
+    const latest=(await readFile(join(root,'.agent-cil','sessions',id,'transcript.jsonl'),'utf8'))
+      .trim().split('\n').map(JSON.parse).at(-1);
+    assert.equal(latest.kind,'finished');
+    assert.match(latest.messages.at(-1).content[0].text,/Resumed without another Write/);
+    assert.equal(first.stderr.includes('mock-session-token'),false);
+    assert.equal(second.stderr.includes('mock-session-token'),false);
+  }finally{
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  }
+});
+test('CLI validates session arguments without network access',()=>{
+  const id=randomUUID();
+  assert.equal(parseArgs(['--session-id',id,'run']).sessionId,id);
+  assert.equal(parseArgs(['--resume='+id,'run']).resume,id);
+  assert.throws(()=>parseArgs(['--session-id','../elsewhere']),/valid UUID/);
+  assert.throws(()=>parseArgs(['--resume',id,'--session-id',randomUUID()]),
+    /cannot be used together/);
+});
