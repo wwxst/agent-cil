@@ -22,7 +22,7 @@ jobs:
 
       - name: Verify original execution input, PreToolUse checkpoint, permission and interruption contracts on Windows
         run: |
-          node --test packages/runtime/test/original-pretooluse-execution-contract.test.js packages/runtime/test/original-tool-call-observable-input.test.js packages/runtime/test/original-posttool-failure-interruption.test.js packages/runtime/test/original-tool-call-user-modified.test.js packages/runtime/test/original-permission-result-content.test.js
+          node --test packages/runtime/test/original-pretooluse-execution-contract.test.js packages/runtime/test/original-tool-call-observable-input.test.js packages/runtime/test/original-posttool-failure-interruption.test.js packages/runtime/test/original-tool-call-user-modified.test.js packages/runtime/test/original-permission-result-content.test.js packages/runtime/test/original-structured-tool-result.test.js
 
   runtime-tests:
     runs-on: ubuntu-latest
