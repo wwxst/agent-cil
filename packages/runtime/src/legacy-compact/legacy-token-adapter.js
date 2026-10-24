@@ -1,6 +1,7 @@
 /** Node message envelope and incomplete-SSE usage adapter ONLY.
  * The actual accounting functions are ported from 2.1.88 tokens.ts. */
-import { tokenCountWithEstimation, getCurrentUsage } from './legacy-tokens.js';
+import { tokenCountWithEstimation, getCurrentUsage,
+  roughTokenCountEstimationForMessages } from './legacy-tokens.js';
 
 export function hasCompleteApiUsage(usage) {
   return usage !== null && typeof usage === 'object' &&
@@ -36,4 +37,11 @@ export function tokenCountForCliMessages(messages) {
 }
 export function currentUsageForCliMessages(messages) {
   return getCurrentUsage(toLegacyMessages(messages));
+}
+
+/** The original compaction boundary has no fresh API response yet.
+ * Do not re-use the retained suffix's PRE-compaction API usage as a
+ * POST-compaction token measurement. */
+export function estimateFreshCompactedCliMessages(messages) {
+  return roughTokenCountEstimationForMessages(toLegacyMessages(messages));
 }
