@@ -153,8 +153,12 @@ export function applyMessageChain({existing = new Map(),entries,leafUuid,session
     } else if(toolResults(entry.message).length){
       throw new Error('Tool result requires sourceToolAssistantUUID.');
     }
+    if(i===0 && allowRoot && previousLeaf &&
+      entry.logicalParentUuid!==previousLeaf) {
+      throw new Error('Missing logicalParentUuid compact boundary.');
+    }
     if(i===0 && entry.logicalParentUuid!==undefined &&
-      (!allowRoot || entry.logicalParentUuid!==previousLeaf))
+      (!allowRoot || !previousLeaf || entry.logicalParentUuid!==previousLeaf))
       throw new Error('Invalid logicalParentUuid compact boundary.');
     next.set(entry.uuid,structuredClone(entry));
     expectedParent=entry.uuid;
