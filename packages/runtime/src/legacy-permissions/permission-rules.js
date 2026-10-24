@@ -29,6 +29,32 @@ export function getAskRules(context) {
   return getRules(context, 'alwaysAskRules', 'ask');
 }
 
+/**
+ * Original CLI 2.1.88 permissions.ts:getRuleByContentsForToolName().
+ * Content-specific rules are resolved by tool.checkPermissions(), never by
+ * whole-tool allow/ask/deny matching. Preserve the original rule ordering.
+ */
+export function getRuleByContentsForToolName(context, toolName, behavior) {
+  const ruleByContents = new Map();
+  const rules = behavior === 'allow' ? getAllowRules(context)
+    : behavior === 'deny' ? getDenyRules(context)
+    : behavior === 'ask' ? getAskRules(context) : [];
+  for (const rule of rules) {
+    if (rule.ruleValue.toolName === toolName &&
+        rule.ruleValue.ruleContent !== undefined &&
+        rule.ruleBehavior === behavior) {
+      ruleByContents.set(rule.ruleValue.ruleContent, rule);
+    }
+  }
+  return ruleByContents;
+}
+
+export function getRuleByContentsForTool(context, tool, behavior) {
+  return getRuleByContentsForToolName(
+    context, getToolNameForPermissionCheck(tool), behavior,
+  );
+}
+
 function toolMatchesRule(tool, rule) {
   // Original permissions.ts toolMatchesRule: content-specific rules only
   // participate in the tool's own checkPermissions() method.
