@@ -309,12 +309,23 @@ test('packed CLI Bash permission chain: exact allow, deny, ask, whole ask, unmat
       '--allowedTools','Bash', '--disallowedTools','Bash(node:*)',
     ], forbidden);
     assert.equal(denied.is_error,true);
+    assert.match(denied.content, /has been denied/,
+      'a prefix-matched command must receive an explicit deny result');
     await assert.rejects(stat(join(root,'blocked.txt')), /ENOENT/);
     const compounded = await scenario([
       '--allowedTools','Bash', '--disallowedTools','Bash(node:*)',
     ], 'echo harmless && ' + forbidden);
     assert.equal(compounded.is_error,true);
+    assert.match(compounded.content, /Interactive approval is unavailable/,
+      'compound with unported AST must fall back to ask, not pretend to match a deny');
     await assert.rejects(stat(join(root,'blocked.txt')), /ENOENT/);
+
+    const interleaved = await scenario([
+      '--allowedTools', 'Bash', '--disallowedTools', 'Bash(node:*)',
+    ], 'nohup FOO=bar timeout 5 node --version');
+    assert.equal(interleaved.is_error, true);
+    assert.match(interleaved.content, /has been denied/,
+      'original source wrapper/env fixed point must produce deny, not default ask');
 
     for(const [flags, command] of [
       [['--disallowedTools','Bash(node --version)','--allowedTools','Bash(node --version)'], 'node --version'],
