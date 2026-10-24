@@ -410,6 +410,7 @@ export class AgentLoop extends EventEmitter {
       hookResolvedDecision = resolved.decision;
     }
 
+    let userModified = false;
     let permissionResult = hookResolvedDecision
       ? { decision: hookResolvedDecision }
       : await requestPermissionDecision(executionInput, 'initial');
@@ -506,6 +507,9 @@ export class AgentLoop extends EventEmitter {
           const applied = await applyUpdatedInput(approval.updatedInput, 'approval handler');
           if (applied.result) return applied.result;
           if (applied.changed) {
+            // Original permissionDecision.userModified is passed to Tool.call
+            // only for an actual user-approved input rewrite, not Hook backfill.
+            userModified = true;
             // An approval for one input does not authorize a different input.
             // Re-check policy and, if needed, request approval for the replacement.
             permissionResult = await requestPermissionDecision(executionInput, 'recheck');
@@ -565,6 +569,7 @@ export class AgentLoop extends EventEmitter {
         toolUseId: toolUse.id, signal, messages: history, assistantMessage,
         onProgress: onToolProgress,
         toolResultStorage: this.#toolResultStorage,
+        userModified: userModified || decision?.userModified === true,
         // Original 2.1.88 toolExecution.ts processes/memoizes the result
         // BEFORE invoking PostToolUse. Preserve the exact raw tool data.
         onToolResult: async ({ toolOutput }) => {
