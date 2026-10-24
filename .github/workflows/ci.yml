@@ -16,8 +16,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Verify .js CLI startup and Read/Edit acceptance on Windows
-        run: node --test packages/cli/test/live-provider-launch.test.js
+      - name: Verify CLI startup, interrupted batches and real Bash process trees on Windows
+        run: node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/interrupted-tool-batch.test.js packages/cli/test/windows-bash-tree-cancel.test.js
+      - name: Verify real Windows Bash process tree cancellation
+        run: node --test packages/cli/test/windows-bash-tree-cancel.test.js
+      - name: Verify interrupted Edit and Bash batch history on Windows
+        run: node --test packages/cli/test/interrupted-tool-batch.test.js
+      - name: Verify Bash exit does not wait for inherited grandchild stdio
+        run: node --test packages/cli/test/shell-exit-semantics.test.js
 
   runtime-tests:
     runs-on: ubuntu-latest
@@ -61,6 +67,9 @@ jobs:
           # A completed Edit + tool_result must survive a failed follow-up
           # model request in the installed interactive CLI; never replay Edit.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/tool-turn-recovery-cli.test.js
+          # The original CLI cancels active work with one Ctrl+C but requires
+          # two idle presses to exit; verify on an actual pseudo-TTY process.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/ctrl-c-interrupt-cli.test.js
           # Summarize completed DeepSeek tool rounds on installed CLI while
           # keeping recent signed thinking, tool_use and tool_result intact.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-auto-compact-cli.test.js

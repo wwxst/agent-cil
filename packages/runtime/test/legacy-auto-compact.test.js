@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { AgentLoop } from '../src/agent-loop.js';
 import { ToolRegistry } from '../src/tool-registry.js';
 import {
-  createAutoCompact, estimateMessageTokens, groupMessagesByApiRound,
+  createAutoCompact, estimateMessageTokens, tokenCountWithEstimation, groupMessagesByApiRound,
   selectCompletedPrefix, formatCompactSummary,
 } from '../src/legacy-compact/auto-compact.js';
 
@@ -22,6 +22,24 @@ const raw = [
   assistant('read-3', 'sig-3'), result('read-3', 'latest tool result'),
   user('continue repair'),
 ];
+
+test('proactive compact waits when protected recent rounds dominate the context', async () => {
+  const messages = [user('task'), assistant('old', 'sig-old'), result('old', 'done'),
+    assistant('recent1', 'sig1'), result('recent1', 'large output '.repeat(3000)),
+    assistant('recent2', 'sig2'), result('recent2', 'fresh result')];
+  const snapshot = structuredClone(messages);
+  const compact = createAutoCompact({ thresholdTokens: 100 });
+  let calls = 0;
+  const model = { async *stream() { calls++; throw new Error('must not sample'); } };
+  const output = await compact.compact({ messages, model });
+  assert.equal(output.compacted, false);
+  assert.deepEqual(output.messages, snapshot);
+  assert.equal(calls, 0);
+  assert.equal(compact.consecutiveFailures, 0);
+  // Genuine overflow must still attempt the bounded recovery path.
+  await assert.rejects(compact.compact({ messages, model, force: true }), /must not sample/);
+  assert.equal(calls, 1);
+});
 function successModel(calls) {
   return { async *stream({ messages, tools, purpose }) {
     calls.push({ messages, tools, purpose });
@@ -71,7 +89,7 @@ test('successful tool-free summary replaces only completed prefix and preserves 
   assert.deepEqual(input, raw, 'original history is immutable');
 });
 
-test('summary rejects tool calls and malformed end without altering messages', async () => {
+test('2.1.88 proactive fallback ignores unsafe or incomplete summaries without altering messages', async () => {
   const src = structuredClone(raw);
   for (const events of [
     [{ type: 'tool_use', id: 'illegal', name: 'Write', input: { file_path: 'a' } },
@@ -81,9 +99,12 @@ test('summary rejects tool calls and malformed end without altering messages', a
       { type: 'message_end', stopReason: 'max_tokens' }],
   ]) {
     const compact = createAutoCompact({ thresholdTokens: 350 });
-    await assert.rejects(compact.compact({ messages: src, model: {
+    const outcome = await compact.compact({ messages: src, model: {
       async *stream() { for (const e of events) yield e; },
-    } }), /summary|Summary|Unexpected/);
+    } });
+    assert.equal(outcome.compacted, false);
+    assert.equal(outcome.messages, src);
+    assert.match(outcome.error.message, /summary|Summary|Unexpected/);
     assert.deepEqual(src, raw);
     assert.equal(compact.consecutiveFailures, 1);
   }
@@ -94,7 +115,9 @@ test('compact failure circuit breaker stops repeated API calls after three failu
   const compact = createAutoCompact({ thresholdTokens: 350 });
   const model = { async *stream() { requests++; throw new Error('provider rejected summary'); } };
   for (let i = 0; i < 3; i++) {
-    await assert.rejects(compact.compact({ messages: raw, model }), /provider rejected summary/);
+    const outcome = await compact.compact({ messages: raw, model });
+    assert.equal(outcome.compacted, false);
+    assert.match(outcome.error.message, /provider rejected summary/);
   }
   const skipped = await compact.compact({ messages: raw, model });
   assert.equal(skipped.compacted, false);
@@ -191,4 +214,292 @@ test('disabled compaction does not inspect or rewrite unsupported provider messa
   });
   assert.equal(result.compacted, false);
   assert.equal(result.messages, unsupported, 'disabled mode preserves object identity');
+});
+
+
+test('2.1.88 proactive summary quality failure does not abort a healthy multi-turn Query', async () => {
+  const history = structuredClone(raw);
+  const snapshot = structuredClone(history);
+  let summaryRequests = 0, normalRequests = 0, contextErrors = 0;
+  const autoCompact = createAutoCompact({ thresholdTokens: 300 });
+  const model = { async *stream({ purpose, tools, messages }) {
+    if (purpose === 'compact') {
+      summaryRequests++;
+      assert.deepEqual(tools, []);
+      // Valid model completion, but an oversized summary cannot materially
+      // shrink the request. Original autoCompactIfNeeded catches and resumes.
+      yield { type: 'text_delta', text: 'redundant context '.repeat(700) };
+      yield { type: 'message_end', stopReason: 'end_turn' };
+      return;
+    }
+    normalRequests++;
+    assert.deepEqual(messages, [...snapshot, user('continue')]);
+    yield { type: 'text_delta', text: 'Healthy turn completed.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const loop = new AgentLoop({
+    model,
+    tools: new ToolRegistry(),
+    compactContext: context => autoCompact.compact(context),
+  });
+  loop.on('contextCompactError', () => { contextErrors++; });
+  const response = await loop.run({ messages: history, input: 'continue' });
+  assert.equal(response.finalMessage.content[0].text, 'Healthy turn completed.');
+  assert.equal(normalRequests, 1);
+  assert.equal(summaryRequests, 1);
+  assert.equal(contextErrors, 1);
+  assert.equal(autoCompact.consecutiveFailures, 1);
+  assert.deepEqual(history, snapshot);
+});
+
+test('minimum summary envelope prevents futile low-threshold proactive requests', async () => {
+  let found;
+  const stub = 'This conversation continues after context compaction. Earlier completed work:\n' +
+    'x'.repeat(12) + '\nRecent messages follow unchanged.';
+  // Search for a stable boundary where the old suffix-only 80% check would
+  // pass yet the fixed summary envelope makes the goal impossible.
+  for (let count = 1; count < 4000; count++) {
+    const candidate = [
+      user('task'),
+      assistant('old', 'old-sig'), result('old', 'older output '.repeat(50)),
+      assistant('newer', 'sig-n'), result('newer', 'r'.repeat(count)),
+      assistant('fresh', 'sig-f'), result('fresh', 'short'),
+    ];
+    const split = selectCompletedPrefix(candidate, 2);
+    if (!split) continue;
+    const estimated = estimateMessageTokens(candidate);
+    if (estimateMessageTokens(split.recent) < estimated * 0.8 &&
+      estimateMessageTokens([user(stub), ...split.recent]) >= estimated * 0.8) {
+      found = candidate;
+      break;
+    }
+  }
+  assert.ok(found, 'fixture must land strictly between old and fixed guards');
+  const compact = createAutoCompact({ thresholdTokens: 100 });
+  let calls = 0;
+  const output = await compact.compact({
+    messages: found,
+    model: { async *stream() { calls++; throw new Error('unexpected summary call'); } },
+  });
+  assert.equal(output.compacted, false);
+  assert.equal(output.messages, found);
+  assert.equal(calls, 0);
+  assert.equal(compact.consecutiveFailures, 0);
+});
+
+test('force=true retains explicit error propagation for unrecoverable provider overflow', async () => {
+  const compact = createAutoCompact({ thresholdTokens: 300 });
+  const model = { async *stream() { throw new Error('provider summary rejected'); } };
+  await assert.rejects(compact.compact({ messages: raw, model, force: true }),
+    /provider summary rejected/);
+  assert.equal(compact.consecutiveFailures, 1);
+});
+
+
+test('2.1.88 prompt-too-long summary retry trims the reported token gap in whole API rounds', async () => {
+  const { ModelContextLengthError } = await import('../src/anthropic-messages-adapter.js');
+  const messages = [
+    user('initial request'),
+    assistant('read-1', 'sig-1'), result('read-1', 'old first file\n'.repeat(1800)),
+    assistant('read-2', 'sig-2'), result('read-2', 'old second file\n'.repeat(1800)),
+    assistant('read-3', 'sig-3'), result('read-3', 'old third file\n'.repeat(1800)),
+    assistant('read-4', 'sig-4'), result('read-4', 'recent file'),
+    assistant('read-5', 'sig-5'), result('read-5', 'latest file'),
+    user('continue safely'),
+  ];
+  const prefixGroups = groupMessagesByApiRound(
+    selectCompletedPrefix(messages, 2).prefix);
+  const excess = estimateMessageTokens(prefixGroups[0]) + 1;
+  const requests = [];
+  const model = { async *stream({ messages: attempt, tools, purpose }) {
+    requests.push({ messages: structuredClone(attempt), tools, purpose });
+    if (requests.length === 1) {
+      throw new ModelContextLengthError(
+        'prompt is too long: ' + String(10000 + excess) + ' tokens > 10000 maximum');
+    }
+    yield { type: 'text_delta', text: 'Historical completed work summarized safely.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const compactor = createAutoCompact({ thresholdTokens: 100 });
+  const answer = await compactor.compact({ messages, model, force: true });
+  assert.equal(requests.length, 2);
+  assert.equal(answer.compacted, true);
+  assert.deepEqual(requests.map(x => x.tools), [[], []]);
+  assert.deepEqual(requests.map(x => x.purpose), ['compact', 'compact']);
+  assert.match(requests[1].messages[0].content, /Older conversation rounds omitted/);
+  assert.equal(requests[1].messages[1].content[0].signature, 'sig-2',
+    'reported token gap must remove the first assistant round, not half a tool pair');
+  assert.equal(answer.messages[1].content[0].signature, 'sig-4');
+  assert.equal(answer.messages[3].content[0].signature, 'sig-5');
+  assert.equal(messages[1].content[0].signature, 'sig-1',
+    'failed summary attempts must not mutate the original history');
+});
+
+test('2.1.304 rapid refill breaker stops a fourth compact within three internal rounds', async () => {
+  const { RapidRefillBreakerError } = await import('../src/legacy-compact/auto-compact.js');
+  const chainId = {};
+  const controller = createAutoCompact({ thresholdTokens: 100 });
+  let summaries = 0;
+  const model = { async *stream({ purpose, tools }) {
+    assert.equal(purpose, 'compact'); assert.deepEqual(tools, []);
+    summaries++;
+    yield { type: 'text_delta', text: 'Earlier work completed and checked successfully.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  for (let turn = 1; turn <= 3; turn++) {
+    const output = await controller.compact({ messages: raw, model, chainId, turn });
+    assert.equal(output.compacted, true);
+  }
+  await assert.rejects(controller.compact({
+    messages: raw, model, chainId, turn: 4,
+  }), error => error instanceof RapidRefillBreakerError &&
+    error.code === 'rapid_refill_breaker_tripped');
+  assert.equal(summaries, 3, 'fourth compaction must be stopped before provider call');
+  // Another user prompt must not inherit a previous tool-chain breaker.
+  const fresh = await controller.compact({ messages: raw, model, chainId: {}, turn: 1 });
+  assert.equal(fresh.compacted, true);
+  assert.equal(summaries, 4);
+});
+
+test('forced provider overflow can still compact after the proactive failure circuit opens', async () => {
+  const controller = createAutoCompact({ thresholdTokens: 100 });
+  let attempts = 0;
+  const model = { async *stream({ purpose }) {
+    assert.equal(purpose, 'compact');
+    attempts++;
+    if (attempts <= 3) throw new Error('network dropped summary response');
+    yield { type: 'text_delta', text: 'All earlier tasks completed and checked.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  for (let i = 0; i < 3; i++) {
+    const x = await controller.compact({ messages: raw, model });
+    assert.equal(x.compacted, false);
+  }
+  assert.equal(controller.consecutiveFailures, 3);
+  const forced = await controller.compact({ messages: raw, model, force: true });
+  assert.equal(forced.compacted, true);
+  assert.equal(attempts, 4);
+});
+
+
+test('2.1.88 measured usage counts cache input/output once and estimates only trailing tool messages', async () => {
+  const { tokenCountWithEstimation, getTokenCountFromUsage } =
+    await import('../src/legacy-compact/auto-compact.js');
+  const measured = { input_tokens: 100, cache_read_input_tokens: 250,
+    cache_creation_input_tokens: 50, output_tokens: 17 };
+  assert.equal(getTokenCountFromUsage(measured), 417);
+  const transcript = [
+    user('an extremely long old conversation '.repeat(100)),
+    { ...assistant('call', 'opaque'), usage: measured },
+    result('call', 'new tool result'),
+  ];
+  assert.equal(tokenCountWithEstimation(transcript),
+    417 + estimateMessageTokens(transcript.slice(2)));
+  assert.ok(tokenCountWithEstimation(transcript) < estimateMessageTokens(transcript));
+});
+
+test('partial streaming usage is not treated as a completed context measurement', async () => {
+  const { getTokenCountFromUsage, tokenCountWithEstimation } =
+    await import('../src/legacy-compact/auto-compact.js');
+  assert.equal(getTokenCountFromUsage({ input_tokens: 150000 }), undefined,
+    'message_start input-only snapshot is not a final usage anchor');
+  assert.equal(getTokenCountFromUsage({ input_tokens: 7.5, output_tokens: 1.5 }), undefined);
+  assert.equal(getTokenCountFromUsage({ input_tokens: 7, output_tokens: 2,
+    cache_read_input_tokens: 1.5 }), undefined);
+  assert.equal(getTokenCountFromUsage({ input_tokens: 7, output_tokens: 2,
+    cache_read_input_tokens: 3, cache_creation_input_tokens: 4 }), 16);
+  const transcript = structuredClone(raw);
+  transcript[3].usage = { input_tokens: 150000 };
+  assert.equal(tokenCountWithEstimation(transcript),
+    estimateMessageTokens(transcript));
+  const compactor = createAutoCompact({ thresholdTokens: 60000 });
+  let samples = 0;
+  const output = await compactor.compact({ messages: transcript, model: {
+    async *stream() { samples++; throw new Error('must not summarize'); },
+  } });
+  assert.equal(output.compacted, false);
+  assert.equal(samples, 0);
+});
+
+test('compaction ignores stale usage while preserving complete signed recent messages', async () => {
+  const { tokenCountWithEstimation } =
+    await import('../src/legacy-compact/auto-compact.js');
+  const input = structuredClone(raw);
+  input[3].usage = { input_tokens: 125000, output_tokens: 200 };
+  const controller = createAutoCompact({ thresholdTokens: 60000 });
+  let summaryCalls = 0;
+  const model = { async *stream() {
+    summaryCalls++;
+    yield { type: 'text_delta', text: 'Earlier project reads finished without errors.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const answer = await controller.compact({ messages: input, model });
+  assert.equal(answer.compacted, true, answer.error?.stack ??
+    `Compaction returned ${JSON.stringify({ estimatedTokens: answer.estimatedTokens, contextTokens: answer.contextTokens })}`);
+  assert.equal(summaryCalls, 1);
+  assert.equal(answer.contextTokens, tokenCountWithEstimation(input));
+  assert.deepEqual(answer.messages[1].usage, input[3].usage,
+    'retain the original provider usage without changing signed message metadata');
+  assert.equal(answer.messages[1].content[0].signature, 'sig-2');
+  assert.equal(answer.messages[3].content[0].signature, 'sig-3');
+  assert.equal(input[3].usage.input_tokens, 125000, 'source transcript is unchanged');
+  assert.equal(tokenCountWithEstimation(answer.messages),
+    estimateMessageTokens(answer.messages));
+});
+
+test('context-window and output reservation limit high configured compact threshold', async () => {
+  const input = structuredClone(raw);
+  input[3].usage = { input_tokens: 950, output_tokens: 5 };
+  const controller = createAutoCompact({
+    thresholdTokens: 2000,
+    contextWindowTokens: 1100,
+    reservedOutputTokens: 100,
+    contextSafetyTokens: 25,
+  });
+  let summaries = 0;
+  const model = { async *stream() {
+    summaries++;
+    yield { type: 'text_delta', text: 'Historical read operations completed successfully.' };
+    yield { type: 'message_end', stopReason: 'end_turn' };
+  } };
+  const result = await controller.compact({ messages: input, model });
+  assert.equal(result.compacted, true);
+  assert.equal(summaries, 1);
+});
+
+
+test('real usage from before compact is invalidated until a fresh post-compact response exists', async () => {
+  const copy = structuredClone(raw);
+  // A genuine provider usage value refers to a much larger pre-compact
+  // context than the retained recent API-round payloads.
+  copy[5].usage = {
+    input_tokens: 850000, cache_read_input_tokens: 12000,
+    output_tokens: 500,
+  };
+  const compact = createAutoCompact({ thresholdTokens: 300 });
+  const response = await compact.compact({ messages: copy, model: {
+    async *stream({ purpose, tools }) {
+      assert.equal(purpose, 'compact');
+      assert.deepEqual(tools, []);
+      yield { type: 'text_delta',
+        text: 'Earlier project tools completed; only the latest rounds remain.' };
+      yield { type: 'message_end', stopReason: 'end_turn' };
+    },
+  }, force: true });
+  assert.equal(response.compacted, true);
+  assert.deepEqual(response.messages.slice(1), copy.slice(3),
+    'do not change protected or signed recent messages');
+  assert.equal(response.messages[0].__compactRetainedMessages, copy.length - 3);
+  assert.equal(tokenCountWithEstimation(response.messages),
+    estimateMessageTokens(response.messages),
+    'must ignore old 862k-token usage after compact');
+
+  const continued = [...response.messages, {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'New response' }],
+    usage: { input_tokens: 150, output_tokens: 10 },
+  }, user('next')];
+  assert.equal(tokenCountWithEstimation(continued),
+    160 + estimateMessageTokens([continued.at(-1)]),
+    'fresh usage must become authoritative after the compaction boundary');
 });

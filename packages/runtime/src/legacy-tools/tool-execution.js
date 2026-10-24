@@ -204,6 +204,7 @@ async function checkPermissionsAndCallTool(
  */
 export async function invokeToolCallAndMapResult(tool, input, {
   toolUseId, signal, messages = [], assistantMessage, onProgress,
+  onExecutionStart,
 } = {}) {
   if (typeof toolUseId !== 'string' || !toolUseId) {
     throw new TypeError('An authenticated toolUseId is required.');
@@ -221,6 +222,9 @@ export async function invokeToolCallAndMapResult(tool, input, {
       behavior: 'deny',
       reason: 'Nested permission requests are not supported by this CLI.',
     });
+    if (signal?.aborted) throw cancelledToolCall(signal);
+    // Record real invocation, not queue admission or permission prompting.
+    onExecutionStart?.();
     const toolResult = await tool.call(
       structuredClone(input),
       { toolUseId, signal, messages: structuredClone(messages) },
@@ -244,6 +248,8 @@ export async function invokeToolCallAndMapResult(tool, input, {
     if (typeof tool.execute !== 'function') {
       throw new TypeError('Registered tool has no callable implementation.');
     }
+    if (signal?.aborted) throw cancelledToolCall(signal);
+    onExecutionStart?.();
     const output = await tool.execute(structuredClone(input), {
       toolUseId, signal, messages: structuredClone(messages),
     });

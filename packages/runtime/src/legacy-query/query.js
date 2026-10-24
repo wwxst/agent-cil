@@ -81,6 +81,9 @@ export async function query({
       const initialHistory = structuredClone(messages);
       if (input !== undefined) initialHistory.push({ role: 'user', content: input });
       const seenToolUseIds = new Set();
+      // Stable identity for the whole internal tool chain, not the CLI
+      // process lifetime: new user prompts must not inherit rapid refills.
+      const chainId = {};
       emit('runStarted', { messageCount: initialHistory.length });
 
       // Old query.ts State: mutable across model/tool iterations. Only the
@@ -98,11 +101,16 @@ export async function query({
         if (compactContext) {
           const before = history;
           try {
-            const result = await compactContext({ messages: history, model, signal });
+            const result = await compactContext({ messages: history, model, signal, chainId, turn });
             abortIfNeeded(signal);
             if (!result || !Array.isArray(result.messages)) {
               throw new ModelProtocolError('Compaction returned invalid messages.');
             }
+            // The 2.1.88 autoCompactIfNeeded contract returns a failed
+            // proactive attempt as wasCompacted:false; it must not stop the
+            // current tool or model task. Surface the error for observability,
+            // while retaining the original full history.
+            if (result.error) emit('contextCompactError', { turn, error: result.error });
             if (result.compacted) {
               history = structuredClone(result.messages);
               state.messages = history;
@@ -127,6 +135,7 @@ export async function query({
         let stopReason;
         let messageEnded = false;
         let sawStreamEvent = false;
+        let lastUsage;
         // Original 2.1.88 query.ts starts its StreamingToolExecutor before
         // the model response is finished. Keep this existing port and its
         // ordered queue; do not create another dispatch system.
@@ -137,7 +146,7 @@ export async function query({
         const executor = new StreamingToolExecutor({
           getTool: name => tools.get(name),
           signal,
-          execute: (block, { signal: toolSignal }) =>
+          execute: (block, { signal: toolSignal, onToolExecutionStarted }) =>
             runToolUse(
               block,
               assistantMessage,
@@ -145,7 +154,7 @@ export async function query({
                 executeTool(toolUse, {
                   history, turn, signal: verifiedSignal,
                   validatedTool, validatorContext: toolUseContext,
-                  assistantMessage, onToolProgress,
+                  assistantMessage, onToolProgress, onToolExecutionStarted,
                   speculative: earlyIds.has(block.id),
                 }),
               {
@@ -249,6 +258,12 @@ export async function query({
               stopReason = reason;
               messageEnded = true;
             } else if (event.type === 'usage') {
+              // Messages API yields initial and final usage snapshots.
+              // Store only the most recent complete snapshot, never sum
+              // snapshots (they are not per-event billable deltas).
+              if (event.usage && typeof event.usage === 'object') {
+                lastUsage = structuredClone(event.usage);
+              }
               emit('usage', { turn, usage: event.usage });
             } else {
               throw new ModelProtocolError('Unsupported model stream event: ' + event.type);
@@ -277,7 +292,7 @@ export async function query({
             recoveredTurn = turn;
             try {
               const compacted = await compactContext({
-                messages: history, model, signal, force: true,
+                messages: history, model, signal, force: true, chainId, turn,
               });
               abortIfNeeded(signal);
               if (compacted?.compacted && Array.isArray(compacted.messages)) {
@@ -312,6 +327,10 @@ export async function query({
         const needsFollowUp = toolUses.length > 0;
 
         assistantMessage.stop_reason = stopReason;
+        // Keep accounting outside content blocks so protected thinking/tool
+        // payloads remain unchanged. Anthropic adapter serializes role/content
+        // only; Query compaction may use usage as the latest accurate anchor.
+        if (lastUsage) assistantMessage.usage = lastUsage;
         history.push(assistantMessage);
         emit('assistantMessage', { turn, message: structuredClone(assistantMessage) });
 
@@ -328,12 +347,14 @@ export async function query({
 
         // Resume deferred tools after the complete model message has passed
         // protocol validation. Preserve model order and exclusive barriers.
-        for (const toolUse of toolUses.slice(scheduledCount)) {
-          abortIfNeeded(signal);
-          executor.addTool(toolUse);
-        }
         const toolResults = [];
         try {
+          // Register even deferred tools if a Ctrl+C arrived between final
+          // model message and execution. The executor refuses to start new
+          // tools once cancelled and can close every tool_use pairing.
+          for (const toolUse of toolUses.slice(scheduledCount)) {
+            executor.addTool(toolUse);
+          }
           for await (const update of executor.getRemainingResults()) {
             abortIfNeeded(signal);
             if (update.progress !== undefined) emit('toolProgress', { turn, progress: update.progress });
@@ -348,11 +369,33 @@ export async function query({
               }
             }
           }
+          abortIfNeeded(signal);
         } catch (error) {
-          executor.discard();
+          if (signal?.aborted) {
+            // 2.1.88 query.ts drains outstanding results on abort; 2.1.304
+            // also records call-started vs queued state. The resumed CLI
+            // must know about a successful Edit even if subsequent Bash was
+            // cancelled. Pair all IDs before checkpointing (no partial batch).
+            try {
+              const interrupted = await executor.takeInterruptedResults();
+              if (interrupted.length === toolUses.length &&
+                interrupted.every((block, i) =>
+                  block?.type === 'tool_result' && block.tool_use_id === toolUses[i].id)) {
+                history.push({ role: 'user', content: interrupted });
+                emit('turnFinished', {
+                  turn, stopReason, interrupted: true,
+                  toolResultCount: interrupted.length,
+                  committedMessages: structuredClone(history),
+                });
+              }
+            } finally {
+              executor.discard();
+            }
+          } else {
+            executor.discard();
+          }
           throw error;
         }
-        abortIfNeeded(signal);
         if (toolResults.length !== toolUses.length) {
           throw new ModelProtocolError('Legacy scheduler returned a mismatched number of tool results.');
         }

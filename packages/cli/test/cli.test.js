@@ -18,6 +18,20 @@ import {
   resolveWorkspacePath,
 } from '../src/index.js';
 
+// Probe capability rather than skipping all Windows hosts: developer mode and
+// elevated Windows runners can execute the real symlink safety assertions.
+const symlinkProbe = await mkdtemp(join(tmpdir(), 'agent-cil-symlink-probe-'));
+let symlinkUnavailable = false;
+try {
+  await writeFile(join(symlinkProbe, 'target'), 'probe');
+  await symlink(join(symlinkProbe, 'target'), join(symlinkProbe, 'link'));
+} catch (error) {
+  if (process.platform !== 'win32' || error.code !== 'EPERM') throw error;
+  symlinkUnavailable = 'Windows file symlink privilege is unavailable';
+} finally {
+  await rm(symlinkProbe, { recursive: true, force: true });
+}
+
 test('version and help are handled before model credentials are needed', () => {
   assert.deepEqual(parseArgs(['--version']), { mode: 'version' });
   assert.deepEqual(parseArgs(['--help']), { mode: 'help' });
@@ -109,7 +123,7 @@ test('workspace path resolution rejects traversal outside the workspace', () => 
   assert.throws(() => resolveWorkspacePath(root, '../outside.txt'), /escapes the workspace/);
 });
 
-test('CLI permission policy checks final Write/Edit paths before asking for approval', async () => {
+test('CLI permission policy checks final Write/Edit paths before asking for approval', { skip: symlinkUnavailable }, async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-policy-workspace-'));
   const outside = await mkdtemp(join(tmpdir(), 'agent-cil-policy-outside-'));
   try {
@@ -257,7 +271,7 @@ test('AgentLoop denies a rewritten Edit target outside the workspace before appr
   }
 });
 
-test('Write refuses a symlink installed during the approval window', async () => {
+test('Write refuses a symlink installed during the approval window', { skip: symlinkUnavailable }, async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-write-race-'));
   const outside = await mkdtemp(join(tmpdir(), 'agent-cil-write-race-outside-'));
   const outsideFile = join(outside, 'secret.txt');
@@ -299,7 +313,7 @@ test('Write refuses a symlink installed during the approval window', async () =>
   }
 });
 
-test('Edit refuses a symlink installed during the approval window', async () => {
+test('Edit refuses a symlink installed during the approval window', { skip: symlinkUnavailable }, async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-edit-race-'));
   const outside = await mkdtemp(join(tmpdir(), 'agent-cil-edit-race-outside-'));
   const outsideFile = join(outside, 'secret.txt');
@@ -777,7 +791,7 @@ test('CLI denies Write in non-interactive print mode and returns the denial to t
   }
 });
 
-test('file tools reject symbolic links that resolve outside the workspace', async () => {
+test('file tools reject symbolic links that resolve outside the workspace', { skip: symlinkUnavailable }, async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-safe-workspace-'));
   const outside = await mkdtemp(join(tmpdir(), 'agent-cil-outside-'));
   try {

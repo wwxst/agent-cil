@@ -14,6 +14,18 @@ import { ModelContextLengthError } from '../anthropic-messages-adapter.js';
 const MIN_SUMMARY_CHARS = 12;
 const MAX_SUMMARY_CHARS = 16000;
 const MAX_CONSECUTIVE_FAILURES = 3;
+// 2.1.88 compact.ts MAX_PTL_RETRIES means retries AFTER initial request.
+const MAX_PTL_RETRIES = 3;
+const RAPID_REFILL_TURN_LIMIT = 3;
+const RAPID_REFILL_MAX_CONSECUTIVE = 3;
+
+export class RapidRefillBreakerError extends Error {
+  constructor() {
+    super('Context repeatedly refilled in fewer than 3 tool turns after compaction; stopping this agent chain to avoid a compaction loop.');
+    this.name = 'RapidRefillBreakerError';
+    this.code = 'rapid_refill_breaker_tripped';
+  }
+}
 
 function aborted(signal) {
   if (!signal?.aborted) return;
@@ -24,6 +36,20 @@ function aborted(signal) {
 }
 function isRecord(x) {
   return x !== null && typeof x === 'object' && !Array.isArray(x);
+}
+
+// Direct port of 2.1.88 services/api/errors.ts:
+ // parsePromptTooLongTokenCounts() + getPromptTooLongTokenGap().
+export function getPromptTooLongTokenGap(error) {
+  const rawMessage = error?.message;
+  if (!(error instanceof ModelContextLengthError) || typeof rawMessage !== 'string') {
+    return undefined;
+  }
+  const match = rawMessage.match(/prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)/i);
+  if (!match) return undefined;
+  const actual = Number(match[1]), limit = Number(match[2]);
+  const gap = actual - limit;
+  return Number.isSafeInteger(gap) && gap > 0 ? gap : undefined;
 }
 
 function approximateTokens(text) {
@@ -65,6 +91,57 @@ export function estimateMessageTokens(messages) {
  * message per API round, not a separate message for each streaming block.
  * Each group starts at a fresh assistant and includes its matching tool_result.
  */
+/**
+ * Port of CLI 2.1.88 utils/tokens.ts:
+ * getTokenCountFromUsage() + tokenCountWithEstimation().
+ * The Anthropic/DeepSeek Messages API emits cumulative snapshots. Take the
+ * latest complete response, including cache input and output only ONCE, and
+ * estimate only messages appended after that assistant response.
+ */
+export function getTokenCountFromUsage(usage) {
+  // CLI 2.1.88 utils/tokens.ts requires both input_tokens and output_tokens.
+  // A Messages API message_start snapshot may contain only input tokens;
+  // treating the absent final output as zero corrupts the next threshold.
+  if (!isRecord(usage) || !Number.isSafeInteger(usage.input_tokens) ||
+    usage.input_tokens < 0 || !Number.isSafeInteger(usage.output_tokens) ||
+    usage.output_tokens < 0) return undefined;
+  let total = 0;
+  for (const field of ['input_tokens', 'cache_creation_input_tokens',
+    'cache_read_input_tokens', 'output_tokens']) {
+    const value = usage[field] ?? 0;
+    if (!Number.isSafeInteger(value) || value < 0) return undefined;
+    total += value;
+  }
+  return Number.isSafeInteger(total) ? total : undefined;
+}
+
+export function tokenCountWithEstimation(messages) {
+  // 2.1.88 utils/tokens.ts anchors on the most recent REAL response, but
+  // that usage is stale immediately after a compact boundary. 2.1.304
+  // excludes pre-compact response usage until a new post-compact response
+  // arrives. Our synthetic summary marks how many recent original messages
+  // were retained; do not mutate their signed assistant blocks or usage.
+  let firstPostCompactResponse = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role === 'user' &&
+      Number.isSafeInteger(message.__compactRetainedMessages) &&
+      message.__compactRetainedMessages >= 0) {
+      firstPostCompactResponse = i + 1 + message.__compactRetainedMessages;
+      break;
+    }
+  }
+  for (let i = messages.length - 1; i >= firstPostCompactResponse; i--) {
+    const message = messages[i];
+    if (message?.role !== 'assistant' || !message.usage) continue;
+    const measured = getTokenCountFromUsage(message.usage);
+    if (measured !== undefined) {
+      return measured + estimateMessageTokens(messages.slice(i + 1));
+    }
+  }
+  return estimateMessageTokens(messages);
+}
+
 export function groupMessagesByApiRound(messages) {
   const groups = [];
   let current = [];
@@ -136,29 +213,78 @@ export function formatCompactSummary(summary) {
  * Not a second Agent Runtime. Uses the same model.stream interface, but no
  * tool schemas, tool loop, tool permissions or user-facing deltas.
  */
-export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}) {
+export function createAutoCompact({
+  thresholdTokens, keepRecentRounds = 2,
+  contextWindowTokens, reservedOutputTokens = 0, contextSafetyTokens = 13000,
+} = {}) {
   if (!Number.isSafeInteger(thresholdTokens) || thresholdTokens < 0) {
     throw new RangeError('Compact threshold must be a non-negative integer.');
   }
+  // Original getAutoCompactThreshold = effective context window minus buffer;
+  // 2.1.304 additionally reserves output tokens. Respect explicit low test
+  // thresholds, while limiting excessively high thresholds to model capacity.
+  const effectiveThreshold = Number.isSafeInteger(contextWindowTokens) &&
+    contextWindowTokens > 0
+    ? Math.min(thresholdTokens,
+      Math.max(1, contextWindowTokens - reservedOutputTokens - contextSafetyTokens))
+    : thresholdTokens;
   let consecutiveFailures = 0;
+  // 2.1.304 XYo/ySr/kfo state: only rapid SUCCESSFUL compactions in the
+  // same query chain count; separate user prompts start a fresh chain.
+  let activeChain;
+  let lastCompactTurn = null;
+  let consecutiveRapidRefills = 0;
   return {
-    async compact({ messages, model, signal, force = false } = {}) {
+    async compact({ messages, model, signal, force = false, chainId, turn } = {}) {
       aborted(signal);
+      if (chainId !== undefined && chainId !== activeChain) {
+        activeChain = chainId;
+        lastCompactTurn = null;
+        consecutiveRapidRefills = 0;
+      }
       // Disabled compaction must be a strict no-op, including for providers
       // with non-text content blocks that this first port cannot estimate.
-      if (thresholdTokens === 0 || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      if (thresholdTokens === 0 || (!force && consecutiveFailures >= MAX_CONSECUTIVE_FAILURES)) {
         return { messages, compacted: false };
       }
+      // Real API usage is authoritative for the next context threshold.
+      // The existing 20% *message payload* reduction guard, however, must
+      // compare like with like: never compare a provider usage snapshot
+      // against an unrelated local UTF-8 byte-estimated summary.
+      const contextTokens = tokenCountWithEstimation(messages);
       const estimatedTokens = estimateMessageTokens(messages);
       // 2.1.88 reactive recovery bypasses proactive threshold after the
       // server itself reports that the request cannot fit. Disabling compact
       // explicitly (threshold 0) remains authoritative.
-      if (!force && estimatedTokens < thresholdTokens) {
-        return { messages, compacted: false, estimatedTokens };
+      if (!force && contextTokens < effectiveThreshold) {
+        return { messages, compacted: false, estimatedTokens, contextTokens };
       }
       const selection = selectCompletedPrefix(messages, keepRecentRounds);
       if (!selection) return { messages, compacted: false, estimatedTokens };
       const { prefix, recent } = selection;
+      // Preserve the newer CLI's chain-local rapid-refill breaker, distinct
+      // from the older circuit breaker for three failed summary requests.
+      const withinSameChain = chainId !== undefined &&
+        lastCompactTurn !== null && Number.isSafeInteger(turn) &&
+        turn >= lastCompactTurn && turn - lastCompactTurn < RAPID_REFILL_TURN_LIMIT;
+      const nextRapidCount = withinSameChain ? consecutiveRapidRefills + 1 : 0;
+      if (!force && nextRapidCount >= RAPID_REFILL_MAX_CONSECUTIVE) {
+        throw new RapidRefillBreakerError();
+      }
+      // The original autoCompactIfNeeded returns wasCompacted:false on a
+      // proactive failure rather than aborting the active Query. Before even
+      // sampling, account for the mandatory new summary envelope, not just
+      // protected recent rounds: otherwise the best possible replacement can
+      // already exceed the 80% reduction requirement.
+      const minimalReplacement = [
+        { role: 'user', content:
+          'This conversation continues after context compaction. Earlier completed work:\n' +
+          'x'.repeat(MIN_SUMMARY_CHARS) + '\nRecent messages follow unchanged.' },
+        ...recent,
+      ];
+      if (!force && estimateMessageTokens(minimalReplacement) >= estimatedTokens * 0.8) {
+        return { messages, compacted: false, estimatedTokens };
+      }
       try {
         // Port 2.1.88 compact.ts truncateHeadForPTLRetry: when the summary
         // request is also too long, discard oldest WHOLE API-round groups,
@@ -166,7 +292,7 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
         // if truncation made the first request message an assistant.
         let summarize = structuredClone(prefix);
         let text = '', completed = false, stopReason;
-        for (let summaryAttempt = 0; summaryAttempt < 3; summaryAttempt++) {
+        for (let summaryAttempt = 0; summaryAttempt <= MAX_PTL_RETRIES; summaryAttempt++) {
           text = '';
           completed = false;
           stopReason = undefined;
@@ -204,7 +330,7 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
           } catch (error) {
             aborted(signal);
             if (!(error instanceof ModelContextLengthError) ||
-              sawSummaryEvent || summaryAttempt === 2) throw error;
+              sawSummaryEvent || summaryAttempt === MAX_PTL_RETRIES) throw error;
             // Remove our own synthetic marker before regrouping. Otherwise
             // the next overflow would drop only that marker and make no
             // forward progress (the same bug guarded by 2.1.88 compact.ts).
@@ -214,7 +340,22 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
               ? summarize.slice(1) : summarize;
             const groups = groupMessagesByApiRound(source);
             if (groups.length < 2) throw error;
-            const removed = Math.max(1, Math.floor(groups.length * 0.2));
+            // 2.1.88 truncateHeadForPTLRetry: remove whole API rounds
+            // until the *reported excess* tokens are covered. When provider
+            // omits this detail, fall back to 20% of the groups.
+            const gap = getPromptTooLongTokenGap(error);
+            let removed = 0;
+            if (gap !== undefined) {
+              let freed = 0;
+              for (const group of groups) {
+                freed += estimateMessageTokens(group);
+                removed++;
+                if (freed >= gap) break;
+              }
+            } else {
+              removed = Math.max(1, Math.floor(groups.length * 0.2));
+            }
+            removed = Math.min(removed, groups.length - 1);
             summarize = groups.slice(removed).flat();
             if (!validToolPairing(summarize)) throw error;
             if (summarize[0]?.role === 'assistant') {
@@ -231,7 +372,14 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
         const next = [
           { role: 'user', content:
             'This conversation continues after context compaction. Earlier completed work:\n' +
-            summary + '\nRecent messages follow unchanged.' },
+            summary + '\nRecent messages follow unchanged.',
+            // Metadata is intentionally not serialized to DeepSeek. It
+            // invalidates pre-compact usage without changing recent blocks.
+            __compactRetainedMessages: recent.length },
+          // CLI 2.1.88 retains the exact recent messages, including the
+          // provider usage snapshot. The compact-boundary marker above
+          // prevents stale usage from being used as a new context anchor
+          // without mutating signed tool history or other metadata.
           ...structuredClone(recent),
         ];
         const nextTokens = estimateMessageTokens(next);
@@ -239,15 +387,27 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
           throw new Error('Summary did not sufficiently reduce context size.');
         }
         consecutiveFailures = 0;
+        if (chainId !== undefined && Number.isSafeInteger(turn)) {
+          lastCompactTurn = turn;
+          consecutiveRapidRefills = nextRapidCount;
+        }
         return {
           messages: next, compacted: true,
-          estimatedTokens, compactedTokens: nextTokens,
+          estimatedTokens, contextTokens, compactedTokens: nextTokens,
           removedMessages: prefix.length,
         };
       } catch (error) {
         if (signal?.aborted) aborted(signal);
         consecutiveFailures++;
-        // Original conversation stays intact. Never half-commit a summary.
+        // Port of 2.1.88 autoCompactIfNeeded's catch branch: normal
+        // compaction failures do NOT abort a healthy development task.
+        // Circuit-break after 3 consecutive failures, and never commit a
+        // partial summary. Forced prompt-too-long recovery still throws the
+        // real failure rather than hiding an already-rejected model request.
+        if (!force) {
+          return { messages, compacted: false, estimatedTokens,
+            error, consecutiveFailures };
+        }
         throw error;
       }
     },

@@ -523,21 +523,53 @@ function abortError(signal) {
 }
 
 function signalProcessTree(child, signalName) {
-  if (!child.pid) return;
-  if (process.platform !== 'win32') {
-    try {
-      // detached=true gives the shell and its descendants a private process group.
-      process.kill(-child.pid, signalName);
-      return;
-    } catch {
-      // Fall back to signaling the direct child if the process group is unavailable.
-    }
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) return Promise.resolve();
+  if (process.platform === 'win32') {
+    // CLI 2.1.88 ShellCommand.#doKill uses tree-kill; its Windows branch
+    // executes taskkill /PID ... /T /F. Wait for that subprocess before
+    // completing Bash: cmd.exe exit alone does not prove descendant cleanup.
+    return new Promise(resolveKill => {
+      const root = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+      const exe = join(root, 'System32', 'taskkill.exe');
+      const fallback = () => {
+        try { child.kill(signalName); } catch { /* process already exited */ }
+      };
+      let killer;
+      try {
+        killer = spawn(exe, ['/PID', String(child.pid), '/T', '/F'], {
+          windowsHide: true, shell: false, stdio: 'ignore',
+        });
+      } catch {
+        fallback();
+        resolveKill(false);
+        return;
+      }
+      let settled = false;
+      const finish = succeeded => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        if (!succeeded) fallback();
+        resolveKill(succeeded);
+      };
+      // Failure of taskkill must not wedge an interrupted interactive CLI.
+      // Direct-child fallback is best effort, not proof of tree termination.
+      const watchdog = setTimeout(() => {
+        try { killer.kill(); } catch { /* best effort */ }
+        finish(false);
+      }, 4000);
+      watchdog.unref?.();
+      killer.once('error', () => finish(false));
+      killer.once('close', code => finish(code === 0));
+    });
   }
   try {
-    child.kill(signalName);
+    // Detached Unix shells and descendants share a private process group.
+    process.kill(-child.pid, signalName);
   } catch {
-    // The process may have exited between the state check and signal delivery.
+    try { child.kill(signalName); } catch { /* process already exited */ }
   }
+  return Promise.resolve();
 }
 
 function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
@@ -557,19 +589,25 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     let timedOut = false;
     let outputLimitHit = false;
     let spawnError;
-    let forceKillTimer;
+    let terminationPromise;
 
     const terminate = () => {
-      signalProcessTree(child, 'SIGTERM');
-      if (!forceKillTimer) {
-        forceKillTimer = setTimeout(() => {
-          try {
-            signalProcessTree(child, 'SIGKILL');
-          } catch {
-            // Best-effort escalation; close/error handling reports the command outcome.
-          }
-        }, 250);
+      if (terminationPromise) return terminationPromise;
+      const firstKill = signalProcessTree(child, 'SIGTERM');
+      if (process.platform === 'win32') {
+        // taskkill /T /F is already a forced tree kill.
+        terminationPromise = firstKill;
+      } else {
+        // In the original ShellCommand, SIGKILL reaches descendants even
+        // after the shell exits. Never cancel escalation on child.close:
+        // an orphan can ignore SIGTERM while its group leader has exited.
+        terminationPromise = Promise.resolve(firstKill).then(() => new Promise(resolveKill => {
+          setTimeout(() => {
+            void signalProcessTree(child, 'SIGKILL').finally(resolveKill);
+          }, 250);
+        }));
       }
+      return terminationPromise;
     };
 
     const timeout = setTimeout(() => {
@@ -578,8 +616,10 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     }, timeoutMs);
     timeout.unref?.();
 
-    const onAbort = () => terminate();
+    const onAbort = () => { void terminate(); };
     signal?.addEventListener('abort', onAbort, { once: true });
+    // An abort may race spawn and installation of the listener.
+    if (signal?.aborted) onAbort();
 
     const collect = (target, chunk) => {
       const remaining = Math.max(0, maxOutputBytes - outputBytes);
@@ -596,9 +636,25 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     child.once('error', error => {
       spawnError = error;
     });
-    child.once('close', code => {
+    // CLI 2.1.88 ShellCommand.#createResultPromise settles on 'exit',
+    // not 'close': a grandchild can inherit a shell's stdout/stderr handles
+    // even after the shell itself has exited. Waiting for 'close' in that
+    // case incorrectly blocks the CLI until the grandchild finishes.
+    // Preserve the output already collected from pipes, while giving normal
+    // exit a short opportunity to drain its final buffered output.
+    let finalized = false;
+    let drainTimer;
+    const finish = async code => {
+      if (finalized) return;
+      finalized = true;
+      clearTimeout(drainTimer);
       clearTimeout(timeout);
       signal?.removeEventListener('abort', onAbort);
+      // Process exit does not imply the requested process-tree kill is done.
+      // Keep waiting for taskkill or Unix SIGKILL escalation on cancellation.
+      if (terminationPromise) await terminationPromise;
+      child.stdout.destroy();
+      child.stderr.destroy();
 
       if (signal?.aborted) {
         rejectPromise(abortError(signal));
@@ -615,7 +671,13 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
       else if (spawnError) result.error = spawnError.message;
       else if (code !== 0) result.error = 'Command exited with status ' + String(code) + '.';
       resolvePromise(result);
+    };
+    child.once('exit', code => {
+      // 'close' normally arrives almost immediately; do not wait indefinitely
+      // when descendants still own a copy of the pipe's write handle.
+      drainTimer = setTimeout(() => { void finish(code); }, 250);
     });
+    child.once('close', code => { void finish(code); });
   });
 }
 
@@ -960,7 +1022,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   compactThreshold ??= provider === 'deepseek' ? 850000 : 0;
   const { createAutoCompact } = await import('../../runtime/src/legacy-compact/auto-compact.js');
-  const autoCompact = createAutoCompact({ thresholdTokens: compactThreshold });
+  const autoCompact = createAutoCompact({
+    thresholdTokens: compactThreshold,
+    contextWindowTokens: provider === 'deepseek' ? 1048576 : undefined,
+    reservedOutputTokens: options.maxTokens,
+  });
   const loop = new AgentLoop({
     model,
     tools,
@@ -988,17 +1054,39 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   let history = [];
   let activeController;
+  // Port 2.1.88 hooks/useExitOnCtrlCD.ts + useDoublePress.ts:
+  // cancel an active turn first; when idle, require a second Ctrl+C within
+  // the original 800ms window before ending the interactive session.
+  const DOUBLE_PRESS_TIMEOUT_MS = 800;
+  let lastIdleInterruptAt = 0;
   const onSigint = () => {
     if (activeController && !activeController.signal.aborted) {
+      lastIdleInterruptAt = 0;
       const error = new Error('Interrupted by user.');
       error.name = 'AbortError';
       activeController.abort(error);
-    } else {
-      rl?.close();
+      return;
+    }
+    if (activeController) {
+      // A second keypress while the first abort is in progress must not
+      // close readline; the model/tool cancellation must settle first.
+      return;
+    }
+    if (!rl || rl.closed) return;
+    const now = Date.now();
+    if (lastIdleInterruptAt !== 0 && now - lastIdleInterruptAt <= DOUBLE_PRESS_TIMEOUT_MS) {
+      rl.close();
       process.exitCode = 130;
+    } else {
+      lastIdleInterruptAt = now;
+      process.stderr.write('Press Ctrl+C again to exit.\n');
     }
   };
   process.on('SIGINT', onSigint);
+  // readline owns raw-mode Ctrl+C on a TTY (including Windows ConPTY).
+  // It emits SIGINT on the interface instead of the process. Without this
+  // listener Ctrl+C closes input while the active model keeps streaming.
+  rl?.on('SIGINT', onSigint);
   loop.on('toolCallStarted', ({ toolName }) => {
     if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
       process.stderr.write('[permission] auto-approved ' + toolName + ' (--allow-edits)\n');
@@ -1090,6 +1178,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 0;
   } finally {
     process.off('SIGINT', onSigint);
+    rl?.off('SIGINT', onSigint);
     rl?.close();
   }
 }

@@ -22,6 +22,20 @@ function syntheticError(id, reason, bashDescription = '') {
   return { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: true }] };
 }
 
+function neverInvokedResult(id) {
+  return { role: 'user', content: [{
+    type: 'tool_result', tool_use_id: id, is_error: true,
+    content: '<tool_use_error>Interrupted: tool was not started; no tool execution was attempted.</tool_use_error>',
+  }] };
+}
+
+function uncertainSideEffectResult(id) {
+  return { role: 'user', content: [{
+    type: 'tool_result', tool_use_id: id, is_error: true,
+    content: '<tool_use_error>Interrupted: tool call started; side effects may have occurred. Inspect files/processes before retry. Do not automatically replay.</tool_use_error>',
+  }] };
+}
+
 function toolNameDescription(block) {
   const summary = block.input?.command ?? block.input?.file_path ?? block.input?.pattern ?? '';
   const text = typeof summary === 'string' ? summary : '';
@@ -62,6 +76,9 @@ export class StreamingToolExecutor {
     this.#getTool = getTool;
     this.#signal = signal;
     this.#siblingController = new AbortController();
+    // Wake the result consumer if cancellation arrived while awaiting a
+    // pending worker. Query can then record an interrupted checkpoint.
+    signal?.addEventListener('abort', () => this.#notifyProgress(), { once: true });
   }
 
   discard() {
@@ -119,6 +136,18 @@ export class StreamingToolExecutor {
   // tools may execute concurrently only when no exclusive tool is running.
   #processQueue() {
     if (this.#discarded) return;
+    if (this.#signal?.aborted) {
+      // Original 2.1.88 executor yields synthetic tool_results for queued
+      // tools after interruption, but never executes them.
+      for (const tool of this.#tools) {
+        if (tool.status !== 'queued') continue;
+        tool.wasQueuedWhenCancelled = true;
+        tool.results = [syntheticError(tool.id, 'user_interrupted')];
+        tool.status = 'completed';
+      }
+      this.#notifyProgress();
+      return;
+    }
     for (const tool of this.#tools) {
       if (tool.status !== 'queued') continue;
       if (this.#canExecuteTool(tool.isConcurrencySafe)) {
@@ -166,13 +195,21 @@ export class StreamingToolExecutor {
       const messages = [];
       const initialReason = this.#abortReason(tool);
       if (initialReason) {
-        tool.results = [syntheticError(tool.id, initialReason, this.#erroredToolDescription)];
+        tool.results = [initialReason === 'user_interrupted' &&
+          this.#signal?.reason !== 'interrupt'
+          ? neverInvokedResult(tool.id)
+          : syntheticError(tool.id, initialReason, this.#erroredToolDescription)];
         tool.status = 'completed';
         return;
       }
       let selfErrored = false;
       try {
-        const source = this.#execute(tool.block, { signal: controller.signal });
+        // Admission/permission checks are not a side effect. Only the
+        // validated tool.call()/execute() boundary marks a real invocation.
+        const source = this.#execute(tool.block, {
+          signal: controller.signal,
+          onToolExecutionStarted: () => { tool.callStarted = true; },
+        });
         // runToolUse in 2.1.88 yields messages; the active AgentLoop adapter
         // returns its existing validated tool_result via a Promise.
         const iterator = source && typeof source[Symbol.asyncIterator] === 'function'
@@ -181,7 +218,14 @@ export class StreamingToolExecutor {
         for await (const update of iterator) {
           const reason = this.#abortReason(tool);
           if (reason && !selfErrored) {
-            messages.push(syntheticError(tool.id, reason, this.#erroredToolDescription));
+            // Preserve the old explicit 'interrupt' contract for tools
+            // opting into cancellation. New AbortError flow distinguishes
+            // already-returned results from side effects still uncertain.
+            messages.push(this.#signal?.reason === 'interrupt'
+              ? syntheticError(tool.id, reason, this.#erroredToolDescription)
+              : update?.message || (tool.callStarted
+                ? uncertainSideEffectResult(tool.id)
+                : syntheticError(tool.id, reason, this.#erroredToolDescription)));
             break;
           }
           if (update?.progress !== undefined) {
@@ -206,7 +250,12 @@ export class StreamingToolExecutor {
         }
       } catch (error) {
         const reason = this.#abortReason(tool);
-        messages.push(syntheticError(tool.id, reason || 'sibling_error', this.#erroredToolDescription));
+        messages.push(reason === 'user_interrupted' &&
+          this.#signal?.reason !== 'interrupt'
+          ? (tool.callStarted
+            ? uncertainSideEffectResult(tool.id)
+            : neverInvokedResult(tool.id))
+          : syntheticError(tool.id, reason || 'sibling_error', this.#erroredToolDescription));
       }
       tool.results = messages;
       tool.status = 'completed';
@@ -242,11 +291,74 @@ export class StreamingToolExecutor {
     }
   }
 
+  /**
+   * 2.1.88 query.ts drains completed and missing tool_result blocks when
+   * aborted; CLI 2.1.304 StreamingToolExecutor.takeFinishedResults() and
+   * discardAndAbortInFlight distinguish completed vs call-started vs queued.
+   * Adapt those same states for a single Node assistant message: preserve the
+   * actual result for completed tools, synthesize never-started results for
+   * queued tools and mark unresolved in-flight side effects as UNCERTAIN.
+   * Results remain in model tool_use order with exactly one tool_result/id.
+   */
+  async takeInterruptedResults({ settleTimeoutMs = 1500 } = {}) {
+    if (!this.#signal?.aborted) {
+      throw new TypeError('Interrupted results require an aborted signal.');
+    }
+    // Propagate cancellation to all workers; the Bash tool propagates this
+    // to the OS process tree. Never wait forever for uncooperative tools.
+    if (!this.#siblingController.signal.aborted) {
+      this.#siblingController.abort('user_interrupted');
+    }
+    const running = this.#tools
+      .filter(t => t.status === 'executing' && t.promise)
+      .map(t => t.promise);
+    if (running.length) {
+      let timer;
+      try {
+        await Promise.race([
+          Promise.allSettled(running),
+          new Promise(resolve => { timer = setTimeout(resolve, settleTimeoutMs); }),
+        ]);
+      } finally { clearTimeout(timer); }
+    }
+    const results = this.#tools.map(tool => {
+      if (tool.wasQueuedWhenCancelled) {
+        return {
+          type: 'tool_result', tool_use_id: tool.id, is_error: true,
+          content: '<tool_use_error>Interrupted: tool was not started; no tool execution was attempted.</tool_use_error>',
+        };
+      }
+      const blocks = tool.status === 'completed' || tool.status === 'yielded'
+        ? tool.results?.flatMap(m =>
+          m?.role === 'user' && Array.isArray(m.content)
+            ? m.content.filter(b => b?.type === 'tool_result' && b.tool_use_id === tool.id)
+            : []) ?? []
+        : [];
+      if (blocks.length === 1) return structuredClone(blocks[0]);
+      const maybeExecuted = tool.callStarted === true;
+      return {
+        type: 'tool_result', tool_use_id: tool.id, is_error: true,
+        content: maybeExecuted
+          ? '<tool_use_error>Interrupted: tool was started; side effects may have occurred or the result may have completed. Inspect the workspace before retrying; do not automatically replay this call.</tool_use_error>'
+          : '<tool_use_error>Interrupted: tool was not started; no tool execution was attempted.</tool_use_error>',
+      };
+    });
+    this.discard();
+    return results;
+  }
+
   #hasExecutingTools() { return this.#tools.some(t => t.status === 'executing'); }
   #hasUnfinishedTools() { return this.#tools.some(t => t.status !== 'yielded'); }
 
   async *getRemainingResults() {
     if (this.#discarded) return;
+    // A user abort must also wake the result consumer itself. Waiting only
+    // on tool.promise can hang forever if a third-party tool ignores its
+    // AbortSignal; Query needs to reach takeInterruptedResults() and create
+    // bounded, explicitly-uncertain tool_result blocks instead.
+    const wakeOnAbort = () => this.#notifyProgress();
+    this.#signal?.addEventListener('abort', wakeOnAbort, { once: true });
+    try {
     while (!this.#discarded && this.#hasUnfinishedTools()) {
       this.#processQueue();
       let producedUpdate = false;
@@ -255,6 +367,11 @@ export class StreamingToolExecutor {
         yield update;
       }
       if (this.#discarded) return;
+      // In an AbortError-based CLI cancellation, do not wait indefinitely
+      // for a hostile tool; Query uses takeInterruptedResults() with a bounded
+      // settle deadline. The explicit legacy 'interrupt' reason preserves
+      // the older blocking-tool contract.
+      if (this.#signal?.aborted && this.#signal.reason !== 'interrupt') return;
       // A later safe tool can already be completed but blocked on an earlier
       // result. Await the unfinished worker rather than spinning synchronously.
       if (this.#hasExecutingTools() && !producedUpdate) {
@@ -276,6 +393,9 @@ export class StreamingToolExecutor {
     }
     if (!this.#discarded) {
       for (const update of this.getCompletedResults()) yield update;
+    }
+    } finally {
+      this.#signal?.removeEventListener('abort', wakeOnAbort);
     }
   }
 }
