@@ -35,8 +35,12 @@ test('original JSONL append preserves complete ordered tool_result and resumes l
     assert.deepEqual(reopened.messages[2].content[0],
       transcript[2].content[0]);
     assert.equal(reopened.messages[3].content[0].text,'completed');
-    assert.equal((await stat(file)).mode & 0o777 & 0o077,0,
-      'POSIX journal must not grant group or other read permissions');
+    // Windows stat.mode does not encode NTFS ACLs. Only assert chmod-style
+    // 0600 semantics where the POSIX mode bits are authoritative.
+    if(process.platform!=='win32') {
+      assert.equal((await stat(file)).mode & 0o777 & 0o077,0,
+        'POSIX journal must not grant group or other read permissions');
+    }
     await reopened.close();
   });
 });
