@@ -75,6 +75,7 @@ export class AgentLoop extends EventEmitter {
   #approvalHandler;
   #maxTurns;
   #compactContext;
+  #toolResultStorage;
   #active = false;
 
   constructor({
@@ -84,6 +85,7 @@ export class AgentLoop extends EventEmitter {
     approvalHandler,
     maxTurns = 8,
     compactContext,
+    toolResultStorage,
   } = {}) {
     super();
     if (!model || typeof model.stream !== 'function') {
@@ -104,8 +106,14 @@ export class AgentLoop extends EventEmitter {
     if (compactContext !== undefined && typeof compactContext !== 'function') {
       throw new TypeError('compactContext must be a function.');
     }
+    if (toolResultStorage !== undefined &&
+      (typeof toolResultStorage?.workspace !== 'string' ||
+       typeof toolResultStorage?.directory !== 'string')) {
+      throw new TypeError('toolResultStorage requires workspace and directory paths.');
+    }
     this.#maxTurns = maxTurns;
     this.#compactContext = compactContext;
+    this.#toolResultStorage = toolResultStorage;
   }
 
   get active() {
@@ -419,6 +427,7 @@ export class AgentLoop extends EventEmitter {
       const result = await invokeToolCallAndMapResult(tool, executionInput, {
         toolUseId: toolUse.id, signal, messages: history, assistantMessage,
         onProgress: onToolProgress,
+        toolResultStorage: this.#toolResultStorage,
       });
       abortIfNeeded(signal);
       this.emit('toolCallFinished', {
