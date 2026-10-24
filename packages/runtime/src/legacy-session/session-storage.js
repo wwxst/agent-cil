@@ -12,6 +12,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, lstat, open, realpath, readFile, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { insertMessageChain, applyMessageChain } from './native-transcript-chain.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_JOURNAL_BYTES = 64 * 1024 * 1024;
@@ -142,6 +143,8 @@ export class SessionJournal {
   #poisoned=false;
   #lastEncoded='';
   #lastKind;
+  #nodes = new Map();
+  #leafUuid = null;
   constructor({path,lock,id,workspace}){
     this.#path=path;this.#lock=lock;this.#id=id;this.#workspace=workspace;
   }
@@ -165,18 +168,42 @@ export class SessionJournal {
       let record;
       try{record=JSON.parse(line);}catch{throw new Error('Corrupted session checkpoint JSONL.');}
       const {hash,...payload}=record;
-      if(payload.type!=='session_checkpoint' || payload.version!==1 ||
-        payload.sessionId!==this.#id || payload.workspace!==this.#workspace ||
+      if(payload.sessionId!==this.#id || payload.workspace!==this.#workspace ||
         !CHECKPOINT_TYPES.has(payload.kind) ||
         payload.sequence!==this.#sequence+1 ||
         payload.previousHash!==this.#previousHash ||
         hash!==digest(payload)) {
         throw new Error('Invalid or modified session checkpoint chain.');
       }
-      validateCommittedTranscript(payload.messages);
+      if (payload.type === 'session_checkpoint' && payload.version === 1) {
+        // Read-only migration of already shipped v1 whole-transcript records.
+        // New writes always use source-style UUID/parentUuid message chains.
+        if(this.#nodes.size)throw new Error('Cannot revert a session to legacy snapshots.');
+        validateCommittedTranscript(payload.messages);
+        this.#messages=structuredClone(payload.messages);
+        this.#leafUuid=null;
+      } else if(payload.type === 'session_commit' && payload.version === 2) {
+        if(this.#messages.length && !this.#leafUuid && !payload.migration)
+          throw new Error('Legacy session migration boundary is missing.');
+        if(payload.migration && (this.#leafUuid!==null || !this.#messages.length))
+          throw new Error('Invalid duplicate legacy migration.');
+        if(payload.root && this.#leafUuid && payload.kind!=='compact')
+          throw new Error('Only compact may reset the committed parent chain.');
+        if(!payload.root && !this.#leafUuid)
+          throw new Error('Incremental session message chain has no parent.');
+        const restored=applyMessageChain({
+          existing:this.#nodes,entries:payload.entries,leafUuid:payload.leafUuid,
+          sessionId:this.#id,allowRoot:payload.root,previousLeaf:this.#leafUuid,
+        });
+        validateCommittedTranscript(restored.messages);
+        this.#nodes=restored.map;
+        this.#leafUuid=payload.leafUuid;
+        this.#messages=restored.messages;
+      } else {
+        throw new Error('Unsupported session transcript record version.');
+      }
       this.#sequence=payload.sequence;
       this.#previousHash=hash;
-      this.#messages=structuredClone(payload.messages);
       this.#lastEncoded=JSON.stringify(this.#messages);
       this.#lastKind=payload.kind;
     }
@@ -198,11 +225,29 @@ export class SessionJournal {
     if(Buffer.byteLength(encoded)>MAX_CHECKPOINT_BYTES)
       throw new RangeError('Session checkpoint exceeds 8 MiB.');
     if(encoded===this.#lastEncoded)return;
+    // Source insertMessageChain() appends only new UUID-linked user/assistant
+    // messages; unlike the old v1 snapshot, the journal no longer rewrites
+    // or stores the entire conversation at every turn.
+    const migration=!this.#leafUuid && this.#messages.length>0;
+    const chain=insertMessageChain({
+      messages:JSON.parse(encoded),previousMessages:this.#messages,
+      previousLeaf:this.#leafUuid,sessionId:this.#id,kind,isMigration:migration,
+    });
+    if (!chain.entries.length) return;
+    const validated=applyMessageChain({
+      existing:this.#nodes,entries:chain.entries,
+      leafUuid:chain.leafUuid,sessionId:this.#id,
+      allowRoot:chain.root,previousLeaf:this.#leafUuid,
+    });
+    validateCommittedTranscript(validated.messages);
+    if (JSON.stringify(validated.messages)!==encoded)
+      throw new Error('Source parent chain reconstruction changed committed transcript.');
     const payload={
-      type:'session_checkpoint',version:1,sessionId:this.#id,
+      type:'session_commit',version:2,sessionId:this.#id,
       workspace:this.#workspace,kind,
       sequence:this.#sequence+1,previousHash:this.#previousHash,
-      messages:JSON.parse(encoded),
+      root:chain.root, ...(migration?{migration:true}:{}),
+      leafUuid:chain.leafUuid,entries:chain.entries,
     };
     const hash=digest(payload);
     const line=JSON.stringify({...payload,hash})+'\n';
@@ -216,7 +261,9 @@ export class SessionJournal {
       await handle.sync();
     }catch(error){this.#poisoned=true;throw error;}
     finally{await handle.close();}
-    this.#messages=structuredClone(messages);
+    this.#nodes=validated.map;
+    this.#leafUuid=chain.leafUuid;
+    this.#messages=validated.messages;
     this.#lastEncoded=encoded;
     this.#previousHash=hash;
     this.#lastKind=kind;
