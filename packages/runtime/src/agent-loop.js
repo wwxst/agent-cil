@@ -6,6 +6,7 @@ import { invokeToolCallAndMapResult } from './legacy-tools/tool-execution.js';
 import { runPreToolUseHooks, resolveHookPermissionDecision } from './legacy-tools/pretooluse-core.js';
 import { runPostToolUseHooks, runPostToolUseFailureHooks } from './legacy-tools/posttooluse-core.js';
 import { query } from './legacy-query/query.js';
+import { normalizeToolHookAttachmentsForAPI } from './legacy-query/normalize-hook-attachments.js';
 export { ModelProtocolError } from './legacy-query/query.js';
 import { resolveToolSpecificPermission } from './legacy-permissions/tool-specific-permission.js';
 
@@ -157,6 +158,10 @@ export class AgentLoop extends EventEmitter {
           this.#canStartToolDuringStream(toolUse, context),
         executeTool: (toolUse, context) => this.#executeTool(toolUse, context),
         getPostToolStop: () => this.#hookStopReason,
+        // Original query.ts normalizes Hook attachments after ordered
+        // tool_results, not at asynchronous Hook completion time.
+        getToolHookContext: ({ toolUses, turn }) =>
+          normalizeToolHookAttachmentsForAPI(this.#hookMessages, toolUses, turn),
         emit: (eventName, event) => this.emit(eventName, event),
       });
       if (this.#hookMessages.length) result.hookMessages = structuredClone(this.#hookMessages);
