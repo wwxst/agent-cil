@@ -306,3 +306,35 @@ test('interruptBehavior cancel propagates parent interrupt to the tool signal', 
   assert.equal(seen[0].is_error, true);
   assert.match(seen[0].content, /User rejected tool use/);
 });
+
+
+test('abort wakes getRemainingResults even when an in-flight tool ignores AbortSignal', async () => {
+  const ac = new AbortController();
+  let started;
+  const began = new Promise(resolve => { started = resolve; });
+  const executor = new StreamingToolExecutor({
+    signal: ac.signal,
+    getTool: () => ({ name: 'Bash', isConcurrencySafe: () => false }),
+    execute: async (_, { onToolExecutionStarted }) => {
+      onToolExecutionStarted?.();
+      started();
+      // A third-party command may never settle even after an abort.
+      return new Promise(() => {});
+    },
+  });
+  executor.addTool({ type: 'tool_use', name: 'Bash', id: 'hanging-bash',
+    input: { command: 'stuck' } });
+  const pending = executor.getRemainingResults().next();
+  await began;
+  ac.abort(new Error('Interrupted by user'));
+  const raced = await Promise.race([
+    pending,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('getRemainingResults hung after Ctrl+C')), 400)),
+  ]);
+  assert.equal(raced.done, true);
+  const results = await executor.takeInterruptedResults({ settleTimeoutMs: 20 });
+  assert.deepEqual(results.map(x => x.tool_use_id), ['hanging-bash']);
+  assert.equal(results[0].is_error, true);
+  assert.match(results[0].content, /side effects may have occurred/);
+});
