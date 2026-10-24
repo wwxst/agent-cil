@@ -22,6 +22,8 @@ jobs:
         run: node --test packages/cli/test/windows-bash-tree-cancel.test.js
       - name: Verify interrupted Edit and Bash batch history on Windows
         run: node --test packages/cli/test/interrupted-tool-batch.test.js
+      - name: Verify Bash exit does not wait for inherited grandchild stdio
+        run: node --test packages/cli/test/shell-exit-semantics.test.js
 
   runtime-tests:
     runs-on: ubuntu-latest
