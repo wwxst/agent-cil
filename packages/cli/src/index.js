@@ -937,7 +937,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     printError('No prompt provided. Pass a prompt or pipe stdin.');
     return 2;
   }
-  if (!interactiveInput && prompt.length === 0 && !options.resume) {
+  if (!interactiveInput && prompt.length === 0 &&
+      (!options.resume || !process.stdin.isTTY)) {
+    // An explicit --resume can continue a durable tool checkpoint without
+    // another user message, but a piped prompt still takes precedence.
+    // readStdin() reaches EOF for an empty pipe; it does not invent content.
     try {
       prompt = await readStdin();
     } catch (error) {
