@@ -53,7 +53,7 @@ export async function query({
   messages = [], input, signal, model, tools, maxTurns,
   executeTool, emit, canStartToolDuringStream, compactContext, getPostToolStop,
   getToolHookContext, getToolNativeMessages,
-  initialToolUseContext, onCommittedToolUseContext,
+  initialToolUseContext, onCommittedToolUseContext, onSessionCheckpoint,
 } = {}) {
   if (!Array.isArray(messages)) throw new TypeError('messages must be an array.');
   if (messages.some(message => !isRecord(message))) {
@@ -85,6 +85,9 @@ export async function query({
   }
   if (getPostToolStop !== undefined && typeof getPostToolStop !== 'function') {
     throw new TypeError('getPostToolStop must be a function.');
+  }
+  if (onSessionCheckpoint !== undefined && typeof onSessionCheckpoint !== 'function') {
+    throw new TypeError('onSessionCheckpoint must be a function.');
   }
   if (onCommittedToolUseContext !== undefined &&
       typeof onCommittedToolUseContext !== 'function') {
@@ -127,6 +130,9 @@ export async function query({
             if (result.compacted) {
               history = structuredClone(result.messages);
               state.messages = history;
+              // Old Session persists a completed context transition before
+              // another model request. A failed disk write stops the query.
+              await onSessionCheckpoint?.({ messages: structuredClone(history), kind: 'compact' });
               emit('contextCompacted', {
                 turn, beforeCount: before.length, afterCount: history.length,
                 estimatedTokens: result.estimatedTokens,
@@ -317,6 +323,7 @@ export async function query({
               abortIfNeeded(signal);
               if (compacted?.compacted && Array.isArray(compacted.messages)) {
                 const recovered = structuredClone(compacted.messages);
+                await onSessionCheckpoint?.({ messages: structuredClone(recovered), kind: 'compact' });
                 state.messages = recovered;
                 emit('contextCompacted', {
                   turn, reason: 'prompt_too_long',
@@ -359,6 +366,9 @@ export async function query({
             stopReason: stopReason === 'tool_use' ? 'end_turn' : stopReason,
             finalMessage: assistantMessage,
           };
+          // Fully completed text turns also advance the resumable transcript.
+          // Incomplete SSE text never reaches this commit boundary.
+          await onSessionCheckpoint?.({ messages: structuredClone(history), kind: 'finished' });
           emit('turnFinished', { turn, stopReason, toolResultCount: 0 });
           emit('finished', result);
           return result;
@@ -450,6 +460,10 @@ export async function query({
         // form a resumable checkpoint. This is the headless CLI equivalent of
         // the 2.1.88 query.ts stream exposing committed messages before a
         // later API failure. Never checkpoint partial streams or tool batches.
+        // Durable tool result checkpoint must finish BEFORE the next model
+        // request. This prevents replaying a completed Write/Bash on a later
+        // model transport failure or process restart.
+        await onSessionCheckpoint?.({ messages: structuredClone(history), kind: 'tool' });
         emit('turnFinished', {
           turn, stopReason, toolResultCount: toolResults.length,
           committedMessages: structuredClone(history),
