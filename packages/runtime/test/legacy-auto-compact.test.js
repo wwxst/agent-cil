@@ -421,7 +421,7 @@ test('partial streaming usage is not treated as a completed context measurement'
   assert.equal(samples, 0);
 });
 
-test('compaction clears only stale usage anchor, preserving signed recent content', async () => {
+test('compaction ignores stale usage while preserving complete signed recent messages', async () => {
   const { tokenCountWithEstimation } =
     await import('../src/legacy-compact/auto-compact.js');
   const input = structuredClone(raw);
@@ -438,8 +438,8 @@ test('compaction clears only stale usage anchor, preserving signed recent conten
     `Compaction returned ${JSON.stringify({ estimatedTokens: answer.estimatedTokens, contextTokens: answer.contextTokens })}`);
   assert.equal(summaryCalls, 1);
   assert.equal(answer.contextTokens, tokenCountWithEstimation(input));
-  assert.equal(answer.messages[1].usage, undefined,
-    'retained pre-compact usage must not be reused');
+  assert.deepEqual(answer.messages[1].usage, input[3].usage,
+    'retain the original provider usage without changing signed message metadata');
   assert.equal(answer.messages[1].content[0].signature, 'sig-2');
   assert.equal(answer.messages[3].content[0].signature, 'sig-3');
   assert.equal(input[3].usage.input_tokens, 125000, 'source transcript is unchanged');
