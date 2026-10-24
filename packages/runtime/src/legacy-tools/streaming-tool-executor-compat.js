@@ -30,7 +30,13 @@ export function createChildAbortController(parent, maxListeners = 50) {
  * chain. Convert only its message envelope into the original Message union. */
 export async function* runToolUse(block, assistantMessage, canUseTool, context) {
   try {
-    const source = context.executeAdapter(block, { signal: context.abortController.signal });
+    // Native source StreamingToolExecutor has already applied any prior
+    // exclusive tool contextModifier to this context. Do not rebuild a
+    // baseline ToolUseContext for every next tool; pass its current state.
+    const source = context.executeAdapter(block, {
+      signal: context.abortController.signal,
+      toolUseContext: context,
+    });
     const iterator = source && typeof source[Symbol.asyncIterator] === 'function'
       ? source
       : (async function* () {
