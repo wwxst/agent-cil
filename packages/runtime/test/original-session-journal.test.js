@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, readFile, appendFile, symlink, mkdir, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { AgentLoop } from '../src/agent-loop.js';
+import { ToolRegistry } from '../src/tool-registry.js';
 import {
   openSessionJournal, validateCommittedTranscript,
 } from '../src/legacy-session/session-storage.js';
@@ -132,4 +134,48 @@ test('session rejects invalid IDs, symlink session directories and nonexistent r
       }),/not a real directory/);
     }finally{await rm(external,{recursive:true,force:true});}
   });
+});
+
+test('crashed session stale PID lock is recovered before resuming an intact checkpoint',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const previous=await openSessionJournal({workspace:root,sessionId:id});
+    await previous.append({messages:transcript,kind:'tool'});
+    const lock=previous.path+'.lock';
+    await previous.close();
+    // Simulates process death after fsync but before the shutdown finally.
+    await writeFile(lock,JSON.stringify({pid:2147483000,startedAt:1})+'\\n');
+    const recovered=await openSessionJournal({
+      workspace:root,sessionId:id,resume:true,
+    });
+    assert.deepEqual(recovered.messages,transcript);
+    await recovered.close();
+  });
+});
+test('failed durable checkpoint blocks the second provider round even though the tool already executed',{
+  timeout:12000,
+},async()=>{
+  const tools=new ToolRegistry();
+  let writes=0,requests=0,committedEvents=0;
+  tools.register({name:'Write',description:'Durability boundary tool',
+    execute:async()=>{writes++;return 'durable output';},
+  });
+  const loop=new AgentLoop({
+    tools,permissionPolicy:async()=>({behavior:'allow'}),
+    onSessionCheckpoint:async()=>{
+      throw new Error('ENOSPC: journal fsync unavailable');
+    },
+    model:{async *stream(){
+      requests++;
+      yield {type:'tool_use',id:'should-not-repeat',name:'Write',input:{}};
+      yield {type:'message_end',stopReason:'tool_use'};
+    }},
+  });
+  loop.on('turnFinished',()=>committedEvents++);
+  await assert.rejects(loop.run({input:'write once'}),
+    /ENOSPC: journal fsync unavailable/);
+  assert.equal(writes,1,'tool execution already happened before a disk failure');
+  assert.equal(requests,1,'no second provider call when tool result was not durably committed');
+  assert.equal(committedEvents,0,'must not publish a successfully persisted checkpoint');
+  assert.equal(loop.active,false);
 });
