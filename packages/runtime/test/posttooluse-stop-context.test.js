@@ -11,11 +11,15 @@ test('original PostToolUse continue:false stops after result checkpoint with met
 }, async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'agent-cil-original-post-stop-'));
   try {
+    await writeFile(join(cwd, 'context-hook.cjs'),
+      "let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>{"+
+      "console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PostToolUse',"+
+      "additionalContext:'Checked the output'}}));});");
     await writeFile(join(cwd, 'stop-hook.cjs'),
       "let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>{"+
-      "const input=JSON.parse(s);require('node:fs').writeFileSync('observed.json',s);"+
+      "require('node:fs').writeFileSync('observed.json',s);"+
       "console.log(JSON.stringify({continue:false,stopReason:'Stop after validation',"+
-      "hookSpecificOutput:{hookEventName:'PostToolUse',additionalContext:'Checked the output'}}));});");
+      "hookSpecificOutput:{hookEventName:'PostToolUse'}}));});");
     let toolCalls = 0, modelRequests = 0;
     const tools = new ToolRegistry();
     tools.register({ name: 'Verify', description: 'Verifies one item',
@@ -24,8 +28,12 @@ test('original PostToolUse continue:false stops after result checkpoint with met
     const loop = new AgentLoop({
       tools,
       hookWorkspace: cwd,
-      postToolUseHooks: [{ matcher: 'Verify', type: 'command',
-        command: 'node stop-hook.cjs', timeout: 6 }],
+      postToolUseHooks: [
+        { matcher: 'Verify', type: 'command',
+          command: 'node context-hook.cjs', timeout: 6 },
+        { matcher: 'Verify', type: 'command',
+          command: 'node stop-hook.cjs', timeout: 6 },
+      ],
       permissionPolicy: async () => ({ behavior: 'allow' }),
       model: { async *stream() {
         modelRequests++;
