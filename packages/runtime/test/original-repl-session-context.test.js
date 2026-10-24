@@ -70,7 +70,7 @@ test('original REPL retains committed ToolUseContext into next AgentLoop.run wit
   assert.deepEqual(policy,[
     ['OpenState',undefined],['UseState','granted-in-session'],
   ]);
-  assert.equal(second.messages.at(-3).content[0].tool_use_id,'use-1');
+  assert.equal(second.messages.at(-3).content[0].id,'use-1');
   assert.equal(second.messages.at(-2).content[0].content,'state is granted-in-session');
   assert.equal(requests,4);
 });
