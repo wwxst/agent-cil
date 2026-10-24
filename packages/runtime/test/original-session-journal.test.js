@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { AgentLoop } from '../src/agent-loop.js';
 import { ToolRegistry } from '../src/tool-registry.js';
 import {
-  openSessionJournal, validateCommittedTranscript,
+  openSessionJournal, validateCommittedTranscript, hasPendingToolResponse,
 } from '../src/legacy-session/session-storage.js';
 
 const transcript=[
@@ -178,4 +178,33 @@ test('failed durable checkpoint blocks the second provider round even though the
   assert.equal(requests,1,'no second provider call when tool result was not durably committed');
   assert.equal(committedEvents,0,'must not publish a successfully persisted checkpoint');
   assert.equal(loop.active,false);
+});
+
+test('source Query promptless resume is restricted to a fully paired terminal tool batch', async()=>{
+  assert.equal(hasPendingToolResponse(transcript),true);
+  assert.equal(hasPendingToolResponse(transcript.slice(0,2)),false);
+  assert.equal(hasPendingToolResponse([...transcript,{role:'assistant',
+    content:[{type:'text',text:'finished'}]}]),false);
+  assert.equal(hasPendingToolResponse([{role:'user',content:'start'},{
+    role:'assistant',content:[{type:'tool_use',id:'a',name:'Write',input:{}},
+      {type:'tool_use',id:'b',name:'Write',input:{}}]},{
+    role:'user',content:[{type:'tool_result',tool_use_id:'a',content:'only one'}]}]),false);
+  assert.equal(hasPendingToolResponse([{role:'user',content:'start'},{
+    role:'assistant',content:[{type:'tool_use',id:'a',name:'Write',input:{}}]},{
+    role:'user',content:[{type:'tool_result',tool_use_id:'a',content:'ok'},
+      {type:'tool_result',tool_use_id:'a',content:'injected'}]}]),false);
+  await workspace(async root=>{
+    const id=randomUUID();
+    const store=await openSessionJournal({workspace:root,sessionId:id});
+    assert.equal(store.canContinueWithoutPrompt,false);
+    await store.append({messages:transcript,kind:'tool'});
+    assert.equal(store.canContinueWithoutPrompt,true);
+    await store.append({messages:[...transcript,{role:'assistant',
+      content:[{type:'text',text:'response already finished'}]}],kind:'finished'});
+    assert.equal(store.canContinueWithoutPrompt,false);
+    await store.close();
+    const reloaded=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(reloaded.canContinueWithoutPrompt,false);
+    await reloaded.close();
+  });
 });
