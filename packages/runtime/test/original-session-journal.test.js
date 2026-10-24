@@ -327,3 +327,32 @@ test('a non-compact append cannot silently replace earlier committed transcript 
     await journal.close();
   });
 });
+
+test('session storage refuses a replacement lock owner, does not append, and never deletes another owner lock',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const path=journal.path;
+    await journal.append({messages:transcript,kind:'tool'});
+    const previous=await readFile(path,'utf8');
+    const lock=path+'.lock';
+    const nextOwnerToken=randomUUID();
+    // Simulates a race in which another session process has acquired the
+    // lock between this process's two completed tool turns.
+    await writeFile(lock,JSON.stringify({
+      pid:process.pid,startedAt:Date.now(),token:nextOwnerToken,
+    })+'\\n');
+    const finished=[...transcript,{
+      role:'assistant',content:[{type:'text',text:'should not be committed'}],
+    }];
+    await assert.rejects(journal.append({messages:finished,kind:'finished'}),
+      /lock ownership lost/);
+    assert.equal(await readFile(path,'utf8'),previous,
+      'a former owner must not append a forged durable checkpoint');
+    assert.deepEqual(journal.messages,transcript,
+      'the failed append must not publish a new local checkpoint');
+    await assert.rejects(journal.close(),/lock ownership lost/);
+    assert.equal(JSON.parse(await readFile(lock,'utf8')).token,nextOwnerToken,
+      'the displaced process must not unlink the active owner lock');
+  });
+});
