@@ -11,6 +11,7 @@ import { query } from './legacy-query/query.js';
 import { normalizeToolHookAttachmentsForAPI } from './legacy-query/normalize-hook-attachments.js';
 export { ModelProtocolError } from './legacy-query/query.js';
 import { resolveToolSpecificPermission } from './legacy-permissions/tool-specific-permission.js';
+import { originalCanUseNestedTool } from './legacy-permissions/nested-can-use-tool.js';
 
 const MAX_PERMISSION_INPUT_REWRITES = 8;
 const EARLY_READ_TOOLS = new Set(['Read', 'Glob', 'Grep']);
@@ -612,6 +613,24 @@ export class AgentLoop extends EventEmitter {
       });
       return result;
     }
+    // Original 2.1.88 Tool.call receives the same policy resolver used by
+    // top-level tool authorization. Parent approval is never inherited.
+    // The callee requests permission only; it owns any subsequent action.
+    const canUseNestedTool = async (
+      proposedTool, proposedInput, nestedContext, _assistantMessage,
+      nestedId, forceDecision,
+    ) => originalCanUseNestedTool({
+      proposedTool, input:proposedInput, toolUseId:nestedId,
+      toolUseContext:nestedContext ?? sourceToolUseContext,
+      forceDecision,
+      getTool:name=>this.#tools.get(name),
+      validateInput:(name,input,context,expected)=>
+        this.#tools.validateInput(name,input,context,expected),
+      requestPermissionDecision,
+      approvalHandler:this.#approvalHandler,
+      signal,
+      onPermissionRequired:event=>this.emit('permissionRequired',{turn,...event}),
+    });
     this.emit('toolCallStarted', { turn, toolUseId: toolUse.id, toolName: tool.name });
     try {
       // The final input was validated and authorized before this call.
@@ -623,6 +642,7 @@ export class AgentLoop extends EventEmitter {
         onProgress: onToolProgress,
         toolResultStorage: this.#toolResultStorage,
         nativeToolUseContext: sourceToolUseContext,
+        canUseNestedTool,
         userModified: userModified || decision?.userModified === true,
         onToolNewMessages: async ({sourceMessages, blocks}) => {
           const event = {
