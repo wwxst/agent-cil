@@ -55,33 +55,7 @@ export function bashToolCheckExactMatchPermission(input, toolPermissionContext) 
   // before any automatic authorization when AST parsing is unavailable.
   // Check restrictive rules FIRST so parser complexity cannot downgrade a
   // matching explicit deny to a generic ask (source checkEarlyExitDeny).
-  const parsed = tryParseShellCommand(command, name => '
-  // behind a redirection, a shell compound, a dynamic expansion or wrapper
-  // unsupported by the old parser closure. Never promote exact allow.
-  if (denyRules.size > 0 || askRules.size > 0) {
-    return {
-      behavior: 'ask',
-      message: 'Bash command needs review because content-specific restrictions are configured.',
-      decisionReason: { type: 'safetyCheck', reason: 'Unported Bash AST/redirect/compound constraints' },
-    };
-  }
-
-  const allow = getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'allow').get(command);
-  if (allow) {
-    return {
-      behavior: 'allow',
-      updatedInput: input,
-      decisionReason: { type: 'rule', rule: allow },
-    };
-  }
-
-  return {
-    behavior: 'passthrough',
-    message: 'Permission to use Bash requires approval.',
-    decisionReason: { type: 'other', reason: 'This command requires approval' },
-  };
-}
- + name);
+  const parsed = tryParseShellCommand(command, name => String.fromCharCode(36) + name);
   const suspicious = hasShellQuoteSingleQuoteBug(command) ||
     !parsed.success ||
     (parsed.success && hasMalformedTokens(command, parsed.tokens));
