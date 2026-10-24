@@ -90,6 +90,7 @@ export class AgentLoop extends EventEmitter {
   #hookStopReason;
   #hookWorkspace;
   #toolResultStorage;
+  #onSessionCheckpoint;
   #requireCanUseTool;
   // Original REPL passes updatedToolUseContext and committed history into
   // each next query() invocation of the same interactive session.
@@ -109,6 +110,7 @@ export class AgentLoop extends EventEmitter {
     postToolUseFailureHooks = [],
     hookWorkspace,
     toolResultStorage,
+    onSessionCheckpoint,
     requireCanUseTool = false,
   } = {}) {
     super();
@@ -145,6 +147,10 @@ export class AgentLoop extends EventEmitter {
     this.#postToolUseFailureHooks = postToolUseFailureHooks;
     this.#hookWorkspace = hookWorkspace;
     this.#toolResultStorage = toolResultStorage;
+    if (onSessionCheckpoint !== undefined && typeof onSessionCheckpoint !== 'function') {
+      throw new TypeError('onSessionCheckpoint must be a function.');
+    }
+    this.#onSessionCheckpoint = onSessionCheckpoint;
     // Original toolHooks.ts consumes the fork/query requireCanUseTool
     // capability flag. It defaults false for the standalone parent CLI;
     // true is explicitly supplied only by contexts requiring final review.
@@ -185,6 +191,7 @@ export class AgentLoop extends EventEmitter {
         tools: this.#tools,
         maxTurns: this.#maxTurns,
         compactContext: this.#compactContext,
+        onSessionCheckpoint: this.#onSessionCheckpoint,
         initialToolUseContext: this.#committedToolUseContext,
         onCommittedToolUseContext: ({ messages: checkpoint, toolUseContext }) => {
           // Original query.ts consumes newContext only for fully committed
