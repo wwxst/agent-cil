@@ -193,3 +193,67 @@ test('rejects unsafe session IDs before constructing storage paths', async () =>
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test('persistent manager checkpoints completed real Edit before a later model failure', {
+  timeout: 15000,
+}, async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'agent-cil-session-checkpoint-'));
+  const directory = path.join(workspace, 'sessions');
+  const { createBuiltinTools } = await import('../../cli/src/index.js');
+  const { writeFile } = await import('node:fs/promises');
+  const oldContent = 'const add = (a,b) => a - b;\n';
+  const newContent = 'const add = (a,b) => a + b;\n';
+  let executions = 0;
+  try {
+    await writeFile(path.join(workspace, 'math.js'), oldContent);
+    const tools = await createBuiltinTools({ workspace });
+    const model = { async *stream({ messages }) {
+      executions++;
+      if (executions === 1) {
+        yield { type: 'thinking', thinking: 'protected', signature: 'signed-p1' };
+        yield { type: 'tool_use', id: 'actual-edit', name: 'Edit',
+          input: { file_path: 'math.js', old_string: 'a - b', new_string: 'a + b' } };
+        yield { type: 'message_end', stopReason: 'tool_use' };
+      } else {
+        assert.equal(messages[1].content[0].signature, 'signed-p1');
+        assert.equal(messages[2].content[0].tool_use_id, 'actual-edit');
+        throw new Error('provider crashed after Edit');
+      }
+    } };
+    const manager = new AgentSessionManager({
+      loop: new AgentLoop({
+        model, tools, permissionPolicy: async () => ({ behavior: 'allow' }),
+      }),
+      store: new FileSessionStore({ directory }), idFactory: ids(),
+    });
+    await manager.create({ id: 'checkpoint-after-edit' });
+    await assert.rejects(manager.run('checkpoint-after-edit', 'fix file'),
+      /provider crashed after Edit/);
+    assert.equal(await readFile(path.join(workspace, 'math.js'), 'utf8'), newContent);
+    const saved = JSON.parse(await readFile(path.join(directory,
+      'checkpoint-after-edit.json'), 'utf8'));
+    assert.equal(saved.turns[0].status, 'failed');
+    assert.equal(saved.messages.length, 3);
+    assert.equal(saved.messages[1].content[1].id, 'actual-edit');
+    assert.equal(saved.messages[2].content[0].tool_use_id, 'actual-edit');
+
+    const resumed = new AgentSessionManager({
+      loop: new AgentLoop({
+        model: new ScriptedModel([context => {
+          assert.equal(context.messages.length, 4);
+          assert.equal(context.messages[1].content[0].signature, 'signed-p1');
+          return answer('No replay required.');
+        }]),
+      }),
+      store: new FileSessionStore({ directory }), idFactory: ids(),
+    });
+    const continuation = await resumed.run('checkpoint-after-edit', 'continue');
+    assert.equal(continuation.session.turns[1].status, 'completed');
+    assert.equal(continuation.session.messages.length, 5);
+    assert.equal(await readFile(path.join(workspace, 'math.js'), 'utf8'), newContent);
+    assert.equal(executions, 2, 'Edit cannot be replayed during resumed model call');
+  } finally {
+    await rm(workspace, { recursive: true, force: true, maxRetries: 4, retryDelay: 150 });
+  }
+});
