@@ -16,8 +16,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Verify .js CLI startup and Read/Edit acceptance on Windows
-        run: node --test packages/cli/test/live-provider-launch.test.js
+      - name: Verify CLI startup and persisted session recovery on Windows
+        run: node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/session-resume-cli.test.js
 
   runtime-tests:
     runs-on: ubuntu-latest
