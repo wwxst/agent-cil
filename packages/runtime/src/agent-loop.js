@@ -4,6 +4,7 @@ import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
 import { invokeToolCallAndMapResult } from './legacy-tools/tool-execution.js';
 import { runPreToolUseHooks, resolveHookPermissionDecision } from './legacy-tools/pretooluse-core.js';
+import { runPostToolUseHooks, runPostToolUseFailureHooks } from './legacy-tools/posttooluse-core.js';
 import { query } from './legacy-query/query.js';
 export { ModelProtocolError } from './legacy-query/query.js';
 import { resolveToolSpecificPermission } from './legacy-permissions/tool-specific-permission.js';
@@ -77,6 +78,9 @@ export class AgentLoop extends EventEmitter {
   #maxTurns;
   #compactContext;
   #preToolUseHooks;
+  #postToolUseHooks;
+  #postToolUseFailureHooks;
+  #hookMessages = [];
   #hookWorkspace;
   #toolResultStorage;
   #active = false;
@@ -89,6 +93,8 @@ export class AgentLoop extends EventEmitter {
     maxTurns = 8,
     compactContext,
     preToolUseHooks = [],
+    postToolUseHooks = [],
+    postToolUseFailureHooks = [],
     hookWorkspace,
     toolResultStorage,
   } = {}) {
@@ -111,9 +117,10 @@ export class AgentLoop extends EventEmitter {
     if (compactContext !== undefined && typeof compactContext !== 'function') {
       throw new TypeError('compactContext must be a function.');
     }
-    if (!Array.isArray(preToolUseHooks) ||
-      (preToolUseHooks.length > 0 && (typeof hookWorkspace !== 'string' || !hookWorkspace))) {
-      throw new TypeError('PreToolUse hooks require validated settings and a workspace.');
+    if (![preToolUseHooks, postToolUseHooks, postToolUseFailureHooks].every(Array.isArray) ||
+      ([preToolUseHooks, postToolUseHooks, postToolUseFailureHooks].some(hooks => hooks.length > 0) &&
+       (typeof hookWorkspace !== 'string' || !hookWorkspace))) {
+      throw new TypeError('Tool Hooks require validated settings and a workspace.');
     }
     if (toolResultStorage !== undefined &&
       (typeof toolResultStorage?.workspace !== 'string' ||
@@ -121,6 +128,8 @@ export class AgentLoop extends EventEmitter {
       throw new TypeError('toolResultStorage requires workspace and directory paths.');
     }
     this.#preToolUseHooks = preToolUseHooks;
+    this.#postToolUseHooks = postToolUseHooks;
+    this.#postToolUseFailureHooks = postToolUseFailureHooks;
     this.#hookWorkspace = hookWorkspace;
     this.#toolResultStorage = toolResultStorage;
     this.#maxTurns = maxTurns;
@@ -134,8 +143,9 @@ export class AgentLoop extends EventEmitter {
   async run({ messages = [], input, signal } = {}) {
     if (this.#active) throw new Error('This AgentLoop already has an active run.');
     this.#active = true;
+    this.#hookMessages = [];
     try {
-      return await query({
+      const result = await query({
         messages, input, signal,
         model: this.#model,
         tools: this.#tools,
@@ -146,6 +156,8 @@ export class AgentLoop extends EventEmitter {
         executeTool: (toolUse, context) => this.#executeTool(toolUse, context),
         emit: (eventName, event) => this.emit(eventName, event),
       });
+      if (this.#hookMessages.length) result.hookMessages = structuredClone(this.#hookMessages);
+      return result;
     } finally {
       this.#active = false;
     }
@@ -168,7 +180,8 @@ export class AgentLoop extends EventEmitter {
     // effects if the model stream then fails. Keep the original executor but
     // defer tool execution until the model turn is committed whenever any
     // command Hook is explicitly configured. No-Hook early Read remains fast.
-    if (this.#preToolUseHooks.length > 0) return false;
+    if (this.#preToolUseHooks.length > 0 ||
+        this.#postToolUseHooks.length > 0 || this.#postToolUseFailureHooks.length > 0) return false;
     const tool = this.#tools.get(toolUse.name);
     if (!tool || !EARLY_READ_TOOLS.has(toolUse.name) ||
       tool.canRunDuringStream !== true ||
@@ -521,6 +534,14 @@ export class AgentLoop extends EventEmitter {
         toolUseId: toolUse.id, signal, messages: history, assistantMessage,
         onProgress: onToolProgress,
         toolResultStorage: this.#toolResultStorage,
+        // Original 2.1.88 toolExecution.ts processes/memoizes the result
+        // BEFORE invoking PostToolUse. Preserve the exact raw tool data.
+        onToolResult: async ({ toolOutput }) => {
+          if (!this.#postToolUseHooks.length) return;
+          await this.#emitPostToolUseHooks({
+            tool, toolUse, turn, signal, executionInput, toolOutput,
+          });
+        },
       });
       abortIfNeeded(signal);
       this.emit('toolCallFinished', {
@@ -529,9 +550,62 @@ export class AgentLoop extends EventEmitter {
       return result;
     } catch (error) {
       if (signal?.aborted) abortIfNeeded(signal);
+      if (this.#postToolUseFailureHooks.length) {
+        await this.#emitPostToolUseFailureHooks({
+          tool, toolUse, turn, signal, executionInput, error: errorText(error),
+        });
+      }
       const result = toolError(toolUse, 'Tool execution failed: ' + errorText(error));
       this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true });
       return result;
+    }
+  }
+  // Keep Hook attachment updates tied to the originating tool_use, including
+  // when tools finish concurrently. They are preserved in run().hookMessages
+  // and delivered as EventEmitter hookMessage events; the headless Query
+  // still lacks the original attachment-to-model context converter.
+  #recordPostHookMessage({ toolUse, tool, turn, message }) {
+    const event = {
+      turn, toolUseId: toolUse.id, toolName: tool.name,
+      message: structuredClone(message),
+    };
+    this.#hookMessages.push(event);
+    this.emit('hookMessage', event);
+  }
+
+  #createPostHookContext(signal) {
+    return {
+      abortController: { signal },
+      workspace: this.#hookWorkspace,
+      getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
+      toolHooks: {
+        PostToolUse: this.#postToolUseHooks,
+        PostToolUseFailure: this.#postToolUseFailureHooks,
+      },
+    };
+  }
+
+  async #emitPostToolUseHooks({ tool, toolUse, turn, signal, executionInput, toolOutput }) {
+    // Transplanted method body from original 2.1.88 toolHooks.ts.
+    for await (const update of runPostToolUseHooks(
+      this.#createPostHookContext(signal), tool, toolUse.id, toolUse.id,
+      structuredClone(executionInput), toolOutput, undefined, undefined, undefined,
+    )) {
+      if ('updatedMCPToolOutput' in update) {
+        throw new Error('MCP PostToolUse output rewriting is not supported.');
+      }
+      this.#recordPostHookMessage({ toolUse, tool, turn, message: update.message });
+    }
+  }
+
+  async #emitPostToolUseFailureHooks({ tool, toolUse, turn, signal, executionInput, error }) {
+    // PostToolUseFailure is only called after actual tool execution fails,
+    // not after a policy denial. Hook feedback never replaces the error result.
+    for await (const update of runPostToolUseFailureHooks(
+      this.#createPostHookContext(signal), tool, toolUse.id, toolUse.id,
+      structuredClone(executionInput), error, false, undefined, undefined, undefined,
+    )) {
+      this.#recordPostHookMessage({ toolUse, tool, turn, message: update.message });
     }
   }
 }
