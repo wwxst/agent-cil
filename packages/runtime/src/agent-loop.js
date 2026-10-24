@@ -90,6 +90,7 @@ export class AgentLoop extends EventEmitter {
   #hookStopReason;
   #hookWorkspace;
   #toolResultStorage;
+  #requireCanUseTool;
   // Original REPL passes updatedToolUseContext and committed history into
   // each next query() invocation of the same interactive session.
   #committedSessionMessages;
@@ -108,6 +109,7 @@ export class AgentLoop extends EventEmitter {
     postToolUseFailureHooks = [],
     hookWorkspace,
     toolResultStorage,
+    requireCanUseTool = false,
   } = {}) {
     super();
     if (!model || typeof model.stream !== 'function') {
@@ -143,6 +145,13 @@ export class AgentLoop extends EventEmitter {
     this.#postToolUseFailureHooks = postToolUseFailureHooks;
     this.#hookWorkspace = hookWorkspace;
     this.#toolResultStorage = toolResultStorage;
+    // Original toolHooks.ts consumes the fork/query requireCanUseTool
+    // capability flag. It defaults false for the standalone parent CLI;
+    // true is explicitly supplied only by contexts requiring final review.
+    if (typeof requireCanUseTool !== 'boolean') {
+      throw new TypeError('requireCanUseTool must be a boolean.');
+    }
+    this.#requireCanUseTool = requireCanUseTool;
     this.#maxTurns = maxTurns;
     this.#compactContext = compactContext;
   }
@@ -406,6 +415,7 @@ export class AgentLoop extends EventEmitter {
         workspace: this.#hookWorkspace,
         preToolUseHooks: this.#preToolUseHooks,
         trustedCliDefaultPermission: this.#permissionPolicy.isBuiltinCliPolicy === true,
+        requireCanUseTool: this.#requireCanUseTool,
         getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
         checkRuleBasedPermissions: async (_tool, checkedInput) => {
           const check = await requestPermissionDecision(checkedInput, 'hook-rule-check');
