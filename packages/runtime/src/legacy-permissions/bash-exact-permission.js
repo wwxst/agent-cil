@@ -1,19 +1,43 @@
 /**
- * Source-first exact-command slice of CLI 2.1.88
- * tools/BashTool/bashPermissions.ts:bashToolCheckExactMatchPermission().
+ * Node CLI permission bridge for the original BashTool checkPermissions stage.
+ * Sources: 2.1.88 bashPermissions.ts:matchingRulesForInput,
+ * bashToolCheckExactMatchPermission, and shellRuleMatching.ts.
  *
- * The complete legacy bashToolHasPermission() also parses compound commands,
- * redirects, prefixes, wildcards and path/sandbox restrictions. Until those
- * original dependency closures are ported, the CLI accepts only literal,
- * exact Bash(content) rules and does not generalize them to compound parts,
- * wrappers, shell expansions or command prefixes. This module MUST NOT be
- * presented as full Bash permission equivalence.
+ * Permission *denials and asks* can match source exact/prefix/wildcard syntax;
+ * those decisions cannot increase authority. For an allow, only literal full
+ * commands are supported until original AST, wrapper, path and compound
+ * analysis is available. When ANY scoped deny/ask exists, automatic
+ * command-level allow is withheld: wrappers/env substitutions cannot safely
+ * be excluded by the unported source dependency closure. Ask is safer than
+ * accidentally bypassing an administrator's restricted rule.
  */
 import { getRuleByContentsForToolName } from './permission-rules.js';
+import { parsePermissionRule, matchWildcardPattern } from './shell-rule-matching.js';
+
+// Source bashPermissions.ts:filterRulesByContentsMatchingInput() switch.
+// Applies to the unmodified full input only. Full wrapper/redirection and
+// per-subcommand matching remain deliberately unimplemented/fail-closed.
+function findRestrictedRule(rules, command) {
+  for (const [content, rule] of rules) {
+    const shellRule = parsePermissionRule(content);
+    if (shellRule.type === 'exact' && shellRule.command === command) return rule;
+    if (shellRule.type === 'prefix' && (
+      command === shellRule.prefix ||
+      command.startsWith(shellRule.prefix + ' ') ||
+      command === 'xargs ' + shellRule.prefix ||
+      command.startsWith('xargs ' + shellRule.prefix + ' ')
+    )) return rule;
+    if (shellRule.type === 'wildcard' &&
+      matchWildcardPattern(shellRule.pattern, command)) return rule;
+  }
+  return undefined;
+}
 
 export function bashToolCheckExactMatchPermission(input, toolPermissionContext) {
   const command = input.command.trim();
-  const deny = getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'deny').get(command);
+  const denyRules = getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'deny');
+  const askRules = getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'ask');
+  const deny = findRestrictedRule(denyRules, command);
   if (deny) {
     return {
       behavior: 'deny',
@@ -21,12 +45,24 @@ export function bashToolCheckExactMatchPermission(input, toolPermissionContext) 
       decisionReason: { type: 'rule', rule: deny },
     };
   }
-  const ask = getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'ask').get(command);
+  const ask = findRestrictedRule(askRules, command);
   if (ask) {
     return {
       behavior: 'ask',
       message: 'Permission to use Bash requires approval.',
       decisionReason: { type: 'rule', rule: ask },
+    };
+  }
+  const hasRestrictiveContentRules = denyRules.size > 0 || askRules.size > 0;
+  // Exact allow must NOT override a deny that the original env/wrapper/AST
+  // stage would recognize but this partial bridge cannot yet analyze.
+  // This includes e.g. a denied 'node --version' hidden by FOO=1 while a
+  // separate exact allow for 'FOO=1 node --version' is configured.
+  if (hasRestrictiveContentRules) {
+    return {
+      behavior: 'ask',
+      message: 'Bash command needs review because content-specific restrictions are configured.',
+      decisionReason: { type: 'safetyCheck', reason: 'Unported Bash compound/wrapper analysis' },
     };
   }
   const allow = getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'allow').get(command);
@@ -35,21 +71,6 @@ export function bashToolCheckExactMatchPermission(input, toolPermissionContext) 
       behavior: 'allow',
       updatedInput: input,
       decisionReason: { type: 'rule', rule: allow },
-    };
-  }
-  // This restricted source slice does not yet decompose wrappers,
-  // redirections and compounds. When a whole-tool Bash allow coexists with
-  // a command-level deny/ask, unknown command shapes must require review:
-  // never let "VAR=x denied_command" bypass a content-specific deny merely
-  // because our unported source matcher did not recognize the wrapper.
-  const hasRestrictiveContentRules =
-    getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'deny').size > 0 ||
-    getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'ask').size > 0;
-  if (hasRestrictiveContentRules) {
-    return {
-      behavior: 'ask',
-      message: 'Bash command needs review because content-specific restrictions are configured.',
-      decisionReason: { type: 'safetyCheck', reason: 'Unported Bash compound command analysis' },
     };
   }
   return {
