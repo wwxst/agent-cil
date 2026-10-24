@@ -137,6 +137,14 @@ export async function query({
         const executor = new StreamingToolExecutor({
           getTool: name => tools.get(name),
           signal,
+          // Original StreamingToolExecutor creates unknown-tool tool_result
+          // directly in addTool(), before runToolUse. Preserve the current
+          // CLI lifecycle event at that source-to-Node adapter boundary.
+          onUnknownTool: unknown => {
+            emit('toolCallFinished', {
+              turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
+            });
+          },
           execute: (block, { signal: toolSignal }) =>
             runToolUse(
               block,
