@@ -11,6 +11,7 @@ import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-perm
 import { permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 import { parsePermissionRule, matchWildcardPattern } from '../../runtime/src/legacy-permissions/shell-rule-matching.js';
 import { matchingRulesForInput, filterRulesByContentsMatchingInput } from '../../runtime/src/legacy-permissions/bash-original-rule-filter.js';
+import { tryParseShellCommand, hasMalformedTokens, hasShellQuoteSingleQuoteBug } from '../../runtime/src/legacy-permissions/bash-shell-quote.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -256,6 +257,31 @@ test('direct old Bash filter preserves exact-before-prefix permission priority a
   'until the original redirect/path closure is ported, exact redirection allow cannot be promoted across scoped deny');
 });
 
+test('original shellQuote parser guards stop malformed and single-quoted backslash differentials', () => {
+  const simple = tryParseShellCommand('node --version');
+  assert.equal(simple.success,true);
+  assert.deepEqual(simple.tokens,['node','--version']);
+  assert.equal(hasMalformedTokens('node --version',simple.tokens),false);
+  assert.equal(hasShellQuoteSingleQuoteBug("echo 'safe'"),false);
+  assert.equal(hasShellQuoteSingleQuoteBug("echo 'unsafe\\'"),true,
+    'a backslash immediately before closing single quote changes shell-quote parsing');
+  assert.equal(hasMalformedTokens('echo "unterminated',[]),true);
+
+  const exact = 'echo hello > redirected.txt';
+  const ctx = createCliPermissionContext({
+    permissionRules:{allow:[{toolName:'Bash',ruleContent:exact}],deny:[],ask:[]},
+  });
+  assert.equal(bashToolCheckExactMatchPermission({command:exact},ctx).behavior,'ask',
+    'exact Bash allow must not bypass original unported output path validation');
+  const unsafeCompound = 'echo hello && node --version';
+  const compoundCtx = createCliPermissionContext({
+    permissionRules:{allow:[{toolName:'Bash',ruleContent:unsafeCompound}],deny:[],ask:[]},
+  });
+  assert.equal(bashToolCheckExactMatchPermission({command:unsafeCompound},compoundCtx).behavior,'ask');
+  assert.equal(bashToolCheckExactMatchPermission({command:'node --version'},ctx).behavior,'passthrough',
+    'safe unrelated command remains normal default permission candidate');
+});
+
 test('original Bash exact rule only matches the entire command; deny > ask > allow', () => {
   const parsed = parseArgs([
     '--allowedTools', 'Bash(node --version)',
@@ -350,6 +376,24 @@ test('packed CLI Bash permission chain: exact allow, deny, ask, whole ask, unmat
     const executed = await scenario(['--allowedTools',serializedRule],sideEffect);
     assert.notEqual(executed.is_error,true);
     assert.equal(await readFile(join(root,'permission-once.txt'),'utf8'),'x');
+
+    // New original shellQuote parse/pre-allow gate: an explicit exact Bash
+    // allow is insufficient for redirection and compound execution until the
+    // mature AST and filesystem constraints are connected.
+    const redirectedCommand = 'echo unexpected > guarded-redirection.txt';
+    const redirectedRule = permissionRuleValueToString({
+      toolName:'Bash',ruleContent:redirectedCommand,
+    });
+    const redirected = await scenario(['--allowedTools',redirectedRule],redirectedCommand);
+    assert.equal(redirected.is_error,true);
+    await assert.rejects(stat(join(root,'guarded-redirection.txt')), /ENOENT/);
+    const dangerousCompound = 'echo safe && node -e "require(\\'fs\\').appendFileSync(\\'guarded-compound.txt\\',\\'x\\')"';
+    const compoundRule = permissionRuleValueToString({
+      toolName:'Bash',ruleContent:dangerousCompound,
+    });
+    const compoundResult = await scenario(['--allowedTools',compoundRule],dangerousCompound);
+    assert.equal(compoundResult.is_error,true);
+    await assert.rejects(stat(join(root,'guarded-compound.txt')), /ENOENT/);
 
     // A whole-tool allow must not execute a denied prefix subcommand with a
     // real side effect. Also ensure compound commands fail closed instead of
