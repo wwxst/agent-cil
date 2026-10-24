@@ -28,6 +28,30 @@ function validMessage(message) {
 /** An orphan tool_use, mismatched tool_result, duplicate id or incomplete
  * result cannot become a restart checkpoint. Text-only user messages remain
  * valid and can be saved after normal assistant completion. */
+/**
+ * Original Query resumes pending work from a complete tool_result rather
+ * than requiring the user to supply another user prompt. The latest
+ * checkpoint must end with the full tool batch, not a completed assistant
+ * answer. Only a validated, paired terminal tool round may auto-continue.
+ */
+export function hasPendingToolResponse(messages) {
+  if (!Array.isArray(messages) || messages.length < 3) return false;
+  const last = messages.at(-1), previous = messages.at(-2);
+  if (last?.role !== 'user' || !Array.isArray(last.content) ||
+      previous?.role !== 'assistant' || !Array.isArray(previous.content)) {
+    return false;
+  }
+  const ids = previous.content
+    .filter(block => block?.type === 'tool_use')
+    .map(block => block.id);
+  const results = last.content
+    .filter(block => block?.type === 'tool_result')
+    .map(block => block.tool_use_id);
+  return ids.length > 0 && ids.length === results.length &&
+    new Set(ids).size === ids.length &&
+    results.length === new Set(results).size &&
+    ids.every(id => results.includes(id));
+}
 export function validateCommittedTranscript(messages) {
   if (!Array.isArray(messages) || messages.length === 0 ||
       messages.some(m => !validMessage(m))) {
@@ -117,12 +141,17 @@ export class SessionJournal {
   #closed=false;
   #poisoned=false;
   #lastEncoded='';
+  #lastKind;
   constructor({path,lock,id,workspace}){
     this.#path=path;this.#lock=lock;this.#id=id;this.#workspace=workspace;
   }
   get id(){return this.#id;}
   get messages(){return structuredClone(this.#messages);}
   get path(){return this.#path;}
+  get canContinueWithoutPrompt(){
+    return (this.#lastKind === 'tool' || this.#lastKind === 'compact') &&
+      hasPendingToolResponse(this.#messages);
+  }
   async load() {
     await safeExistingFile(this.#path);
     const file=await open(this.#path,constants.O_RDONLY|NOFOLLOW);
@@ -149,6 +178,7 @@ export class SessionJournal {
       this.#previousHash=hash;
       this.#messages=structuredClone(payload.messages);
       this.#lastEncoded=JSON.stringify(this.#messages);
+      this.#lastKind=payload.kind;
     }
     if(!this.#sequence)throw new Error('Session has no committed messages to resume.');
     // A crash can truncate the last JSONL line. Never use that partial entry;
@@ -189,6 +219,7 @@ export class SessionJournal {
     this.#messages=structuredClone(messages);
     this.#lastEncoded=encoded;
     this.#previousHash=hash;
+    this.#lastKind=kind;
     this.#sequence++;
   }
   async close() {
