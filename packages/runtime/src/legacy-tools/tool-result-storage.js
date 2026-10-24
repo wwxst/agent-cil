@@ -50,13 +50,17 @@ async function ensureNoSymlink(path) {
   }
 }
 export async function ensureToolResultsDir(storage) {
-  const root = await realpath(assertStorageContext(storage).workspace);
+  const lexicalRoot = resolve(assertStorageContext(storage).workspace);
+  const root = await realpath(lexicalRoot);
   const directory = getToolResultsDir(storage);
-  const rel = relative(root, directory);
+  // On Windows a workspace may be a junction/short-name path and realpath()
+  // may change its prefix. Check the requested path lexically first, then
+  // confirm its resolved destination against the canonical root below.
+  const rel = relative(lexicalRoot, directory);
   if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel) || !rel) {
     throw new Error('Tool results directory must be inside the workspace.');
   }
-  let current = root;
+  let current = lexicalRoot;
   for (const component of rel.split(sep)) {
     current = join(current, component);
     await ensureNoSymlink(current);
