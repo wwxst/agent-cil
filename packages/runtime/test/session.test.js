@@ -94,6 +94,9 @@ test('restores a JSON-file session with a fresh manager and model adapter', asyn
     assert.equal(restored.turnCount, 1);
     const second = await secondManager.run('session-cold', 'continue after restart');
     assert.equal(second.session.turnCount, 2);
+    assert.deepEqual(second.session.turns.map(turn => turn.status), ['completed', 'completed']);
+    assert.notEqual(second.session.turns[0].id, second.session.turns[1].id,
+      'a cold process with a reset ID factory must not alias an earlier turn');
     assert.equal(second.session.messages.at(-1).content[0].text, 'restored successfully');
   } finally {
     await rm(directory, { recursive: true, force: true });
