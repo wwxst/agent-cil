@@ -294,3 +294,36 @@ test('a recomputed checksum cannot legitimize invalid parentUuid or a forged too
     await good.close();
   });
 });
+
+test('source compact root requires logicalParentUuid even when forged JSONL checksum is valid',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    await journal.append({messages:transcript,kind:'tool'});
+    const compact=[{role:'user',content:'after compact summary'},
+      {role:'assistant',content:[{type:'text',text:'continued from compact'}]}];
+    await journal.append({messages:compact,kind:'compact'});
+    const file=journal.path;
+    await journal.close();
+    const records=(await readFile(file,'utf8')).trim().split('\n').map(JSON.parse);
+    const tampered=structuredClone(records.at(-1));
+    delete tampered.entries[0].logicalParentUuid;
+    const {hash:oldHash,...payload}=tampered;
+    tampered.hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    await writeFile(file,JSON.stringify(records[0])+'\n'+JSON.stringify(tampered)+'\n');
+    await assert.rejects(openSessionJournal({workspace:root,sessionId:id,resume:true}),
+      /Missing logicalParentUuid compact boundary/);
+  });
+});
+test('a non-compact append cannot silently replace earlier committed transcript messages',async()=>{
+  await workspace(async root=>{
+    const journal=await openSessionJournal({workspace:root,sessionId:randomUUID()});
+    await journal.append({messages:transcript,kind:'tool'});
+    const rewritten=structuredClone(transcript);
+    rewritten[0].content='some other user prompt';
+    await assert.rejects(journal.append({messages:rewritten,kind:'tool'}),
+      /Non-compact session transition rewrites already committed messages/);
+    assert.deepEqual(journal.messages,transcript);
+    await journal.close();
+  });
+});
