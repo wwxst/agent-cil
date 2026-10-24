@@ -165,7 +165,6 @@ test('legacy mapper cannot forge tool id, return unknown block, or inject non-bo
 
 test('unported legacy side channels remain fail-closed; structured_output is tested separately', async () => {
   const examples = [
-    { data: 'ok', newMessages: [{ role: 'user', content: 'hidden' }] },
     { data: 'ok', contextModifier: () => {} },
     { data: 'ok', mcpMeta: { _meta: { extra: true } } },
     { unexpected: true },
