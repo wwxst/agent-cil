@@ -52,7 +52,7 @@ function abortIfNeeded(signal) {
 export async function query({
   messages = [], input, signal, model, tools, maxTurns,
   executeTool, emit, canStartToolDuringStream, compactContext, getPostToolStop,
-  getToolHookContext,
+  getToolHookContext, getToolNativeMessages,
 } = {}) {
   if (!Array.isArray(messages)) throw new TypeError('messages must be an array.');
   if (messages.some(message => !isRecord(message))) {
@@ -78,6 +78,9 @@ export async function query({
   }
   if (getToolHookContext !== undefined && typeof getToolHookContext !== 'function') {
     throw new TypeError('getToolHookContext must be a function.');
+  }
+  if (getToolNativeMessages !== undefined && typeof getToolNativeMessages !== 'function') {
+    throw new TypeError('getToolNativeMessages must be a function.');
   }
   if (getPostToolStop !== undefined && typeof getPostToolStop !== 'function') {
     throw new TypeError('getPostToolStop must be a function.');
@@ -410,7 +413,22 @@ export async function query({
               !block || block.type !== 'text' || typeof block.text !== 'string')) {
           throw new ModelProtocolError('Original Hook normalization returned invalid API blocks.');
         }
-        history.push({ role: 'user', content: [...toolResults, ...permissionExtraBlocks, ...hookContext] });
+        // Old 2.1.88 checkPermissionsAndCallTool() line 1565 returns
+        // result.newMessages after mapped tool_result and PostToolUse.
+        // normalizeMessagesForAPI() merges consecutive UserMessages. The
+        // headless path preserves its text/image blocks only after the full
+        // tool batch and the post-Hook context, with stable tool_use order.
+        const nativeNewBlocks = getToolNativeMessages
+          ? await getToolNativeMessages({ toolUses, turn, signal }) : [];
+        abortIfNeeded(signal);
+        if (!Array.isArray(nativeNewBlocks) || nativeNewBlocks.some(b =>
+          !b || !(b.type === 'text' && typeof b.text === 'string') &&
+          !(b.type === 'image' && b.source?.type === 'base64'))) {
+          throw new ModelProtocolError('Original tool newMessages normalization returned invalid API blocks.');
+        }
+        history.push({ role: 'user', content: [
+          ...toolResults, ...permissionExtraBlocks, ...hookContext, ...nativeNewBlocks,
+        ] });
         // A complete assistant tool call and all matching tool_result blocks
         // form a resumable checkpoint. This is the headless CLI equivalent of
         // the 2.1.88 query.ts stream exposing committed messages before a
