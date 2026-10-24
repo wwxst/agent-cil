@@ -8,7 +8,8 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
-import { permissionRuleValueFromString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
+import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
+import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
@@ -38,9 +39,9 @@ export const HELP = [
   '      --compact-threshold <n>  Auto-compact above approximate input tokens (0 disables)',
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
   '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
-  '      --allowedTools <name>    Whole-tool allow rule, repeatable',
-  '      --disallowedTools <name> Whole-tool deny rule, repeatable',
-  '      --askTools <name>        Whole-tool ask rule, repeatable',
+  '      --allowedTools <name>    Allow tool or literal Bash(command), repeatable',
+  '      --disallowedTools <name> Deny tool or literal Bash(command), repeatable',
+  '      --askTools <name>        Ask tool or literal Bash(command), repeatable',
   '      --hooks-file <path> Explicitly trust a tool-hook settings JSON file (Pre/Post/Failure)',
   '      --session-id <uuid> Start a fresh, named persisted CLI session',
   '      --resume <uuid>     Resume a session; omit prompt to finish a committed tool round',
@@ -128,11 +129,22 @@ export function parseArgs(argv) {
         : flag === '--disallowedTools' ? 'deny' : 'ask';
       const raw = inlineValue.length ? inlineValue.join('=') : takeValue(flag, i++);
       const parsed = permissionRuleValueFromString(raw);
+      const wholeTool = parsed.ruleContent === undefined && raw === parsed.toolName;
+      // The original Bash exact-command checkPermissions method is now
+      // connected. Wildcard/prefix/compound rule matching still needs the
+      // original bashPermissions.ts AST dependency closure, so reject such
+      // rules instead of approximating them with a dangerous regex.
+      const exactBash = parsed.toolName === 'Bash' &&
+        typeof parsed.ruleContent === 'string' &&
+        parsed.ruleContent.length > 0 &&
+        parsed.ruleContent.trim() === parsed.ruleContent &&
+        !parsed.ruleContent.includes('*') &&
+        raw === permissionRuleValueToString(parsed);
       if (!['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'].includes(parsed.toolName) ||
-          parsed.ruleContent !== undefined || raw.length < 1 || raw !== parsed.toolName) {
+          !(wholeTool || exactBash)) {
         throw new CliArgumentError(flag +
-          ' accepts only exact built-in names (Read, Write, Edit, Grep, Glob, Bash).' +
-          ' Content-specific and MCP rules require the original tool.checkPermissions implementation.');
+          ' accepts whole built-in tool names or literal Bash(command) rules only.' +
+          ' Bash wildcards/prefixes, other content-specific rules and MCP need the original security matcher.');
       }
       options.permissionRules[behavior].push(parsed);
     } else if (arg === '--hooks-file' || arg.startsWith('--hooks-file=')) {
@@ -324,7 +336,8 @@ export function createCliPermissionPolicy({
 
     if (name === 'Bash') {
       return checkWholeToolPermissionRules(permissionContext, { name }) ||
-        { behavior: 'ask', reason: 'This command executes a shell process.' };
+        { behavior: 'ask', reason: 'This command executes a shell process.',
+          decisionReason: { type: 'mode', mode: 'default' } };
     }
 
     return { behavior: 'deny', reason: 'No CLI permission rule exists for tool ' + String(name) + '.' };
@@ -668,7 +681,7 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
   });
 }
 
-export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
+export async function createBuiltinTools({ workspace = process.cwd(), permissionContext = createCliPermissionContext() } = {}) {
   const { ToolRegistry } = await import('../../runtime/src/tool-registry.js');
   const root = resolve(workspace);
   const tools = new ToolRegistry();
@@ -863,7 +876,11 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
 
   tools.register({
     name: 'Bash',
-    description: 'Run a shell command in the workspace. Each command requires explicit interactive approval.',
+    description: 'Run a shell command in the workspace. Requires approval unless permitted by an exact command rule.',
+    // Original BashTool.checkPermissions delegates to bashToolHasPermission.
+    // Until AST, wrapper, wildcard and sandbox matching are transplanted, this
+    // is restricted to exact command rule decisions only (fail closed).
+    checkPermissions: async input => bashToolCheckExactMatchPermission(input, permissionContext),
     inputSchema: {
       type: 'object',
       properties: {
@@ -999,7 +1016,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       system: options.system,
     });
   }
-  const tools = await createBuiltinTools({ workspace });
+  const permissionContext = createCliPermissionContext({
+    allowEdits: options.allowEdits, permissionRules: options.permissionRules,
+  });
+  const tools = await createBuiltinTools({ workspace, permissionContext });
   let toolHooks = { PreToolUse: [], PostToolUse: [], PostToolUseFailure: [] };
   if (options.hooksFile) {
     try {
@@ -1071,7 +1091,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     onSessionCheckpoint: checkpoint => journal.append(checkpoint),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
-      permissionContext: createCliPermissionContext({ allowEdits: options.allowEdits, permissionRules: options.permissionRules }),
+      permissionContext,
     }),
     maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
