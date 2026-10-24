@@ -194,3 +194,56 @@ test('registry rejects non-callable checkPermissions at registration', () => {
     name: 'Bad', description: 'Invalid tool.', checkPermissions: 'allow', execute: async () => '',
   }), /checkPermissions must be a function/);
 });
+
+test('original default-mode ask may be satisfied by exact tool allow, never explicit ask or deny', async () => {
+  let toolChecks = 0;
+  const tool = { name:'Scoped', checkPermissions:async () => {
+    toolChecks++;
+    return { behavior:'allow', decisionReason:{
+      type:'rule', rule:{ruleBehavior:'allow', ruleValue:{toolName:'Scoped',ruleContent:'safe'}},
+    } };
+  } };
+  const defaultAsk={behavior:'ask',reason:'Default approval',
+    decisionReason:{type:'mode',mode:'default'}};
+  const exact=await resolveToolSpecificPermission({
+    tool,input:{value:'safe'},baseDecision:defaultAsk,
+  });
+  assert.equal(exact.behavior,'allow');
+  assert.equal(exact.decisionReason.type,'rule');
+  assert.equal(toolChecks,1);
+  for(const baseDecision of [
+    {behavior:'ask',reason:'Explicit whole ask',decisionReason:{
+      type:'rule',rule:{ruleBehavior:'ask',ruleValue:{toolName:'Scoped'}}}},
+    {behavior:'ask',reason:'Hook requires approval'},
+    {behavior:'deny',reason:'Global deny'},
+  ]) {
+    const result=await resolveToolSpecificPermission({
+      tool,input:{value:'safe'},baseDecision,
+    });
+    assert.equal(result.behavior,baseDecision.behavior);
+    assert.equal(result.reason,baseDecision.reason);
+  }
+  assert.equal(toolChecks,3,'denied tool must not execute checkPermissions');
+});
+
+test('original default-mode permission allow executes once in actual Query/AgentLoop', async () => {
+  let executions=0,approvals=0;
+  const loop=makeLoop({
+    permissionPolicy:async () => ({
+      behavior:'ask',reason:'Default CLI mode',
+      decisionReason:{type:'mode',mode:'default'},
+    }),
+    checkPermissions:async input => input.value==='before'
+      ? {behavior:'allow',updatedInput:input} : {behavior:'deny'},
+    approvalHandler:async () => {approvals++; return false;},
+    execute:async input => {executions++; return input.value;},
+    observeResult:block => {
+      assert.equal(block.is_error,undefined);
+      assert.equal(block.content,'before');
+    },
+  });
+  const result=await loop.run({input:'execute narrowly allowed tool'});
+  assert.equal(result.stopReason,'end_turn');
+  assert.equal(executions,1);
+  assert.equal(approvals,0);
+});
