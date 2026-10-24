@@ -10,6 +10,7 @@ import { parseArgs, createCliPermissionContext, createCliPermissionPolicy } from
 import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
 import { permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 import { parsePermissionRule, matchWildcardPattern } from '../../runtime/src/legacy-permissions/shell-rule-matching.js';
+import { matchingRulesForInput, filterRulesByContentsMatchingInput } from '../../runtime/src/legacy-permissions/bash-original-rule-filter.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -204,6 +205,55 @@ test('source prefix/wildcard Bash deny and ask rules are restrictive, not broad 
   }
   assert.throws(() => parseArgs(['--allowedTools','Bash(git push:*)']),/wildcard\/prefix/);
   assert.throws(() => parseArgs(['--allowedTools','Bash(npm run *)']),/wildcard\/prefix/);
+});
+
+test('direct old Bash filter preserves exact-before-prefix permission priority and wrapper candidates', () => {
+  const ctx = createCliPermissionContext({
+    permissionRules: {
+      allow: [],
+      deny: [{toolName:'Bash',ruleContent:'node:*'}],
+      ask: [{toolName:'Bash',ruleContent:'node --version'}],
+    },
+  });
+  const exact = matchingRulesForInput({command:'node --version'},ctx,'exact');
+  assert.equal(exact.matchingDenyRules.length,0,
+    'original exact mode must not match node:* against node --version');
+  assert.equal(exact.matchingAskRules[0].ruleContent,'node --version');
+  const prefix = matchingRulesForInput({command:'node --version'},ctx,'prefix',{
+    skipCompoundCheck:true,
+  });
+  assert.equal(prefix.matchingDenyRules[0].ruleContent,'node:*');
+  assert.equal(bashToolCheckExactMatchPermission({command:'node --version'},ctx).behavior,'ask',
+    'original Bash check evaluates literal exact ask before broader prefix deny');
+
+  const justDeny = createCliPermissionContext({
+    permissionRules:{allow:[],deny:[{toolName:'Bash',ruleContent:'node:*'}],ask:[]},
+  });
+  const wrapped = {command:'nohup FOO=bar timeout 5 node --version'};
+  const restrictive = matchingRulesForInput(wrapped,justDeny,'prefix',{
+    skipCompoundCheck:true,
+  });
+  assert.equal(restrictive.matchingDenyRules[0].ruleContent,'node:*');
+  assert.equal(bashToolCheckExactMatchPermission(wrapped,justDeny).behavior,'deny');
+  const direct = filterRulesByContentsMatchingInput(
+    wrapped,
+    new Map([['node:*',{toolName:'Bash',ruleContent:'node:*'}]]),
+    'prefix',
+    {stripAllEnvVars:true,skipCompoundCheck:true},
+  );
+  assert.equal(direct.length,1);
+
+  const scope = createCliPermissionContext({
+    permissionRules:{
+      allow:[{toolName:'Bash',ruleContent:'node --version > untrusted.txt'}],
+      deny:[{toolName:'Bash',ruleContent:'rm:*'}],
+      ask:[],
+    },
+  });
+  assert.equal(bashToolCheckExactMatchPermission({
+    command:'node --version > untrusted.txt',
+  },scope).behavior,'ask',
+  'until the original redirect/path closure is ported, exact redirection allow cannot be promoted across scoped deny');
 });
 
 test('original Bash exact rule only matches the entire command; deny > ask > allow', () => {
