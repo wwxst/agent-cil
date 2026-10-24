@@ -90,6 +90,10 @@ export class AgentLoop extends EventEmitter {
   #hookStopReason;
   #hookWorkspace;
   #toolResultStorage;
+  // Original REPL passes updatedToolUseContext and committed history into
+  // each next query() invocation of the same interactive session.
+  #committedSessionMessages;
+  #committedToolUseContext;
   #active = false;
 
   constructor({
@@ -150,6 +154,17 @@ export class AgentLoop extends EventEmitter {
   async run({ messages = [], input, signal } = {}) {
     if (this.#active) throw new Error('This AgentLoop already has an active run.');
     this.#active = true;
+    // Continue a session only when the caller presents the exact last
+    // committed conversation. A new root prompt or forked history cannot
+    // silently reuse the previous session's permission/tool context.
+    const continuesSession = messages.length > 0 &&
+      Array.isArray(this.#committedSessionMessages) &&
+      (messages === this.#committedSessionMessages ||
+       isDeepStrictEqual(messages, this.#committedSessionMessages));
+    if (!continuesSession) {
+      this.#committedSessionMessages = undefined;
+      this.#committedToolUseContext = undefined;
+    }
     this.#hookMessages = [];
     this.#toolAttachments = [];
     this.#toolNativeMessages = [];
@@ -161,6 +176,13 @@ export class AgentLoop extends EventEmitter {
         tools: this.#tools,
         maxTurns: this.#maxTurns,
         compactContext: this.#compactContext,
+        initialToolUseContext: this.#committedToolUseContext,
+        onCommittedToolUseContext: ({ messages: checkpoint, toolUseContext }) => {
+          // Original query.ts consumes newContext only for fully committed
+          // tool rounds. Keep the matching history as the session resume key.
+          this.#committedSessionMessages = structuredClone(checkpoint);
+          this.#committedToolUseContext = toolUseContext;
+        },
         canStartToolDuringStream: (toolUse, context) =>
           this.#canStartToolDuringStream(toolUse, context),
         executeTool: (toolUse, context) => this.#executeTool(toolUse, context),
@@ -182,8 +204,19 @@ export class AgentLoop extends EventEmitter {
           }
           return ordered;
         },
-        emit: (eventName, event) => this.emit(eventName, event),
+        emit: (eventName, event) => {
+          if (eventName === 'contextCompacted' && event?.committedMessages) {
+            // Original REPL compaction is a durable conversation transition.
+            // It does not reset the tool-owned context of this same session.
+            this.#committedSessionMessages =
+              structuredClone(event.committedMessages);
+          }
+          this.emit(eventName, event);
+        },
       });
+      // Successful model and tool turns both advance the original REPL's
+      // committed continuation point; keep ToolUseContext private to Runtime.
+      this.#committedSessionMessages = structuredClone(result.messages);
       if (this.#hookMessages.length) result.hookMessages = structuredClone(this.#hookMessages);
       if (this.#toolAttachments.length) result.toolAttachments = structuredClone(this.#toolAttachments);
       if (this.#toolNativeMessages.length) result.toolNativeMessages = structuredClone(this.#toolNativeMessages);
