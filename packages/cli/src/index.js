@@ -636,14 +636,25 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     child.once('error', error => {
       spawnError = error;
     });
-    child.once('close', async code => {
+    // CLI 2.1.88 ShellCommand.#createResultPromise settles on 'exit',
+    // not 'close': a grandchild can inherit a shell's stdout/stderr handles
+    // even after the shell itself has exited. Waiting for 'close' in that
+    // case incorrectly blocks the CLI until the grandchild finishes.
+    // Preserve the output already collected from pipes, while giving normal
+    // exit a short opportunity to drain its final buffered output.
+    let finalized = false;
+    let drainTimer;
+    const finish = async code => {
+      if (finalized) return;
+      finalized = true;
+      clearTimeout(drainTimer);
       clearTimeout(timeout);
-      // Termination is tracked by its Promise and awaited below. Do not
-      // cancel the SIGKILL escalation when only the group leader has exited.
       signal?.removeEventListener('abort', onAbort);
-      // Child close and successful process-tree termination are separate on
-      // Windows. Complete the bounded cleanup attempt before reporting.
+      // Process exit does not imply the requested process-tree kill is done.
+      // Keep waiting for taskkill or Unix SIGKILL escalation on cancellation.
       if (terminationPromise) await terminationPromise;
+      child.stdout.destroy();
+      child.stderr.destroy();
 
       if (signal?.aborted) {
         rejectPromise(abortError(signal));
@@ -660,7 +671,13 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
       else if (spawnError) result.error = spawnError.message;
       else if (code !== 0) result.error = 'Command exited with status ' + String(code) + '.';
       resolvePromise(result);
+    };
+    child.once('exit', code => {
+      // 'close' normally arrives almost immediately; do not wait indefinitely
+      // when descendants still own a copy of the pipe's write handle.
+      drainTimer = setTimeout(() => { void finish(code); }, 250);
     });
+    child.once('close', code => { void finish(code); });
   });
 }
 
