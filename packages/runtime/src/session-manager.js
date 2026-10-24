@@ -91,10 +91,48 @@ export class AgentSessionManager {
       record.updatedAt = timestamp(this.#clock);
       record = await this.#store.save(record, { expectedRevision: record.revision });
 
+      // The original CLI appends completed transcript entries while a query
+      // is still running. A successful Edit/Bash must not be lost because
+      // the NEXT model request failed. Reuse Query's committed tool-result and
+      // compaction checkpoints; serialize revisioned writes through the same
+      // FileSessionStore already used by this manager.
+      let checkpointWrites = Promise.resolve();
+      const persistCheckpoint = ({ committedMessages } = {}) => {
+        if (!Array.isArray(committedMessages)) return;
+        const snapshot = structuredClone(committedMessages);
+        checkpointWrites = checkpointWrites.then(async () => {
+          const next = { ...record, messages: snapshot, updatedAt: timestamp(this.#clock) };
+          record = await this.#store.save(next, { expectedRevision: record.revision });
+        });
+      };
+      const listen = typeof this.#loop.on === 'function' &&
+        typeof this.#loop.off === 'function';
+      if (listen) {
+        this.#loop.on('turnFinished', persistCheckpoint);
+        this.#loop.on('contextCompacted', persistCheckpoint);
+      }
+
       let result;
       try {
-        result = await this.#loop.run({ messages: record.messages, input: turnInput, signal });
+        try {
+          result = await this.#loop.run({ messages: record.messages, input: turnInput, signal });
+          await checkpointWrites;
+        } finally {
+          if (listen) {
+            this.#loop.off('turnFinished', persistCheckpoint);
+            this.#loop.off('contextCompacted', persistCheckpoint);
+          }
+        }
       } catch (error) {
+        // The model may reject while the last successful checkpoint is still
+        // on disk's write queue. Never persist the failed turn first.
+        try {
+          await checkpointWrites;
+        } catch (persistError) {
+          throw new AggregateError([error, persistError],
+            'Agent turn ended before its completed tool results could be persisted.',
+            { cause: error });
+        }
         const failedTurn = record.turns.find(item => item.id === turn.id);
         failedTurn.status = signal?.aborted || error?.name === 'AbortError' ? 'cancelled' : 'failed';
         failedTurn.completedAt = timestamp(this.#clock);
