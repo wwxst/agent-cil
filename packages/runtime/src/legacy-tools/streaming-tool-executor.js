@@ -34,6 +34,8 @@ export class StreamingToolExecutor extends OriginalStreamingToolExecutor {
         if (signal?.aborted && !abortController.signal.aborted) {
           throw new Error('Interrupted before queued tool execution.');
         }
+        // The source core's this.toolUseContext changes after each
+        // non-concurrent tool modifier; forward that exact context.
         return execute(block, context);
       },
       // Preserve the original first-writer API: each state update receives
