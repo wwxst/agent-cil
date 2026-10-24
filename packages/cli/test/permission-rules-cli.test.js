@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, createCliPermissionContext, createCliPermissionPolicy } from '../src/index.js';
+import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -37,8 +38,8 @@ test('original permissions reject unsupported content-specific rules at CLI boun
     deny: [{ toolName: 'Read' }],
     ask: [{ toolName: 'Bash' }],
   });
-  assert.throws(() => parseArgs(['--allowedTools', 'Bash(git push:*)']), /Content-specific/);
-  assert.throws(() => parseArgs(['--allowedTools', 'mcp__server__Read']), /MCP rules/);
+  assert.throws(() => parseArgs(['--allowedTools', 'Bash(git push:*)']), /Bash wildcards\/prefixes/);
+  assert.throws(() => parseArgs(['--allowedTools', 'mcp__server__Read']), /MCP/);
   assert.throws(() => parseArgs(['--allowedTools', 'Task']), /built-in/);
 });
 
@@ -129,5 +130,104 @@ test('real installed CLI honors original allow/deny/ask rules without bypassing 
     await assert.rejects(stat(join(root, '..', 'escape.txt')), /ENOENT/);
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test('original Bash exact rule only matches the entire command; deny > ask > allow', () => {
+  const parsed = parseArgs([
+    '--allowedTools', 'Bash(node --version)',
+    '--disallowedTools', 'Bash(node --version)',
+    '--askTools', 'Bash(node --version)', '-p', 'hi',
+  ]);
+  const ctx = createCliPermissionContext({ permissionRules: parsed.permissionRules });
+  assert.equal(bashToolCheckExactMatchPermission({ command: 'node --version' }, ctx).behavior, 'deny');
+  assert.equal(bashToolCheckExactMatchPermission({ command: 'node --version; echo injected' }, ctx).behavior, 'ask');
+  for (const value of [
+    'Bash(npm run:*)', 'Bash(node *)', 'Bash(*)', 'Bash()', 'Bash(node --version)extra',
+    'Write(file.txt)', 'Bash( node --version)',
+  ]) {
+    assert.throws(() => parseArgs(['--allowedTools', value]), /built-in|wildcards|MCP/);
+  }
+});
+
+function bashToolStream(id, command) {
+  return frame('message_start', { message: { usage: { input_tokens: 30 } } }) +
+    frame('content_block_start', { index: 0,
+      content_block: { type: 'tool_use', id, name: 'Bash', input: {} } }) +
+    frame('content_block_delta', { index: 0,
+      delta: { type: 'input_json_delta', partial_json: JSON.stringify({ command }) } }) +
+    frame('content_block_stop', { index: 0 }) +
+    frame('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 14 } }) +
+    frame('message_stop');
+}
+
+test('packed CLI Bash permission chain: exact allow, deny, ask, whole ask, unmatched fallback', {
+  timeout: 45000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-cil-bash-rule-'));
+  async function scenario(flags, command) {
+    const requests = [];
+    const id = 'bash-permission';
+    const server = createServer(async (req,res) => {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(requests.length === 1 ? bashToolStream(id, command) : answerStream());
+    });
+    let child, watchdog;
+    try {
+      await new Promise((resolve,reject) => {
+        server.once('error', reject);
+        server.listen(0,'127.0.0.1',resolve);
+      });
+      child = spawn(process.execPath, [
+        cli, '--print', '--provider', 'deepseek',
+        '--cwd', root, '--max-turns', '3', '--max-retries', '0',
+        '--base-url', 'http://127.0.0.1:' + server.address().port + '/anthropic',
+        ...flags, 'Test Bash command-specific permissions',
+      ], { env: {...process.env, DEEPSEEK_API_KEY:'local-only'},
+        stdio:['ignore','pipe','pipe'] });
+      const out=[],err=[];
+      child.stdout.on('data', value=>out.push(value));
+      child.stderr.on('data',value=>err.push(value));
+      watchdog=setTimeout(()=>child.kill('SIGKILL'),18000);
+      const [code,signal]=await new Promise((resolve,reject)=>{
+        child.once('error',reject);
+        child.once('close',(status,sig)=>resolve([status,sig]));
+      });
+      assert.equal(signal,null,Buffer.concat(err).toString('utf8'));
+      assert.equal(code,0,Buffer.concat(err).toString('utf8'));
+      assert.equal(requests.length,2);
+      assert.match(Buffer.concat(out).toString('utf8'),/Permission rule checked/);
+      const result=requests[1].messages.at(-1).content.find(block=>
+        block?.type==='tool_result' && block.tool_use_id===id);
+      assert.ok(result,'model must get exactly one matching Bash tool_result');
+      assert.equal(requests[1].messages.at(-1).content.filter(block=>
+        block?.type==='tool_result' && block.tool_use_id===id).length,1);
+      return result;
+    } finally {
+      if(watchdog)clearTimeout(watchdog);
+      if(child && child.exitCode===null && !child.killed)child.kill('SIGKILL');
+      server.closeAllConnections?.();
+      if(server.listening)await new Promise(resolve=>server.close(resolve));
+    }
+  }
+  try {
+    const allowed=await scenario(['--allowedTools','Bash(node --version)'],'node --version');
+    assert.notEqual(allowed.is_error,true);
+    assert.match(JSON.stringify(allowed.content),/v\\d+/);
+    for(const [flags, command] of [
+      [['--disallowedTools','Bash(node --version)','--allowedTools','Bash(node --version)'], 'node --version'],
+      [['--askTools','Bash(node --version)','--allowedTools','Bash(node --version)'], 'node --version'],
+      [['--askTools','Bash','--allowedTools','Bash(node --version)'], 'node --version'],
+      [['--allowedTools','Bash(node --version)'], 'node --version && echo unsafe'],
+      [['--allowedTools','Bash','--disallowedTools','Bash(node --version)'], 'FOO=1 node --version'],
+    ]) {
+      const rejected=await scenario(flags,command);
+      assert.equal(rejected.is_error,true,JSON.stringify({flags,command,rejected}));
+    }
+  } finally {
+    await rm(root,{recursive:true,force:true,maxRetries:3,retryDelay:100});
   }
 });
