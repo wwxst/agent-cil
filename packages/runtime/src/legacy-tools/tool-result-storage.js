@@ -4,7 +4,7 @@
  * Changes are limited to Node storage context, path safety and absent
  * telemetry/feature-gate dependencies.
  */
-import { mkdir, writeFile, lstat, realpath } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, lstat, realpath } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute, sep } from 'node:path';
 
 export const TOOL_RESULTS_SUBDIR = 'tool-results';
@@ -90,6 +90,21 @@ export async function persistToolResult(content, toolUseId, storage) {
     if (error?.code !== 'EEXIST') return {
       error: error instanceof Error ? error.message : String(error),
     };
+    // The 2.1.88 exclusive-write assumption requires the existing path to
+    // contain the deterministic bytes for this toolUseId. A directory,
+    // symlink, or content collision is NOT a completed previous result.
+    try {
+      const info = await lstat(filepath);
+      if (!info.isFile() || info.isSymbolicLink()) {
+        return { error: 'Existing tool result path is not a regular file.' };
+      }
+      const previous = await readFile(filepath, 'utf8');
+      if (previous !== contentStr) {
+        return { error: 'Stored tool result differs for the same tool_use ID.' };
+      }
+    } catch (readError) {
+      return { error: readError instanceof Error ? readError.message : String(readError) };
+    }
   }
   const previewInfo = generatePreview(contentStr, PREVIEW_SIZE_BYTES);
   return { filepath, originalSize: contentStr.length, isJson, ...previewInfo };
