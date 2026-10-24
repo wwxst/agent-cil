@@ -239,7 +239,7 @@ export class AgentLoop extends EventEmitter {
     }
   }
 
-  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress, speculative = false }) {
+  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress, sourceToolUseContext, speculative = false }) {
     const tool = this.#tools.get(toolUse.name);
     if (!tool) {
       const result = toolError(toolUse, 'Unknown tool: ' + toolUse.name);
@@ -272,6 +272,7 @@ export class AgentLoop extends EventEmitter {
           messages: structuredClone(history),
           signal,
           phase,
+          toolUseContext: sourceToolUseContext,
         });
         abortIfNeeded(signal);
         // 2.1.88 permissions.ts asks the tool for its input-specific
@@ -288,6 +289,7 @@ export class AgentLoop extends EventEmitter {
             messages: structuredClone(history),
             signal,
             phase,
+            toolUseContext: sourceToolUseContext,
           },
         });
         abortIfNeeded(signal);
@@ -608,6 +610,7 @@ export class AgentLoop extends EventEmitter {
         toolUseId: toolUse.id, signal, messages: history, assistantMessage,
         onProgress: onToolProgress,
         toolResultStorage: this.#toolResultStorage,
+        nativeToolUseContext: sourceToolUseContext,
         userModified: userModified || decision?.userModified === true,
         onToolNewMessages: async ({sourceMessages, blocks}) => {
           const event = {
