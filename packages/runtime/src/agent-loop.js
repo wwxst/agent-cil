@@ -322,6 +322,8 @@ export class AgentLoop extends EventEmitter {
     // transplants from 2.1.88 toolHooks.ts; the only Node adapter is the
     // explicitly configured command-hook executor / permission context.
     let hookResolvedDecision;
+    let shouldPreventContinuation = false;
+    let preHookStopReason;
     if (this.#preToolUseHooks.length > 0) {
       let hookPermissionResult;
       let pendingHookInput = executionInput;
@@ -357,10 +359,15 @@ export class AgentLoop extends EventEmitter {
           this.#recordPostHookMessage({
             toolUse, tool, turn, message: event.message.message,
           });
-        } else if (event.type === 'preventContinuation' ||
-                   event.type === 'stop') {
-          // Stop/control side effects still require the source-compatible
-          // outer Query semantics; fail closed instead of running the tool.
+        } else if (event.type === 'preventContinuation') {
+          // Original toolExecution.ts records this flag; an allowed tool
+          // runs and its result is preserved *before* Query is stopped.
+          shouldPreventContinuation = event.shouldPreventContinuation === true;
+        } else if (event.type === 'stopReason') {
+          preHookStopReason = event.stopReason;
+        } else if (event.type === 'stop') {
+          // Source generator's terminal stop is an abort/error path distinct
+          // from JSON {continue:false}. No tool may start after it.
           hookStopped = true;
           break;
         }
@@ -560,6 +567,20 @@ export class AgentLoop extends EventEmitter {
         },
       });
       abortIfNeeded(signal);
+      if (shouldPreventContinuation && result.is_error !== true) {
+        // Original 2.1.88 toolExecution.ts ~1572 yields this *after*
+        // map/persist tool_result and PostToolUse. Query converts it into
+        // a stop after its complete assistant/tool_result checkpoint.
+        this.#recordPostHookMessage({
+          toolUse, tool, turn,
+          message: { type: 'attachment', attachment: {
+            type: 'hook_stopped_continuation',
+            message: preHookStopReason || 'Execution stopped by hook',
+            hookName: 'PreToolUse:' + tool.name,
+            toolUseID: toolUse.id, hookEvent: 'PreToolUse',
+          } },
+        });
+      }
       this.emit('toolCallFinished', {
         turn, toolUseId: toolUse.id, toolName: tool.name, isError: result.is_error === true,
       });
