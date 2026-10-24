@@ -376,14 +376,11 @@ export function createAutoCompact({
             // Metadata is intentionally not serialized to DeepSeek. It
             // invalidates pre-compact usage without changing recent blocks.
             __compactRetainedMessages: recent.length },
-          ...structuredClone(recent).map(message => {
-            // Precompact response usage describes the OLD context size. Keep
-            // all protected content/signatures byte-for-byte but clear only
-            // stale accounting metadata; the next completed response will
-            // establish a fresh authoritative usage anchor.
-            if (message.usage) delete message.usage;
-            return message;
-          }),
+          // CLI 2.1.88 retains the exact recent messages, including the
+          // provider usage snapshot. The compact-boundary marker above
+          // prevents stale usage from being used as a new context anchor
+          // without mutating signed tool history or other metadata.
+          ...structuredClone(recent),
         ];
         const nextTokens = estimateMessageTokens(next);
         if (nextTokens >= estimatedTokens * 0.8) {
