@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { randomUUID, createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, rm, readFile, appendFile, symlink, mkdir, writeFile, stat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -354,5 +355,48 @@ test('session storage refuses a replacement lock owner, does not append, and nev
     await assert.rejects(journal.close(),/lock ownership lost/);
     assert.equal(JSON.parse(await readFile(lock,'utf8')).token,nextOwnerToken,
       'the displaced process must not unlink the active owner lock');
+  });
+});
+
+test('two actual Node processes cannot own the same session, but a new process resumes after release',{
+  timeout:15000,
+},async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const parent=await openSessionJournal({workspace:root,sessionId:id});
+    await parent.append({messages:transcript,kind:'tool'});
+    // Real independent Node process, not merely a second SessionJournal in
+    // one V8 isolate. This is the lock boundary used by agent-cil --resume.
+    const moduleUrl=new URL('../src/legacy-session/session-storage.js',import.meta.url).href;
+    const js = `import {openSessionJournal} from ${JSON.stringify(moduleUrl)};
+      try {
+        const journal=await openSessionJournal({
+          workspace:process.env.AGENT_CIL_LOCK_TEST_ROOT,
+          sessionId:process.env.AGENT_CIL_LOCK_TEST_SESSION,
+          resume:true,
+        });
+        await journal.close();
+        process.stdout.write('acquired');
+      } catch(error) {
+        process.stderr.write(error.message);
+        process.exitCode=17;
+      }`;
+    function runChild(){
+      return spawnSync(process.execPath,['--input-type=module','--eval',js],{
+        env:{...process.env,AGENT_CIL_LOCK_TEST_ROOT:root,
+          AGENT_CIL_LOCK_TEST_SESSION:id},
+        encoding:'utf8',timeout:10000,
+      });
+    }
+    try {
+      const blocked=runChild();
+      assert.equal(blocked.status,17,blocked.stdout+blocked.stderr);
+      assert.match(blocked.stderr,/already active/);
+      assert.equal(blocked.stdout,'');
+      assert.deepEqual(parent.messages,transcript);
+    }finally {await parent.close();}
+    const resumed=runChild();
+    assert.equal(resumed.status,0,resumed.stdout+resumed.stderr);
+    assert.equal(resumed.stdout,'acquired');
   });
 });
