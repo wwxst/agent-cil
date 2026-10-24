@@ -51,7 +51,7 @@ function abortIfNeeded(signal) {
  */
 export async function query({
   messages = [], input, signal, model, tools, maxTurns,
-  executeTool, emit, canStartToolDuringStream, compactContext,
+  executeTool, emit, canStartToolDuringStream, compactContext, getPostToolStop,
 } = {}) {
   if (!Array.isArray(messages)) throw new TypeError('messages must be an array.');
   if (messages.some(message => !isRecord(message))) {
@@ -74,6 +74,9 @@ export async function query({
   }
   if (compactContext !== undefined && typeof compactContext !== 'function') {
     throw new TypeError('compactContext must be a function.');
+  }
+  if (getPostToolStop !== undefined && typeof getPostToolStop !== 'function') {
+    throw new TypeError('getPostToolStop must be a function.');
   }
   if (!Number.isSafeInteger(maxTurns) || maxTurns < 1) {
     throw new RangeError('maxTurns must be a positive safe integer.');
@@ -382,6 +385,20 @@ export async function query({
           committedMessages: structuredClone(history),
         });
 
+        // The original PostToolUse generator emits hook_stopped_continuation
+        // when JSON {continue:false} is returned. The Node headless Query
+        // must honor it after the completed tool_result checkpoint, rather
+        // than accidentally requesting another model round.
+        const postToolStop = getPostToolStop?.();
+        if (typeof postToolStop === 'string' && postToolStop) {
+          const result = {
+            messages: history, turns: turn, stopReason: 'hook_stopped',
+            stopMessage: postToolStop, finalMessage: assistantMessage,
+          };
+          emit('hookStopped', { turn, reason: postToolStop });
+          emit('finished', result);
+          return result;
+        }
         if (turn === maxTurns) {
           const result = { messages: history, turns: turn, stopReason: 'max_turns', finalMessage: assistantMessage };
           emit('finished', result);
