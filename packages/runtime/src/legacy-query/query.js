@@ -356,6 +356,7 @@ export async function query({
           executor.addTool(toolUse);
         }
         const toolResults = [];
+        const permissionExtraBlocks = [];
         try {
           for await (const update of executor.getRemainingResults()) {
             abortIfNeeded(signal);
@@ -363,11 +364,28 @@ export async function query({
             if (update.message) {
               const blocks = update.message.content;
               if (!Array.isArray(blocks)) throw new ModelProtocolError('Legacy scheduler emitted an invalid tool result.');
+              // Original toolExecution.ts adds permission acceptFeedback and
+              // contentBlocks to the same user message after its tool_result.
+              // Keep tool IDs authenticated and keep all result blocks
+              // together before ancillary user content for Anthropic/OpenAI.
+              let sawToolResult = false;
               for (const block of blocks) {
-                if (block?.type !== 'tool_result') {
+                if (block?.type === 'tool_result') {
+                  if (sawToolResult) throw new ModelProtocolError(
+                    'Tool execution emitted multiple results for one tool_use.');
+                  sawToolResult = true;
+                  toolResults.push(block);
+                } else if (block?.type === 'text' && typeof block.text === 'string') {
+                  if (!sawToolResult) throw new ModelProtocolError(
+                    'Permission content must follow its tool_result.');
+                  permissionExtraBlocks.push(block);
+                } else if (block?.type === 'image' && block.source?.type === 'base64') {
+                  if (!sawToolResult) throw new ModelProtocolError(
+                    'Permission content must follow its tool_result.');
+                  permissionExtraBlocks.push(block);
+                } else {
                   throw new ModelProtocolError('Legacy scheduler emitted an unexpected message.');
                 }
-                toolResults.push(block);
               }
             }
           }
@@ -392,7 +410,7 @@ export async function query({
               !block || block.type !== 'text' || typeof block.text !== 'string')) {
           throw new ModelProtocolError('Original Hook normalization returned invalid API blocks.');
         }
-        history.push({ role: 'user', content: [...toolResults, ...hookContext] });
+        history.push({ role: 'user', content: [...toolResults, ...permissionExtraBlocks, ...hookContext] });
         // A complete assistant tool call and all matching tool_result blocks
         // form a resumable checkpoint. This is the headless CLI equivalent of
         // the 2.1.88 query.ts stream exposing committed messages before a
