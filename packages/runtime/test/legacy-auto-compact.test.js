@@ -472,7 +472,7 @@ test('real usage from before compact is invalidated until a fresh post-compact r
   const copy = structuredClone(raw);
   // A genuine provider usage value refers to a much larger pre-compact
   // context than the retained recent API-round payloads.
-  copy[4].usage = {
+  copy[5].usage = {
     input_tokens: 850000, cache_read_input_tokens: 12000,
     output_tokens: 500,
   };
