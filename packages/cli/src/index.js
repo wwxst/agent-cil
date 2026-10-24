@@ -42,6 +42,8 @@ export const HELP = [
   '      --disallowedTools <name> Whole-tool deny rule, repeatable',
   '      --askTools <name>        Whole-tool ask rule, repeatable',
   '      --hooks-file <path> Explicitly trust a tool-hook settings JSON file (Pre/Post/Failure)',
+  '      --session-id <uuid> Start a fresh, named persisted CLI session',
+  '      --resume <uuid>     Resume the last committed transcript for a session',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
   '',
@@ -60,7 +62,8 @@ export const HELP = [
   '  Write, Edit, Bash      Require interactive approval before execution',
   '',
   'This first CLI slice uses the repository AgentLoop and Messages API adapter.',
-  'It does not yet implement the full official CLI configuration, OAuth, MCP, or resume contract.',
+  'Resume uses a versioned committed-checkpoint JSONL subset; full original sessionStorage is pending.',
+  'The full official CLI configuration, OAuth and MCP contract is not implemented.',
 ].join('\n') + '\n';
 
 export class CliArgumentError extends Error {
@@ -92,6 +95,8 @@ export function parseArgs(argv) {
     allowEdits: false,
     permissionRules: { allow: [], deny: [], ask: [] },
     hooksFile: undefined,
+    sessionId: undefined,
+    resume: undefined,
     system: undefined,
     cwd: process.cwd(),
     positional: [],
@@ -133,6 +138,15 @@ export function parseArgs(argv) {
     } else if (arg === '--hooks-file' || arg.startsWith('--hooks-file=')) {
       options.hooksFile = arg === '--hooks-file' ? takeValue(arg, i++) : arg.slice('--hooks-file='.length);
       if (!options.hooksFile) throw new CliArgumentError('--hooks-file requires a path.');
+    } else if (arg === '--session-id' || arg.startsWith('--session-id=') ||
+               arg === '--resume' || arg.startsWith('--resume=')) {
+      const flag = arg.split('=')[0];
+      const id = arg === flag ? takeValue(flag, i++) : arg.slice(flag.length+1);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+        throw new CliArgumentError(flag + ' requires a valid UUID.');
+      }
+      if (flag === '--session-id') options.sessionId = id;
+      else options.resume = id;
     } else if (arg === '--provider' || arg.startsWith('--provider=')) {
       const provider = arg === '--provider' ? takeValue(arg, i++) : arg.slice('--provider='.length);
       if (!['anthropic', 'deepseek', 'openai'].includes(provider)) {
@@ -191,6 +205,9 @@ export function parseArgs(argv) {
     }
   }
 
+  if (options.sessionId && options.resume) {
+    throw new CliArgumentError('--session-id and --resume cannot be used together.');
+  }
   options.cwd = resolve(options.cwd);
   options.prompt = options.positional.join(' ').trim();
   return options;
@@ -1009,18 +1026,37 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   compactThreshold ??= provider === 'deepseek' ? 850000 : 0;
   const { createAutoCompact } = await import('../../runtime/src/legacy-compact/auto-compact.js');
   const autoCompact = createAutoCompact({ thresholdTokens: compactThreshold });
+  const { openSessionJournal } = await import('../../runtime/src/legacy-session/session-storage.js');
+  let journal;
+  try {
+    journal = await openSessionJournal({
+      workspace,
+      ...(options.sessionId || options.resume
+        ? { sessionId: options.sessionId || options.resume } : {}),
+      resume: !!options.resume,
+    });
+  } catch(error) {
+    printError('Session initialization failed: ' +
+      (error instanceof Error ? error.message : String(error)));
+    return 2;
+  }
+  process.stderr.write('[session] ' + journal.id + (options.resume ? ' resumed' : ' created') + '\n');
   const loop = new AgentLoop({
     model,
     tools,
     toolResultStorage: {
       workspace,
-      directory: join(workspace, '.agent-cil', 'sessions', randomUUID(), 'tool-results'),
+      directory: join(workspace, '.agent-cil', 'sessions', journal.id, 'tool-results'),
     },
     preToolUseHooks: toolHooks.PreToolUse,
     postToolUseHooks: toolHooks.PostToolUse,
     postToolUseFailureHooks: toolHooks.PostToolUseFailure,
     hookWorkspace: workspace,
     compactContext: context => autoCompact.compact(context),
+    // The old sessionStorage.ts enqueues JSONL transcript commits. The
+    // portable Node journal implements only completed checkpoint records.
+    // Await it in Query before any subsequent provider request.
+    onSessionCheckpoint: checkpoint => journal.append(checkpoint),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
       permissionContext: createCliPermissionContext({ allowEdits: options.allowEdits, permissionRules: options.permissionRules }),
@@ -1042,7 +1078,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     rl = createInterface({ input: process.stdin, output: process.stdout });
   }
 
-  let history = [];
+  let history = journal.messages;
   let activeController;
   const onSigint = () => {
     if (activeController && !activeController.signal.aborted) {
@@ -1147,6 +1183,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   } finally {
     process.off('SIGINT', onSigint);
     rl?.close();
+    await journal.close();
   }
 }
 
