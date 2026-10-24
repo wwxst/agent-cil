@@ -16,8 +16,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Verify .js CLI startup and Read/Edit acceptance on Windows
-        run: node --test packages/cli/test/live-provider-launch.test.js
+      - name: Verify original token usage and real CLI compaction on Windows
+        run: node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/usage-context-compact-cli.test.js
 
   runtime-tests:
     runs-on: ubuntu-latest
@@ -67,6 +67,8 @@ jobs:
           # A typed prompt-too-long HTTP 400 after successful Edit must
           # trigger one tool-free summary then continue without redoing Edit.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-reactive-recovery-cli.test.js
+          # Provider usage, not short visible text, must trigger original token-based compaction.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/usage-context-compact-cli.test.js
           # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 
