@@ -165,10 +165,32 @@ test('source prefix/wildcard Bash deny and ask rules are restrictive, not broad 
   assert.equal(bashToolCheckExactMatchPermission({command:'npm run build'},ctx).behavior,'ask');
   assert.equal(bashToolCheckExactMatchPermission({
     command:'FOO=1 node --version',
-  },ctx).behavior,'ask','unported env stripping may not bypass restrictive scoped rules');
+  },ctx).behavior,'deny','original aggressive environment stripping must enforce deny');
   assert.equal(bashToolCheckExactMatchPermission({
     command:'node-not-the-prefix --version',
   },ctx).behavior,'ask');
+  // Original 2.1.88 filterRulesByContentsMatchingInput repeatedly strips
+  // interleaved SAFE_WRAPPER_PATTERNS and leading env assignments for
+  // restrictive rules, but never broadens automatic allow matches.
+  for (const command of [
+    'FOO=bar node --version',
+    "FOO='bar' node --version",
+    'nohup node --version',
+    'timeout 5 node --version',
+    'nice -n 5 node --version',
+    'nohup FOO=bar timeout 5 node --version',
+    'TZ=UTC nohup FOO=bar timeout 5 node --version',
+    'xargs node --version',
+  ]) {
+    assert.equal(bashToolCheckExactMatchPermission({ command },ctx).behavior,'deny',command);
+  }
+  for (const command of [
+    'NODE_OPTIONS=$(echo injected) node --version',
+    'timeout -k$(id) 5 node --version',
+    'FOO=bar\\nnode --version',
+  ]) {
+    assert.equal(bashToolCheckExactMatchPermission({ command },ctx).behavior,'ask',command);
+  }
   assert.throws(() => parseArgs(['--allowedTools','Bash(git push:*)']),/wildcard\/prefix/);
   assert.throws(() => parseArgs(['--allowedTools','Bash(npm run *)']),/wildcard\/prefix/);
 });
@@ -289,6 +311,8 @@ test('packed CLI Bash permission chain: exact allow, deny, ask, whole ask, unmat
       [['--askTools','Bash','--allowedTools','Bash(node --version)'], 'node --version'],
       [['--allowedTools','Bash(node --version)'], 'node --version && echo unsafe'],
       [['--allowedTools','Bash','--disallowedTools','Bash(node --version)'], 'FOO=1 node --version'],
+      [['--allowedTools','Bash','--disallowedTools','Bash(node:*)'], 'nohup FOO=bar timeout 5 node --version'],
+      [['--allowedTools','Bash','--askTools','Bash(node:*)'], 'nohup FOO=bar timeout 5 node --version'],
       [['--allowedTools','Bash','--disallowedTools','Bash(node:*)'], 'node --version'],
       [['--allowedTools','Bash','--disallowedTools','Bash(node *)'], 'node --version'],
       [['--allowedTools','Bash','--askTools','Bash(node *)'], 'node --version'],
