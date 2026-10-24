@@ -178,3 +178,73 @@ test('original canUseTool: invalid nested updatedInput denied before child call'
   assert.match(r.nestedDecision.reason,/Invalid nested tool updatedInput/);
   assert.equal(r.childCalls,0);
 });
+
+test('original canUseTool: tool-specific deny overrides a global allow and forced allow',async()=>{
+  const r=await runNested({
+    nestedForceDecision:{behavior:'allow'},
+    childCheckPermissions:async()=>({behavior:'deny',reason:'Tool-specific restriction'}),
+  });
+  assert.equal(r.nestedDecision.behavior,'deny');
+  assert.match(r.nestedDecision.reason,/Tool-specific restriction/);
+  assert.equal(r.childCalls,0);
+});
+test('original canUseTool: schema validation denies nested arguments before any permission or execution',async()=>{
+  const r=await runNested({childInput:{path:123}});
+  assert.equal(r.nestedDecision.behavior,'deny');
+  assert.match(r.nestedDecision.reason,/Invalid nested tool input/);
+  assert.equal(r.childCalls,0);
+  assert.deepEqual(r.policyChecks.map(x=>x.name),['Host']);
+});
+test('original canUseTool: abort during nested approval propagates interrupt and never executes child or commits an incomplete batch',{
+  timeout:15000,
+},async()=>{
+  const controller=new AbortController();
+  const tools=new ToolRegistry();
+  let parentCalls=0,childCalls=0,providerCalls=0,approvals=0;
+  tools.register({name:'Child',description:'Nested side-effect fixture',
+    call:async()=>{childCalls++;return {data:'unexpected'};},
+    mapToolResultToToolResultBlockParam:(data,id)=>({
+      type:'tool_result',tool_use_id:id,content:data,
+    }),
+  });
+  const child=tools.get('Child');
+  tools.register({name:'Parent',description:'Nested approval abort fixture',
+    call:async(_input,context,canUseTool,assistantMessage)=>{
+      parentCalls++;
+      const result=await canUseTool(child,{},context,assistantMessage,'nested-abort');
+      if(result.behavior==='allow')await child.call({});
+      return {data:result.behavior};
+    },
+    mapToolResultToToolResultBlockParam:(data,id)=>({
+      type:'tool_result',tool_use_id:id,content:data,
+    }),
+  });
+  const loop=new AgentLoop({
+    tools,maxTurns:3,
+    permissionPolicy:async({name})=>({behavior:name==='Parent'?'allow':'ask',
+      reason:'Confirm nested request'}),
+    approvalHandler:async()=>{
+      approvals++;
+      controller.abort(new Error('Cancelled inside nested approval'));
+      return {approved:true};
+    },
+    model:{async *stream(){
+      providerCalls++;
+      yield {type:'tool_use',id:'parent-abort',name:'Parent',input:{}};
+      yield {type:'message_end',stopReason:'tool_use'};
+    }},
+  });
+  const statuses=[],checkpoints=[];
+  loop.on('toolCallFinished',event=>statuses.push(event));
+  loop.on('turnFinished',event=>checkpoints.push(event));
+  await assert.rejects(loop.run({
+    input:'request nested approval',signal:controller.signal,
+  }),/Cancelled inside nested approval/);
+  assert.equal(parentCalls,1);
+  assert.equal(childCalls,0);
+  assert.equal(approvals,1);
+  assert.equal(providerCalls,1);
+  assert.equal(checkpoints.length,0);
+  assert.equal(statuses.filter(x=>x.toolUseId==='parent-abort' && x.interrupted).length,1);
+  assert.equal(loop.active,false);
+});
