@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdtemp, rm, readFile, appendFile, symlink, mkdir, writeFile, stat } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, appendFile, symlink, mkdir, writeFile, stat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentLoop } from '../src/agent-loop.js';
@@ -217,7 +217,7 @@ test('existing v1 committed transcript resumes and migrates to 2.1.88-inspired U
     await initial.close();
     const payload={
       type:'session_checkpoint',version:1,sessionId:id,
-      workspace:root,kind:'tool',sequence:1,
+      workspace:await realpath(root),kind:'tool',sequence:1,
       previousHash:'0'.repeat(64),messages:transcript,
     };
     const hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
