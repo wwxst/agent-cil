@@ -2,17 +2,19 @@
 import { stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
 import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
+import { permissionRuleValueFromString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
 const MAX_TOOL_OUTPUT_BYTES = 1024 * 1024;
 const MAX_WALK_FILES = 5000;
-const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.cache']);
+const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.cache', '.agent-cil']);
 const BACKSLASH = String.fromCharCode(92);
 const REGEX_META = new Set(['.', '+', '^', '$', '(', ')', '|', '[', ']', '{', '}', BACKSLASH]);
 
@@ -36,6 +38,9 @@ export const HELP = [
   '      --compact-threshold <n>  Auto-compact above approximate input tokens (0 disables)',
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
   '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
+  '      --allowedTools <name>    Whole-tool allow rule, repeatable',
+  '      --disallowedTools <name> Whole-tool deny rule, repeatable',
+  '      --askTools <name>        Whole-tool ask rule, repeatable',
   '      --hooks-file <path> Explicitly trust a PreToolUse command-hook settings JSON file',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
@@ -85,6 +90,7 @@ export function parseArgs(argv) {
     compactThreshold: undefined,
     maxRetries: 2,
     allowEdits: false,
+    permissionRules: { allow: [], deny: [], ask: [] },
     hooksFile: undefined,
     system: undefined,
     cwd: process.cwd(),
@@ -109,6 +115,21 @@ export function parseArgs(argv) {
       options.print = true;
     } else if (arg === '--allow-edits') {
       options.allowEdits = true;
+    } else if (['--allowedTools', '--disallowedTools', '--askTools'].some(
+      flag => arg === flag || arg.startsWith(flag + '=')
+    )) {
+      const [flag, ...inlineValue] = arg.split('=');
+      const behavior = flag === '--allowedTools' ? 'allow'
+        : flag === '--disallowedTools' ? 'deny' : 'ask';
+      const raw = inlineValue.length ? inlineValue.join('=') : takeValue(flag, i++);
+      const parsed = permissionRuleValueFromString(raw);
+      if (!['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'].includes(parsed.toolName) ||
+          parsed.ruleContent !== undefined || raw.length < 1 || raw !== parsed.toolName) {
+        throw new CliArgumentError(flag +
+          ' accepts only exact built-in names (Read, Write, Edit, Grep, Glob, Bash).' +
+          ' Content-specific and MCP rules require the original tool.checkPermissions implementation.');
+      }
+      options.permissionRules[behavior].push(parsed);
     } else if (arg === '--hooks-file' || arg.startsWith('--hooks-file=')) {
       options.hooksFile = arg === '--hooks-file' ? takeValue(arg, i++) : arg.slice('--hooks-file='.length);
       if (!options.hooksFile) throw new CliArgumentError('--hooks-file requires a path.');
@@ -229,14 +250,19 @@ async function assertPathWithinWorkspace(workspace, target) {
  * Additional rule persistence stays disabled until the original dependency
  * closure is runnable and independently verified.
  */
-export function createCliPermissionContext({ allowEdits = false } = {}) {
+export function createCliPermissionContext({ allowEdits = false, permissionRules = {} } = {}) {
+  const updates = allowEdits ? [{ type: 'setMode', destination: 'cliArg', mode: 'acceptEdits' }] : [];
+  for (const behavior of ['allow', 'deny', 'ask']) {
+    const rules = permissionRules[behavior] || [];
+    if (rules.length) updates.push({ type: 'addRules', destination: 'cliArg', behavior, rules });
+  }
   return applyPermissionUpdates({
     mode: 'default',
     alwaysAllowRules: {},
     alwaysDenyRules: {},
     alwaysAskRules: {},
     additionalWorkingDirectories: new Map(),
-  }, allowEdits ? [{ type: 'setMode', destination: 'cliArg', mode: 'acceptEdits' }] : []);
+  }, updates);
 }
 
 export function createCliPermissionPolicy({
@@ -644,6 +670,7 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
 
   tools.register({
     name: 'Read',
+    maxResultSizeChars: Infinity,
     isConcurrencySafe: () => true,
     // Built-in workspace-only read/search operations may start at tool_use
     // block_stop, before the model has finished streaming.
@@ -985,12 +1012,16 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const loop = new AgentLoop({
     model,
     tools,
+    toolResultStorage: {
+      workspace,
+      directory: join(workspace, '.agent-cil', 'sessions', randomUUID(), 'tool-results'),
+    },
     preToolUseHooks,
     hookWorkspace: workspace,
     compactContext: context => autoCompact.compact(context),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
-      permissionContext: createCliPermissionContext({ allowEdits: options.allowEdits }),
+      permissionContext: createCliPermissionContext({ allowEdits: options.allowEdits, permissionRules: options.permissionRules }),
     }),
     maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
