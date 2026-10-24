@@ -2,6 +2,7 @@
 import { stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
 import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +13,7 @@ const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
 const MAX_TOOL_OUTPUT_BYTES = 1024 * 1024;
 const MAX_WALK_FILES = 5000;
-const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.cache']);
+const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.cache', '.agent-cil']);
 const BACKSLASH = String.fromCharCode(92);
 const REGEX_META = new Set(['.', '+', '^', '$', '(', ')', '|', '[', ']', '{', '}', BACKSLASH]);
 
@@ -638,6 +639,8 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
 
   tools.register({
     name: 'Read',
+    // Original FileReadTool self-bounds output; persistence here is circular.
+    maxResultSizeChars: Infinity,
     isConcurrencySafe: () => true,
     // Built-in workspace-only read/search operations may start at tool_use
     // block_stop, before the model has finished streaming.
@@ -964,6 +967,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const loop = new AgentLoop({
     model,
     tools,
+    // Original CLI stores tool result files by session so the model can
+    // inspect previews with Read. Only the directory mapping is Node-specific.
+    toolResultStorage: {
+      workspace,
+      directory: join(workspace, '.agent-cil', 'sessions', randomUUID(), 'tool-results'),
+    },
     compactContext: context => autoCompact.compact(context),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
