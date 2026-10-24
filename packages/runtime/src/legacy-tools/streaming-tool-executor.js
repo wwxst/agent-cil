@@ -7,7 +7,9 @@ import { validateJsonSchema } from '../validation.js';
 export class StreamingToolExecutor extends OriginalStreamingToolExecutor {
   #abortController;
   #detachAbort;
-  constructor({ execute, getTool, signal } = {}) {
+  #getTool;
+  #onUnknownTool;
+  constructor({ execute, getTool, signal, onUnknownTool } = {}) {
     if (typeof execute !== 'function') throw new TypeError('execute must be a function.');
     if (typeof getTool !== 'function') throw new TypeError('getTool must be a function.');
     const abortController = new AbortController();
@@ -61,6 +63,8 @@ export class StreamingToolExecutor extends OriginalStreamingToolExecutor {
     super(toolDefinitions, undefined, toolUseContext);
     instance = this;
     this.#abortController = abortController;
+    this.#getTool = getTool;
+    this.#onUnknownTool = onUnknownTool;
     this.#detachAbort = () => signal?.removeEventListener('abort', onAbort);
   }
   discard() {
@@ -71,8 +75,9 @@ export class StreamingToolExecutor extends OriginalStreamingToolExecutor {
     this.#detachAbort();
   }
   addTool(block) {
-    // The CLI emits one whole assistant turn; legacy executor accepts the
-    // assistant's per-content message envelope only for result attribution.
+    // Original addTool() handles unknown tools before runToolUse. Preserve
+    // Query's existing completion event on this adapter seam.
+    if (!this.#getTool(block.name)) this.#onUnknownTool?.(block);
     return super.addTool(block, { uuid: block.id });
   }
   *getCompletedResults() {
