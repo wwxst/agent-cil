@@ -347,12 +347,20 @@ export class AgentLoop extends EventEmitter {
         } else if (event.type === 'hookUpdatedInput') {
           pendingHookInput = event.updatedInput;
         } else if (event.type === 'message') {
+          // Original 2.1.88 emits display/progress messages separately;
+          // unknown internal types retain the pre-existing lifecycle event.
           this.emit('hookMessage', { turn, toolUseId: toolUse.id, message: event.message });
-        } else if (event.type === 'additionalContext' ||
-                   event.type === 'preventContinuation' || event.type === 'stop') {
-          // The Node Query does not yet support arbitrary Hook attachment
-          // persistence / stopping its outer generator. Never ignore an
-          // unsupported side effect and then continue executing the tool.
+        } else if (event.type === 'additionalContext') {
+          // Old toolExecution.ts appends this attachment to resultingMessages
+          // without stopping or overriding tool permission. Query later
+          // normalizes it after the complete tool_result batch.
+          this.#recordPostHookMessage({
+            toolUse, tool, turn, message: event.message.message,
+          });
+        } else if (event.type === 'preventContinuation' ||
+                   event.type === 'stop') {
+          // Stop/control side effects still require the source-compatible
+          // outer Query semantics; fail closed instead of running the tool.
           hookStopped = true;
           break;
         }
