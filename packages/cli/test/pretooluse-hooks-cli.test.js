@@ -116,6 +116,27 @@ test('real CLI uses original PreToolUse permission behavior, input rewrite, and 
     const ask=await runScenario('ask',{file_path:'ask.txt',content:'should not write'},['--allow-edits']);
     assert.equal(ask.is_error,true,'Hook ask forces review even if baseline allowed');
     await assert.rejects(stat(join(root,'ask.txt')),{code:'ENOENT'});
+    // Cross-port invariant: 2.1.88 source resolveHookPermissionDecision
+    // MUST not bypass the 2.1.88 permissionRuleParser and explicit deny/ask
+    // sources restored in the other draft PR.
+    const explicitDeny=await runScenario('allow',
+      {file_path:'rule-denied.txt',content:'not permitted'},
+      ['--allowedTools','Write','--disallowedTools','Write']);
+    assert.equal(explicitDeny.is_error,true,'explicit deny always overrides Hook allow');
+    await assert.rejects(stat(join(root,'rule-denied.txt')),{code:'ENOENT'});
+    const explicitAsk=await runScenario('allow',
+      {file_path:'rule-ask.txt',content:'must prompt'},
+      ['--allowedTools','Write','--askTools','Write']);
+    assert.equal(explicitAsk.is_error,true,'explicit ask still requires approval despite Hook allow');
+    await assert.rejects(stat(join(root,'rule-ask.txt')),{code:'ENOENT'});
+    const unsafeRewrite=await runScenario('allow',
+      {file_path:'safe-first.txt',content:'initial'},[],{
+      hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'allow',
+        updatedInput:{file_path:'../escaped-by-hook.txt',content:'outside'}}
+    });
+    assert.equal(unsafeRewrite.is_error,true,'Hook rewritten input is revalidated before policy allow');
+    await assert.rejects(stat(join(root,'..','escaped-by-hook.txt')),{code:'ENOENT'});
+
     const outside=await runScenario('allow',{file_path:'../unsafe-hook.txt',content:'outside'});
     assert.equal(outside.is_error,true,'Hook allow cannot evade workspace');
     await assert.rejects(stat(join(root,'..','unsafe-hook.txt')),{code:'ENOENT'});
