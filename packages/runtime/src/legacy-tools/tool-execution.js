@@ -229,7 +229,7 @@ async function checkPermissionsAndCallTool(
 export async function invokeToolCallAndMapResult(tool, input, {
   toolUseId, signal, messages = [], assistantMessage, onProgress,
   toolResultStorage, onToolResult, onToolAttachment, onToolNewMessages,
-  nativeToolUseContext, userModified = false,
+  nativeToolUseContext, canUseNestedTool, userModified = false,
 } = {}) {
   if (typeof toolUseId !== 'string' || !toolUseId) {
     throw new TypeError('An authenticated toolUseId is required.');
@@ -247,12 +247,14 @@ export async function invokeToolCallAndMapResult(tool, input, {
     if (typeof tool.mapToolResultToToolResultBlockParam !== 'function') {
       throw new TypeError('Legacy tool is missing its result mapper.');
     }
-    // A nested tool approval is not authorized merely because the parent
-    // call has approval. Deny until legacy nested-permission routing is ported.
-    const denyNestedPermission = async () => ({
+    // Original Tool.call third parameter: canUseTool(tool, input, context,
+    // assistantMessage, nestedToolUseID, forceDecision). The active AgentLoop
+    // supplies the real shared global+tool-specific permission chain.
+    // Standalone callers remain fail-closed, never inherit parent approval.
+    const nestedCanUseTool = canUseNestedTool ?? (async () => ({
       behavior: 'deny',
-      reason: 'Nested permission requests are not supported by this CLI.',
-    });
+      reason: 'No nested tool permission resolver is configured.',
+    }));
     const toolResult = await tool.call(
       structuredClone(input),
       {
@@ -262,7 +264,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
         toolUseId, signal, messages: structuredClone(messages),
         userModified: userModified === true,
       },
-      denyNestedPermission,
+      nestedCanUseTool,
       structuredClone(assistantMessage),
       onProgress,
     );
