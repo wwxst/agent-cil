@@ -387,7 +387,7 @@ test('packed CLI Bash permission chain: exact allow, deny, ask, whole ask, unmat
     const redirected = await scenario(['--allowedTools',redirectedRule],redirectedCommand);
     assert.equal(redirected.is_error,true);
     await assert.rejects(stat(join(root,'guarded-redirection.txt')), /ENOENT/);
-    const dangerousCompound = 'echo safe && node -e "require(\\'fs\\').appendFileSync(\\'guarded-compound.txt\\',\\'x\\')"';
+    const dangerousCompound = `echo safe && node -e "require('fs').appendFileSync('guarded-compound.txt','x')"`;
     const compoundRule = permissionRuleValueToString({
       toolName:'Bash',ruleContent:dangerousCompound,
     });
