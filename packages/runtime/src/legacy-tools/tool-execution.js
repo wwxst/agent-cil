@@ -205,7 +205,7 @@ async function checkPermissionsAndCallTool(
  */
 export async function invokeToolCallAndMapResult(tool, input, {
   toolUseId, signal, messages = [], assistantMessage, onProgress,
-  toolResultStorage, onToolResult,
+  toolResultStorage, onToolResult, userModified = false,
 } = {}) {
   if (typeof toolUseId !== 'string' || !toolUseId) {
     throw new TypeError('An authenticated toolUseId is required.');
@@ -226,7 +226,10 @@ export async function invokeToolCallAndMapResult(tool, input, {
     });
     const toolResult = await tool.call(
       structuredClone(input),
-      { toolUseId, signal, messages: structuredClone(messages) },
+      { toolUseId, signal, messages: structuredClone(messages),
+        // Original toolExecution.ts passes userModified on the native
+        // toolUseContext to Tool.call() after explicit permission approval.
+        userModified: userModified === true },
       denyNestedPermission,
       structuredClone(assistantMessage),
       onProgress,
