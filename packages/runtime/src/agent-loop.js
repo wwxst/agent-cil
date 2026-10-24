@@ -81,6 +81,7 @@ export class AgentLoop extends EventEmitter {
   #postToolUseHooks;
   #postToolUseFailureHooks;
   #hookMessages = [];
+  #hookStopReason;
   #hookWorkspace;
   #toolResultStorage;
   #active = false;
@@ -144,6 +145,7 @@ export class AgentLoop extends EventEmitter {
     if (this.#active) throw new Error('This AgentLoop already has an active run.');
     this.#active = true;
     this.#hookMessages = [];
+    this.#hookStopReason = undefined;
     try {
       const result = await query({
         messages, input, signal,
@@ -154,6 +156,7 @@ export class AgentLoop extends EventEmitter {
         canStartToolDuringStream: (toolUse, context) =>
           this.#canStartToolDuringStream(toolUse, context),
         executeTool: (toolUse, context) => this.#executeTool(toolUse, context),
+        getPostToolStop: () => this.#hookStopReason,
         emit: (eventName, event) => this.emit(eventName, event),
       });
       if (this.#hookMessages.length) result.hookMessages = structuredClone(this.#hookMessages);
@@ -570,6 +573,10 @@ export class AgentLoop extends EventEmitter {
       message: structuredClone(message),
     };
     this.#hookMessages.push(event);
+    if (message?.attachment?.type === 'hook_stopped_continuation') {
+      this.#hookStopReason = message.attachment.message ||
+        'PostToolUse Hook requested stopping the conversation.';
+    }
     this.emit('hookMessage', event);
   }
 
