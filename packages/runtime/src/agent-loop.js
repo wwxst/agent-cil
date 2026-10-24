@@ -162,6 +162,13 @@ export class AgentLoop extends EventEmitter {
     // assistant message may run before it is complete. Custom policies that
     // inspect message history retain the original post-message_end behavior.
     if (this.#permissionPolicy.supportsStreamingPreflight !== true) return false;
+    // The original streaming executor starts Read at content_block_stop.
+    // Our Node synchronous command-Hook adapter has no rollback transaction:
+    // starting a PreToolUse shell command before message_end can leave side
+    // effects if the model stream then fails. Keep the original executor but
+    // defer tool execution until the model turn is committed whenever any
+    // command Hook is explicitly configured. No-Hook early Read remains fast.
+    if (this.#preToolUseHooks.length > 0) return false;
     const tool = this.#tools.get(toolUse.name);
     if (!tool || !EARLY_READ_TOOLS.has(toolUse.name) ||
       tool.canRunDuringStream !== true ||
