@@ -17,7 +17,7 @@ export class ToolRegistryError extends Error {
 export class ToolRegistry {
   #tools = new Map();
 
-  register({ name, description, inputSchema = { type: 'object' }, validateInput, checkPermissions, isConcurrencySafe, canRunDuringStream = false, interruptBehavior, execute, call, mapToolResultToToolResultBlockParam, maxResultSizeChars = 50_000 } = {}) {
+  register({ name, description, inputSchema = { type: 'object' }, validateInput, checkPermissions, backfillObservableInput, isConcurrencySafe, canRunDuringStream = false, interruptBehavior, execute, call, mapToolResultToToolResultBlockParam, maxResultSizeChars = 50_000 } = {}) {
     if (typeof name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(name)) {
       throw new ToolRegistryError('Tool name must contain 1-128 letters, digits, underscores or hyphens.');
     }
@@ -31,6 +31,10 @@ export class ToolRegistry {
     }
     if (checkPermissions !== undefined && typeof checkPermissions !== 'function') {
       throw new ToolRegistryError('checkPermissions must be a function when provided.');
+    }
+    // Native original Tool.ts method; only the observable copy is backfilled.
+    if (backfillObservableInput !== undefined && typeof backfillObservableInput !== 'function') {
+      throw new ToolRegistryError('backfillObservableInput must be a function when provided.');
     }
     if (isConcurrencySafe !== undefined && typeof isConcurrencySafe !== 'function') {
       throw new ToolRegistryError('isConcurrencySafe must be a function when provided.');
@@ -83,6 +87,7 @@ export class ToolRegistry {
       inputSchema: schemaCopy,
       validateInput,
       checkPermissions,
+      backfillObservableInput,
       isConcurrencySafe,
       canRunDuringStream,
       interruptBehavior,
