@@ -78,6 +78,7 @@ export class AgentLoop extends EventEmitter {
   #compactContext;
   #preToolUseHooks;
   #hookWorkspace;
+  #toolResultStorage;
   #active = false;
 
   constructor({
@@ -89,6 +90,7 @@ export class AgentLoop extends EventEmitter {
     compactContext,
     preToolUseHooks = [],
     hookWorkspace,
+    toolResultStorage,
   } = {}) {
     super();
     if (!model || typeof model.stream !== 'function') {
@@ -113,8 +115,14 @@ export class AgentLoop extends EventEmitter {
       (preToolUseHooks.length > 0 && (typeof hookWorkspace !== 'string' || !hookWorkspace))) {
       throw new TypeError('PreToolUse hooks require validated settings and a workspace.');
     }
+    if (toolResultStorage !== undefined &&
+      (typeof toolResultStorage?.workspace !== 'string' ||
+       typeof toolResultStorage?.directory !== 'string')) {
+      throw new TypeError('toolResultStorage requires workspace and directory paths.');
+    }
     this.#preToolUseHooks = preToolUseHooks;
     this.#hookWorkspace = hookWorkspace;
+    this.#toolResultStorage = toolResultStorage;
     this.#maxTurns = maxTurns;
     this.#compactContext = compactContext;
   }
@@ -505,6 +513,7 @@ export class AgentLoop extends EventEmitter {
       const result = await invokeToolCallAndMapResult(tool, executionInput, {
         toolUseId: toolUse.id, signal, messages: history, assistantMessage,
         onProgress: onToolProgress,
+        toolResultStorage: this.#toolResultStorage,
       });
       abortIfNeeded(signal);
       this.emit('toolCallFinished', {
