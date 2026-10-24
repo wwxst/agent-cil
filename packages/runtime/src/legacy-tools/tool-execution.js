@@ -14,6 +14,7 @@
 import { Stream } from './stream.js';
 import { validateJsonSchema } from '../validation.js';
 import { validateToolInputValues } from '../tool-registry.js';
+import { processPreMappedToolResultBlock } from './tool-result-storage.js';
 
 function createUserMessage(block) {
   return { role: 'user', content: [block] };
@@ -204,6 +205,7 @@ async function checkPermissionsAndCallTool(
  */
 export async function invokeToolCallAndMapResult(tool, input, {
   toolUseId, signal, messages = [], assistantMessage, onProgress,
+  toolResultStorage,
 } = {}) {
   if (typeof toolUseId !== 'string' || !toolUseId) {
     throw new TypeError('An authenticated toolUseId is required.');
@@ -255,7 +257,19 @@ export async function invokeToolCallAndMapResult(tool, input, {
     };
   }
   if (signal?.aborted) throw cancelledToolCall(signal);
-  return validateMappedToolResult(mapped, toolUseId, typeof tool.call === 'function');
+  const checked = validateMappedToolResult(mapped, toolUseId,
+    typeof tool.call === 'function', Boolean(toolResultStorage));
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  // Original toolExecution.ts uses processPreMappedToolResultBlock after
+  // tool.call() has finished and the mapper has run exactly once.
+  // Until the CLI supplies a session/workspace directory, keep the old
+  // standalone-runtime result behavior without writing to unrelated CWDs.
+  const processed = toolResultStorage
+    ? await processPreMappedToolResultBlock(
+        checked, tool.name, tool.maxResultSizeChars, toolResultStorage)
+    : checked;
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  return processed;
 }
 
 function cancelledToolCall(signal) {
@@ -280,7 +294,7 @@ function serializePlainToolOutput(value) {
   return serialized;
 }
 
-function validateMappedToolResult(block, toolUseId, isLegacyCall) {
+function validateMappedToolResult(block, toolUseId, isLegacyCall, canPersist = false) {
   if (!block || typeof block !== 'object' || Array.isArray(block) ||
     block.type !== 'tool_result' || block.tool_use_id !== toolUseId) {
     throw new TypeError('Tool result mapper returned an invalid tool_result identity.');
@@ -315,7 +329,7 @@ function validateMappedToolResult(block, toolUseId, isLegacyCall) {
     }
   }
   const serialized = typeof content === 'string' ? content : JSON.stringify(content);
-  if (isLegacyCall &&
+  if (isLegacyCall && !canPersist &&
     (typeof serialized !== 'string' || Buffer.byteLength(serialized) > 1024 * 1024)) {
     // Original 2.1.88 spills large result contents to session storage.
     // That persistence dependency is unported, so refuse oversized blocks.
