@@ -114,8 +114,16 @@ test('real installed CLI: Write committed to JSONL before next failed model requ
       'resumed CLI must not call model to rerun previously committed tool');
     const resumed=requests.find(x=>x.mode==='resume').body.messages;
     const stored=records.at(-1).messages;
-    assert.deepEqual(resumed.slice(0,stored.length),stored,
-      'resumed provider request receives committed exact transcript');
+    // The Anthropic adapter intentionally strips internal stop_reason and
+    // usage from the outgoing API projection; the persisted journal retains
+    // them. Verify every original message's identity and API-visible content.
+    assert.deepEqual(
+      resumed.slice(0,stored.length).map(({role,content})=>({role,content})),
+      stored.map(({role,content})=>({role,content})),
+      'resumed provider request receives the exact model-visible committed transcript',
+    );
+    assert.equal(stored[1].stop_reason,'tool_use');
+    assert.equal(stored[1].usage.input_tokens,37);
     assert.equal(resumed.at(-1).content,'Continue from the completed tool result.');
     assert.equal(await readFile(join(root,'saved.txt'),'utf8'),'must persist exactly once');
     const latest=(await readFile(join(root,'.agent-cil','sessions',id,'transcript.jsonl'),'utf8'))
