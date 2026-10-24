@@ -258,21 +258,24 @@ export class AgentLoop extends EventEmitter {
     // 2.1.88 checkPermissionsAndCallTool() before permission is consulted.
     // The permission updatedInput path below must continue to revalidate.
 
-    const requestPermissionDecision = async (input, phase) => {
+    const requestPermissionDecision = async (
+      input, phase, checkedTool = tool, checkedToolUseId = toolUse.id,
+      checkedContext = sourceToolUseContext,
+    ) => {
       try {
         const baseDecision = await this.#permissionPolicy({
-          name: tool.name,
+          name: checkedTool.name,
           tool: {
-            name: tool.name,
-            description: tool.description,
-            inputSchema: structuredClone(tool.inputSchema),
+            name: checkedTool.name,
+            description: checkedTool.description,
+            inputSchema: structuredClone(checkedTool.inputSchema),
           },
           input: structuredClone(input),
-          toolUseId: toolUse.id,
+          toolUseId: checkedToolUseId,
           messages: structuredClone(history),
           signal,
           phase,
-          toolUseContext: sourceToolUseContext,
+          toolUseContext: checkedContext,
         });
         abortIfNeeded(signal);
         // 2.1.88 permissions.ts asks the tool for its input-specific
@@ -281,22 +284,31 @@ export class AgentLoop extends EventEmitter {
         // A tool-supplied updatedInput returns to the existing PR #9
         // schema-recheck + reauthorization loop before execution.
         const decision = await resolveToolSpecificPermission({
-          tool,
+          tool: checkedTool,
           input,
           baseDecision,
           context: {
-            toolUseId: toolUse.id,
+            toolUseId: checkedToolUseId,
             messages: structuredClone(history),
             signal,
             phase,
-            toolUseContext: sourceToolUseContext,
+            toolUseContext: checkedContext,
           },
         });
         abortIfNeeded(signal);
         return { decision };
       } catch (error) {
         if (signal?.aborted) abortIfNeeded(signal);
-        this.emit('permissionError', { turn, toolUseId: toolUse.id, toolName: tool.name, error });
+        this.emit('permissionError', {
+          turn, toolUseId: checkedToolUseId, toolName: checkedTool.name, error,
+          nested: checkedTool !== tool,
+        });
+        if (checkedTool !== tool) {
+          return { decision: {
+            behavior: 'deny',
+            reason: 'Nested permission policy failed: ' + errorText(error),
+          } };
+        }
         const result = toolError(toolUse, 'Permission policy failed: ' + errorText(error));
         this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true });
         return { result };
