@@ -47,7 +47,7 @@ export function insertMessageChain({
   if (!samePrefix && kind !== 'compact') {
     throw new Error('Non-compact session transition rewrites already committed messages.');
   }
-  const root = !samePrefix || isMigration;
+  const root = !samePrefix || isMigration || previousMessages.length === 0;
   const start = root ? 0 : previousMessages.length;
   const entries = [];
   let parentUuid = root ? null : previousLeaf;
