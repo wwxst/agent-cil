@@ -35,6 +35,12 @@ export class StreamingToolExecutor {
    */
   discard() {
     this.discarded = true
+    // 2.1.304 and Node stream abort require waking an already suspended
+    // drain immediately. No queued tool may run after streaming fallback.
+    if (this.progressAvailableResolve) {
+      this.progressAvailableResolve()
+      this.progressAvailableResolve = undefined
+    }
   }
 
   /**
@@ -105,6 +111,7 @@ export class StreamingToolExecutor {
    * Process the queue, starting tools when concurrency conditions allow
    */
   async processQueue() {
+    if (this.discarded) return
     for (const tool of this.tools) {
       if (tool.status !== 'queued') continue
 
@@ -419,8 +426,9 @@ export class StreamingToolExecutor {
       return
     }
 
-    while (this.hasUnfinishedTools()) {
+    while (!this.discarded && this.hasUnfinishedTools()) {
       await this.processQueue()
+      if (this.discarded) return
 
       for (const result of this.getCompletedResults()) {
         yield result
@@ -444,9 +452,11 @@ export class StreamingToolExecutor {
 
         if (executingPromises.length > 0) {
           await Promise.race([...executingPromises, progressPromise])
+          if (this.discarded) return
         }
       }
     }
+    if (this.discarded) return
 
     for (const result of this.getCompletedResults()) {
       yield result
