@@ -14,9 +14,11 @@
 import { Stream } from './stream.js';
 import { validateJsonSchema } from '../validation.js';
 import { validateToolInputValues } from '../tool-registry.js';
+import { processPreMappedToolResultBlock } from './tool-result-storage.js';
+import { normalizeOriginalToolNewMessagesForAPI } from './original-tool-new-messages.js';
 
 function createUserMessage(block) {
-  return { role: 'user', content: [block] };
+  return { role: 'user', content: Array.isArray(block) ? block : [block] };
 }
 
 function errorResult(toolUse, content) {
@@ -188,7 +190,29 @@ async function checkPermissionsAndCallTool(
   if (!block || block.type !== 'tool_result' || block.tool_use_id !== toolUse.id) {
     throw new Error('Tool execution adapter returned a mismatched tool_result.');
   }
-  return [{ message: createUserMessage(block) }];
+  // Original checkPermissionsAndCallTool().addToolResult: first preserve the
+  // authenticated tool_result, then append acceptFeedback and user-pasted
+  // permission contentBlocks. The Node adapter temporarily transports those
+  // blocks under an internal field; NEVER send that field to the provider.
+  const { permissionContentBlocks, nativeContextModifier, ...toolResultBlock } = block;
+  const contentBlocks = [toolResultBlock];
+  if (permissionContentBlocks !== undefined) {
+    if (!Array.isArray(permissionContentBlocks) ||
+        permissionContentBlocks.some(extra => !extra ||
+          !['text','image'].includes(extra.type))) {
+      throw new TypeError('Tool authorization returned invalid extra content blocks.');
+    }
+    contentBlocks.push(...permissionContentBlocks);
+  }
+  return [{
+    message: createUserMessage(contentBlocks),
+    // Original checkPermissionsAndCallTool().addToolResult() passes this
+    // alongside the authenticated user message. Original scheduler applies
+    // it after the exclusive tool has finished (never inside tool_result).
+    ...(nativeContextModifier
+      ? { contextModifier: { toolUseID: toolUse.id, modifyContext: nativeContextModifier } }
+      : {}),
+  }];
 }
 
 /**
@@ -204,6 +228,8 @@ async function checkPermissionsAndCallTool(
  */
 export async function invokeToolCallAndMapResult(tool, input, {
   toolUseId, signal, messages = [], assistantMessage, onProgress,
+  toolResultStorage, onToolResult, onToolAttachment, onToolNewMessages,
+  nativeToolUseContext, canUseNestedTool, userModified = false,
 } = {}) {
   if (typeof toolUseId !== 'string' || !toolUseId) {
     throw new TypeError('An authenticated toolUseId is required.');
@@ -211,20 +237,34 @@ export async function invokeToolCallAndMapResult(tool, input, {
   if (signal?.aborted) throw cancelledToolCall(signal);
 
   let mapped;
+  let toolOutput;
+  let structuredOutput;
+  let hasStructuredOutput = false;
+  let extraNativeMessages;
+  let normalizedNativeMessageBlocks;
+  let nativeContextModifier;
   if (typeof tool.call === 'function') {
     if (typeof tool.mapToolResultToToolResultBlockParam !== 'function') {
       throw new TypeError('Legacy tool is missing its result mapper.');
     }
-    // A nested tool approval is not authorized merely because the parent
-    // call has approval. Deny until legacy nested-permission routing is ported.
-    const denyNestedPermission = async () => ({
+    // Original Tool.call third parameter: canUseTool(tool, input, context,
+    // assistantMessage, nestedToolUseID, forceDecision). The active AgentLoop
+    // supplies the real shared global+tool-specific permission chain.
+    // Standalone callers remain fail-closed, never inherit parent approval.
+    const nestedCanUseTool = canUseNestedTool ?? (async () => ({
       behavior: 'deny',
-      reason: 'Nested permission requests are not supported by this CLI.',
-    });
+      reason: 'No nested tool permission resolver is configured.',
+    }));
     const toolResult = await tool.call(
       structuredClone(input),
-      { toolUseId, signal, messages: structuredClone(messages) },
-      denyNestedPermission,
+      {
+        // The current scheduler-owned ToolUseContext may have been updated
+        // by the previous exclusive tool's original contextModifier.
+        ...(nativeToolUseContext || {}),
+        toolUseId, signal, messages: structuredClone(messages),
+        userModified: userModified === true,
+      },
+      nestedCanUseTool,
       structuredClone(assistantMessage),
       onProgress,
     );
@@ -233,12 +273,29 @@ export async function invokeToolCallAndMapResult(tool, input, {
       Array.isArray(toolResult) || !Object.hasOwn(toolResult, 'data')) {
       throw new TypeError('Legacy tool.call() must return { data }.');
     }
-    if ((Array.isArray(toolResult.newMessages) && toolResult.newMessages.length > 0) ||
-      toolResult.contextModifier !== undefined ||
-      toolResult.mcpMeta !== undefined ||
-      toolResult.structured_output !== undefined) {
-      throw new Error('Legacy tool returned unsupported messages or context metadata.');
+    if (toolResult.mcpMeta !== undefined) {
+      throw new Error('Legacy tool returned unsupported MCP metadata.');
     }
+    if (toolResult.contextModifier !== undefined) {
+      if (typeof toolResult.contextModifier !== 'function') {
+        throw new TypeError('Original Tool.call contextModifier must be a function.');
+      }
+      nativeContextModifier = toolResult.contextModifier;
+    }
+    // Old toolExecution.ts pushes result.newMessages after PostToolUse and
+    // tool_result. Source user messages flow through normalizeMessagesForAPI.
+    // Validate before committing any output so invalid messages are explicit.
+    if (toolResult.newMessages !== undefined) {
+      normalizedNativeMessageBlocks =
+        normalizeOriginalToolNewMessagesForAPI(toolResult.newMessages);
+      extraNativeMessages = structuredClone(toolResult.newMessages);
+    }
+    // Original 2.1.88 checkPermissionsAndCallTool() ~1272: when a
+    // native Tool.call() supplies structured_output, emit it as a separate
+    // display/session attachment; do not turn a successful tool into error.
+    hasStructuredOutput = Object.hasOwn(toolResult, 'structured_output');
+    if (hasStructuredOutput) structuredOutput = toolResult.structured_output;
+    toolOutput = toolResult.data;
     mapped = await tool.mapToolResultToToolResultBlockParam(toolResult.data, toolUseId);
   } else {
     if (typeof tool.execute !== 'function') {
@@ -248,6 +305,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
       toolUseId, signal, messages: structuredClone(messages),
     });
     if (signal?.aborted) throw cancelledToolCall(signal);
+    toolOutput = output;
     mapped = {
       type: 'tool_result',
       tool_use_id: toolUseId,
@@ -255,7 +313,45 @@ export async function invokeToolCallAndMapResult(tool, input, {
     };
   }
   if (signal?.aborted) throw cancelledToolCall(signal);
-  return validateMappedToolResult(mapped, toolUseId, typeof tool.call === 'function');
+  const checked = validateMappedToolResult(mapped, toolUseId,
+    typeof tool.call === 'function', Boolean(toolResultStorage));
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  // Original toolExecution.ts uses processPreMappedToolResultBlock after
+  // tool.call() has finished and the mapper has run exactly once.
+  // Until the CLI supplies a session/workspace directory, keep the old
+  // standalone-runtime result behavior without writing to unrelated CWDs.
+  const processed = toolResultStorage
+    ? await processPreMappedToolResultBlock(
+        checked, tool.name, tool.maxResultSizeChars, toolResultStorage)
+    : checked;
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  // Original toolExecution.ts runs PostToolUse after mapping and saving
+  // the result. An observer receives the ORIGINAL raw tool output, not
+  // the on-disk preview or the API block, and cannot remap the result.
+  if (onToolResult) await onToolResult({ toolOutput, mappedResult: processed });
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  if (hasStructuredOutput) {
+    // The original Query emits this attachment to its display/session
+    // stream but normalizeAttachmentForAPI('structured_output') returns [].
+    // Never attach it as a second tool_result or a model-visible user block.
+    if (onToolAttachment) await onToolAttachment({
+      type: 'structured_output', data: structuredOutput,
+    });
+  }
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  // Original toolExecution.ts emits native newMessages AFTER PostToolUse
+  // and structured-output attachments; the Query batches model-visible
+  // text/images after the authenticated tool_result(s).
+  if (onToolNewMessages && normalizedNativeMessageBlocks?.length) {
+    await onToolNewMessages({
+      sourceMessages: extraNativeMessages,
+      blocks: normalizedNativeMessageBlocks,
+    });
+  }
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  return nativeContextModifier
+    ? { ...processed, nativeContextModifier }
+    : processed;
 }
 
 function cancelledToolCall(signal) {
@@ -280,7 +376,7 @@ function serializePlainToolOutput(value) {
   return serialized;
 }
 
-function validateMappedToolResult(block, toolUseId, isLegacyCall) {
+function validateMappedToolResult(block, toolUseId, isLegacyCall, canPersist = false) {
   if (!block || typeof block !== 'object' || Array.isArray(block) ||
     block.type !== 'tool_result' || block.tool_use_id !== toolUseId) {
     throw new TypeError('Tool result mapper returned an invalid tool_result identity.');
@@ -315,7 +411,7 @@ function validateMappedToolResult(block, toolUseId, isLegacyCall) {
     }
   }
   const serialized = typeof content === 'string' ? content : JSON.stringify(content);
-  if (isLegacyCall &&
+  if (isLegacyCall && !canPersist &&
     (typeof serialized !== 'string' || Buffer.byteLength(serialized) > 1024 * 1024)) {
     // Original 2.1.88 spills large result contents to session storage.
     // That persistence dependency is unported, so refuse oversized blocks.

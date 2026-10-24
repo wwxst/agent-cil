@@ -1,64 +1,19 @@
-/**
- * Ported from CLI 2.1.88:
- *   src/utils/permissions/permissionRuleParser.ts
- *   src/utils/permissions/permissions.ts (whole-tool rule matching/ordering).
- *
- * Original notice: © Anthropic PBC. All rights reserved.
- *
- * Node.js ESM, no Bun/UI/MCP dependency. Preserves the old parser's
- * escaped-parenthesis handling and deny > ask > allow precedence, but does
- * not implement content-specific Bash rules or MCP server wildcards.
- */
+/** Legacy CLI 2.1.88 permissions.ts whole-tool rule matcher and source order.
+ * Actual parser and MCP name utilities are mechanically ported source files. */
+import { permissionRuleValueFromString } from './permission-rule-parser.js';
+import { mcpInfoFromString, getToolNameForPermissionCheck } from './mcp-string-utils.js';
+export { permissionRuleValueFromString, unescapeRuleContent } from './permission-rule-parser.js';
 
-export function unescapeRuleContent(content) {
-  return content.replace(/\\\(/g, '(').replace(/\\\)/g, ')').replace(/\\\\/g, '\\');
-}
-
-function findFirstUnescapedChar(str, char) {
-  for (let i = 0; i < str.length; i++) {
-    if (str[i] === char) {
-      let backslashCount = 0;
-      let j = i - 1;
-      while (j >= 0 && str[j] === '\\') { backslashCount++; j--; }
-      if (backslashCount % 2 === 0) return i;
-    }
-  }
-  return -1;
-}
-
-function findLastUnescapedChar(str, char) {
-  for (let i = str.length - 1; i >= 0; i--) {
-    if (str[i] === char) {
-      let backslashCount = 0;
-      let j = i - 1;
-      while (j >= 0 && str[j] === '\\') { backslashCount++; j--; }
-      if (backslashCount % 2 === 0) return i;
-    }
-  }
-  return -1;
-}
-
-// Direct port of permissionRuleValueFromString(), excluding aliases of
-// unavailable legacy-only Task/KillShell/AgentOutput tool registrations.
-// Unknown legacy aliases therefore fail closed on this six-tool CLI.
-export function permissionRuleValueFromString(ruleString) {
-  const openParenIndex = findFirstUnescapedChar(ruleString, '(');
-  if (openParenIndex === -1) return { toolName: ruleString };
-  const closeParenIndex = findLastUnescapedChar(ruleString, ')');
-  if (closeParenIndex === -1 || closeParenIndex <= openParenIndex ||
-      closeParenIndex !== ruleString.length - 1) return { toolName: ruleString };
-  const toolName = ruleString.substring(0, openParenIndex);
-  const rawContent = ruleString.substring(openParenIndex + 1, closeParenIndex);
-  if (!toolName) return { toolName: ruleString };
-  if (rawContent === '' || rawContent === '*') return { toolName };
-  return { toolName, ruleContent: unescapeRuleContent(rawContent) };
-}
-
+// Original utils/settings/constants.ts + permissions.ts priority list.
+const PERMISSION_RULE_SOURCES = [
+  'userSettings', 'projectSettings', 'localSettings', 'flagSettings',
+  'policySettings', 'cliArg', 'command', 'session',
+];
 function getRules(context, ruleKind, behavior) {
-  // Preserve original source attribution. There is no rule persistence or
-  // automatic refresh; sources here are owned by permission context updates.
-  return Object.entries(context?.[ruleKind] ?? {}).flatMap(([source, entries]) =>
-    entries.map(ruleString => ({
+  // From 2.1.88 permissions.ts: only the known rule-source categories and
+  // their original precedence participate in matching.
+  return PERMISSION_RULE_SOURCES.flatMap(source =>
+    (context?.[ruleKind]?.[source] || []).map(ruleString => ({
       source, ruleBehavior: behavior,
       ruleValue: permissionRuleValueFromString(ruleString),
     })));
@@ -74,11 +29,45 @@ export function getAskRules(context) {
   return getRules(context, 'alwaysAskRules', 'ask');
 }
 
+/**
+ * Original CLI 2.1.88 permissions.ts:getRuleByContentsForToolName().
+ * Content-specific rules are resolved by tool.checkPermissions(), never by
+ * whole-tool allow/ask/deny matching. Preserve the original rule ordering.
+ */
+export function getRuleByContentsForToolName(context, toolName, behavior) {
+  const ruleByContents = new Map();
+  const rules = behavior === 'allow' ? getAllowRules(context)
+    : behavior === 'deny' ? getDenyRules(context)
+    : behavior === 'ask' ? getAskRules(context) : [];
+  for (const rule of rules) {
+    if (rule.ruleValue.toolName === toolName &&
+        rule.ruleValue.ruleContent !== undefined &&
+        rule.ruleBehavior === behavior) {
+      ruleByContents.set(rule.ruleValue.ruleContent, rule);
+    }
+  }
+  return ruleByContents;
+}
+
+export function getRuleByContentsForTool(context, tool, behavior) {
+  return getRuleByContentsForToolName(
+    context, getToolNameForPermissionCheck(tool), behavior,
+  );
+}
+
 function toolMatchesRule(tool, rule) {
+  // Original permissions.ts toolMatchesRule: content-specific rules only
+  // participate in the tool's own checkPermissions() method.
   if (rule.ruleValue.ruleContent !== undefined) return false;
-  // For this CLI, built-in name is also its canonical permission name.
-  // The old MCP qualified tool-name helper will be ported with MCP support.
-  return rule.ruleValue.toolName === tool.name;
+  const nameForRuleMatch = getToolNameForPermissionCheck(tool);
+  if (rule.ruleValue.toolName === nameForRuleMatch) return true;
+  const ruleInfo = mcpInfoFromString(rule.ruleValue.toolName);
+  const toolInfo = mcpInfoFromString(nameForRuleMatch);
+  return (
+    ruleInfo !== null && toolInfo !== null &&
+    (ruleInfo.toolName === undefined || ruleInfo.toolName === '*') &&
+    ruleInfo.serverName === toolInfo.serverName
+  );
 }
 
 export function toolAlwaysAllowedRule(context, tool) {

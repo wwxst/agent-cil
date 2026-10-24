@@ -3,9 +3,15 @@ import { isDeepStrictEqual } from 'node:util';
 import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
 import { invokeToolCallAndMapResult } from './legacy-tools/tool-execution.js';
+import { getOriginalPermissionContentBlocks } from './legacy-tools/original-permission-result-content.js';
+import { prepareObservableToolInput, restoreToolCallInput } from './legacy-tools/tool-call-input.js';
+import { runPreToolUseHooks, resolveHookPermissionDecision } from './legacy-tools/pretooluse-core.js';
+import { runPostToolUseHooks, runPostToolUseFailureHooks } from './legacy-tools/posttooluse-core.js';
 import { query } from './legacy-query/query.js';
+import { normalizeToolHookAttachmentsForAPI } from './legacy-query/normalize-hook-attachments.js';
 export { ModelProtocolError } from './legacy-query/query.js';
 import { resolveToolSpecificPermission } from './legacy-permissions/tool-specific-permission.js';
+import { originalCanUseNestedTool } from './legacy-permissions/nested-can-use-tool.js';
 
 const MAX_PERMISSION_INPUT_REWRITES = 8;
 const EARLY_READ_TOOLS = new Set(['Read', 'Glob', 'Grep']);
@@ -75,6 +81,21 @@ export class AgentLoop extends EventEmitter {
   #approvalHandler;
   #maxTurns;
   #compactContext;
+  #preToolUseHooks;
+  #postToolUseHooks;
+  #postToolUseFailureHooks;
+  #hookMessages = [];
+  #toolAttachments = [];
+  #toolNativeMessages = [];
+  #hookStopReason;
+  #hookWorkspace;
+  #toolResultStorage;
+  #onSessionCheckpoint;
+  #requireCanUseTool;
+  // Original REPL passes updatedToolUseContext and committed history into
+  // each next query() invocation of the same interactive session.
+  #committedSessionMessages;
+  #committedToolUseContext;
   #active = false;
 
   constructor({
@@ -84,6 +105,13 @@ export class AgentLoop extends EventEmitter {
     approvalHandler,
     maxTurns = 8,
     compactContext,
+    preToolUseHooks = [],
+    postToolUseHooks = [],
+    postToolUseFailureHooks = [],
+    hookWorkspace,
+    toolResultStorage,
+    onSessionCheckpoint,
+    requireCanUseTool = false,
   } = {}) {
     super();
     if (!model || typeof model.stream !== 'function') {
@@ -104,6 +132,32 @@ export class AgentLoop extends EventEmitter {
     if (compactContext !== undefined && typeof compactContext !== 'function') {
       throw new TypeError('compactContext must be a function.');
     }
+    if (![preToolUseHooks, postToolUseHooks, postToolUseFailureHooks].every(Array.isArray) ||
+      ([preToolUseHooks, postToolUseHooks, postToolUseFailureHooks].some(hooks => hooks.length > 0) &&
+       (typeof hookWorkspace !== 'string' || !hookWorkspace))) {
+      throw new TypeError('Tool Hooks require validated settings and a workspace.');
+    }
+    if (toolResultStorage !== undefined &&
+      (typeof toolResultStorage?.workspace !== 'string' ||
+       typeof toolResultStorage?.directory !== 'string')) {
+      throw new TypeError('toolResultStorage requires workspace and directory paths.');
+    }
+    this.#preToolUseHooks = preToolUseHooks;
+    this.#postToolUseHooks = postToolUseHooks;
+    this.#postToolUseFailureHooks = postToolUseFailureHooks;
+    this.#hookWorkspace = hookWorkspace;
+    this.#toolResultStorage = toolResultStorage;
+    if (onSessionCheckpoint !== undefined && typeof onSessionCheckpoint !== 'function') {
+      throw new TypeError('onSessionCheckpoint must be a function.');
+    }
+    this.#onSessionCheckpoint = onSessionCheckpoint;
+    // Original toolHooks.ts consumes the fork/query requireCanUseTool
+    // capability flag. It defaults false for the standalone parent CLI;
+    // true is explicitly supplied only by contexts requiring final review.
+    if (typeof requireCanUseTool !== 'boolean') {
+      throw new TypeError('requireCanUseTool must be a boolean.');
+    }
+    this.#requireCanUseTool = requireCanUseTool;
     this.#maxTurns = maxTurns;
     this.#compactContext = compactContext;
   }
@@ -115,18 +169,74 @@ export class AgentLoop extends EventEmitter {
   async run({ messages = [], input, signal } = {}) {
     if (this.#active) throw new Error('This AgentLoop already has an active run.');
     this.#active = true;
+    // Continue a session only when the caller presents the exact last
+    // committed conversation. A new root prompt or forked history cannot
+    // silently reuse the previous session's permission/tool context.
+    const continuesSession = messages.length > 0 &&
+      Array.isArray(this.#committedSessionMessages) &&
+      (messages === this.#committedSessionMessages ||
+       isDeepStrictEqual(messages, this.#committedSessionMessages));
+    if (!continuesSession) {
+      this.#committedSessionMessages = undefined;
+      this.#committedToolUseContext = undefined;
+    }
+    this.#hookMessages = [];
+    this.#toolAttachments = [];
+    this.#toolNativeMessages = [];
+    this.#hookStopReason = undefined;
     try {
-      return await query({
+      const result = await query({
         messages, input, signal,
         model: this.#model,
         tools: this.#tools,
         maxTurns: this.#maxTurns,
         compactContext: this.#compactContext,
+        onSessionCheckpoint: this.#onSessionCheckpoint,
+        initialToolUseContext: this.#committedToolUseContext,
+        onCommittedToolUseContext: ({ messages: checkpoint, toolUseContext }) => {
+          // Original query.ts consumes newContext only for fully committed
+          // tool rounds. Keep the matching history as the session resume key.
+          this.#committedSessionMessages = structuredClone(checkpoint);
+          this.#committedToolUseContext = toolUseContext;
+        },
         canStartToolDuringStream: (toolUse, context) =>
           this.#canStartToolDuringStream(toolUse, context),
         executeTool: (toolUse, context) => this.#executeTool(toolUse, context),
-        emit: (eventName, event) => this.emit(eventName, event),
+        getPostToolStop: () => this.#hookStopReason,
+        // Original query.ts normalizes Hook attachments after ordered
+        // tool_results, not at asynchronous Hook completion time.
+        getToolHookContext: ({ toolUses, turn }) =>
+          normalizeToolHookAttachmentsForAPI(this.#hookMessages, toolUses, turn),
+        // Same ordering boundary as original query.ts: native newMessages
+        // are retained only after all authenticated sibling tool_results.
+        getToolNativeMessages: ({ toolUses, turn }) => {
+          const ordered = [];
+          for (const toolUse of toolUses) {
+            for (const event of this.#toolNativeMessages) {
+              if (event.turn === turn && event.toolUseId === toolUse.id) {
+                ordered.push(...structuredClone(event.blocks));
+              }
+            }
+          }
+          return ordered;
+        },
+        emit: (eventName, event) => {
+          if (eventName === 'contextCompacted' && event?.committedMessages) {
+            // Original REPL compaction is a durable conversation transition.
+            // It does not reset the tool-owned context of this same session.
+            this.#committedSessionMessages =
+              structuredClone(event.committedMessages);
+          }
+          this.emit(eventName, event);
+        },
       });
+      // Successful model and tool turns both advance the original REPL's
+      // committed continuation point; keep ToolUseContext private to Runtime.
+      this.#committedSessionMessages = structuredClone(result.messages);
+      if (this.#hookMessages.length) result.hookMessages = structuredClone(this.#hookMessages);
+      if (this.#toolAttachments.length) result.toolAttachments = structuredClone(this.#toolAttachments);
+      if (this.#toolNativeMessages.length) result.toolNativeMessages = structuredClone(this.#toolNativeMessages);
+      return result;
     } finally {
       this.#active = false;
     }
@@ -143,6 +253,14 @@ export class AgentLoop extends EventEmitter {
     // assistant message may run before it is complete. Custom policies that
     // inspect message history retain the original post-message_end behavior.
     if (this.#permissionPolicy.supportsStreamingPreflight !== true) return false;
+    // The original streaming executor starts Read at content_block_stop.
+    // Our Node synchronous command-Hook adapter has no rollback transaction:
+    // starting a PreToolUse shell command before message_end can leave side
+    // effects if the model stream then fails. Keep the original executor but
+    // defer tool execution until the model turn is committed whenever any
+    // command Hook is explicitly configured. No-Hook early Read remains fast.
+    if (this.#preToolUseHooks.length > 0 ||
+        this.#postToolUseHooks.length > 0 || this.#postToolUseFailureHooks.length > 0) return false;
     const tool = this.#tools.get(toolUse.name);
     if (!tool || !EARLY_READ_TOOLS.has(toolUse.name) ||
       tool.canRunDuringStream !== true ||
@@ -171,7 +289,7 @@ export class AgentLoop extends EventEmitter {
     }
   }
 
-  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress, speculative = false }) {
+  async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress, sourceToolUseContext, speculative = false }) {
     const tool = this.#tools.get(toolUse.name);
     if (!tool) {
       const result = toolError(toolUse, 'Unknown tool: ' + toolUse.name);
@@ -190,20 +308,24 @@ export class AgentLoop extends EventEmitter {
     // 2.1.88 checkPermissionsAndCallTool() before permission is consulted.
     // The permission updatedInput path below must continue to revalidate.
 
-    const requestPermissionDecision = async (input, phase) => {
+    const requestPermissionDecision = async (
+      input, phase, checkedTool = tool, checkedToolUseId = toolUse.id,
+      checkedContext = sourceToolUseContext,
+    ) => {
       try {
         const baseDecision = await this.#permissionPolicy({
-          name: tool.name,
+          name: checkedTool.name,
           tool: {
-            name: tool.name,
-            description: tool.description,
-            inputSchema: structuredClone(tool.inputSchema),
+            name: checkedTool.name,
+            description: checkedTool.description,
+            inputSchema: structuredClone(checkedTool.inputSchema),
           },
           input: structuredClone(input),
-          toolUseId: toolUse.id,
+          toolUseId: checkedToolUseId,
           messages: structuredClone(history),
           signal,
           phase,
+          toolUseContext: checkedContext,
         });
         abortIfNeeded(signal);
         // 2.1.88 permissions.ts asks the tool for its input-specific
@@ -212,21 +334,31 @@ export class AgentLoop extends EventEmitter {
         // A tool-supplied updatedInput returns to the existing PR #9
         // schema-recheck + reauthorization loop before execution.
         const decision = await resolveToolSpecificPermission({
-          tool,
+          tool: checkedTool,
           input,
           baseDecision,
           context: {
-            toolUseId: toolUse.id,
+            toolUseId: checkedToolUseId,
             messages: structuredClone(history),
             signal,
             phase,
+            toolUseContext: checkedContext,
           },
         });
         abortIfNeeded(signal);
         return { decision };
       } catch (error) {
         if (signal?.aborted) abortIfNeeded(signal);
-        this.emit('permissionError', { turn, toolUseId: toolUse.id, toolName: tool.name, error });
+        this.emit('permissionError', {
+          turn, toolUseId: checkedToolUseId, toolName: checkedTool.name, error,
+          nested: checkedTool !== tool,
+        });
+        if (checkedTool !== tool) {
+          return { decision: {
+            behavior: 'deny',
+            reason: 'Nested permission policy failed: ' + errorText(error),
+          } };
+        }
         const result = toolError(toolUse, 'Permission policy failed: ' + errorText(error));
         this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true });
         return { result };
@@ -241,7 +373,11 @@ export class AgentLoop extends EventEmitter {
       return { result };
     };
 
-    let executionInput = structuredClone(toolUse.input);
+    // Original 2.1.88 checkPermissionsAndCallTool() keeps two inputs:
+    // observable backfill for Hooks/permission and untouched callInput for
+    // the final tool.call(), unless a Hook or user intentionally rewrote it.
+    let { processedInput: executionInput, callInput, backfilledClone } =
+      prepareObservableToolInput(tool, structuredClone(toolUse.input));
     let inputRewriteCount = 0;
     const applyUpdatedInput = async (value, source) => {
       const normalized = normalizePermissionInput(value);
@@ -270,7 +406,100 @@ export class AgentLoop extends EventEmitter {
       return { changed: true };
     };
 
-    let permissionResult = await requestPermissionDecision(executionInput, 'initial');
+    // Original toolExecution.ts calls runPreToolUseHooks after input validation
+    // and before resolveHookPermissionDecision. Both methods below are direct
+    // transplants from 2.1.88 toolHooks.ts; the only Node adapter is the
+    // explicitly configured command-hook executor / permission context.
+    let hookResolvedDecision;
+    let shouldPreventContinuation = false;
+    let preHookStopReason;
+    if (this.#preToolUseHooks.length > 0) {
+      let hookPermissionResult;
+      let pendingHookInput = executionInput;
+      let hookStopped = false;
+      const context = {
+        abortController: { signal },
+        workspace: this.#hookWorkspace,
+        preToolUseHooks: this.#preToolUseHooks,
+        trustedCliDefaultPermission: this.#permissionPolicy.isBuiltinCliPolicy === true,
+        requireCanUseTool: this.#requireCanUseTool,
+        getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
+        checkRuleBasedPermissions: async (_tool, checkedInput) => {
+          const check = await requestPermissionDecision(checkedInput, 'hook-rule-check');
+          if (check.result) return { behavior: 'deny', reason: 'Permission check failed.' };
+          return check.decision;
+        },
+      };
+      for await (const event of runPreToolUseHooks(
+        context, tool, pendingHookInput, toolUse.id,
+        assistantMessage?.id || toolUse.id, undefined, undefined, undefined
+      )) {
+        if (event.type === 'hookPermissionResult') {
+          hookPermissionResult = event.hookPermissionResult;
+        } else if (event.type === 'hookUpdatedInput') {
+          pendingHookInput = event.updatedInput;
+        } else if (event.type === 'message') {
+          // Original 2.1.88 emits display/progress messages separately;
+          // unknown internal types retain the pre-existing lifecycle event.
+          this.emit('hookMessage', { turn, toolUseId: toolUse.id, message: event.message });
+        } else if (event.type === 'additionalContext') {
+          // Old toolExecution.ts appends this attachment to resultingMessages
+          // without stopping or overriding tool permission. Query later
+          // normalizes it after the complete tool_result batch.
+          this.#recordPostHookMessage({
+            toolUse, tool, turn, message: event.message.message,
+          });
+        } else if (event.type === 'preventContinuation') {
+          // Original toolExecution.ts records this flag; an allowed tool
+          // runs and its result is preserved *before* Query is stopped.
+          shouldPreventContinuation = event.shouldPreventContinuation === true;
+        } else if (event.type === 'stopReason') {
+          preHookStopReason = event.stopReason;
+        } else if (event.type === 'stop') {
+          // Source generator's terminal stop is an abort/error path distinct
+          // from JSON {continue:false}. No tool may start after it.
+          hookStopped = true;
+          break;
+        }
+      }
+      abortIfNeeded(signal);
+      if (hookStopped) {
+        const result = toolError(toolUse, 'PreToolUse hook stopped tool execution.');
+        this.emit('toolCallFinished', {
+          turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, denied: true,
+        });
+        return result;
+      }
+      const applied = await applyUpdatedInput(pendingHookInput, 'PreToolUse hook');
+      if (applied.result) return applied.result;
+      // This delegates to the existing final policy/approval path. The
+      // source resolver itself checks mandatory deny, ask and safety rules
+      // after Hook allow; an update cannot evade schema/permission recheck.
+      const canUseTool = async (_tool, proposed, _context, _assistant, _id, forceDecision) => {
+        const check = await requestPermissionDecision(proposed, 'hook-permission');
+        if (check.result) return { behavior: 'deny', reason: 'Permission check failed.' };
+        if (forceDecision?.behavior === 'ask' && check.decision?.behavior !== 'deny') {
+          return { ...forceDecision, behavior: 'ask' };
+        }
+        return check.decision;
+      };
+      const resolved = await resolveHookPermissionDecision(
+        hookPermissionResult, tool, executionInput, context,
+        canUseTool, assistantMessage, toolUse.id
+      );
+      const validated = await applyUpdatedInput(resolved.input, 'PreToolUse permission decision');
+      if (validated.result) return validated.result;
+      // A Hook allow is not allowed to override the current mandatory path
+      // checks. The source resolveHookPermissionDecision() has already
+      // performed the explicit rule/safety check using final updated input.
+      hookResolvedDecision = resolved.decision;
+    }
+
+    let userModified = false;
+    let approvedPermissionFeedback;
+    let permissionResult = hookResolvedDecision
+      ? { decision: hookResolvedDecision }
+      : await requestPermissionDecision(executionInput, 'initial');
     if (permissionResult.result) return permissionResult.result;
     let decision = permissionResult.decision;
 
@@ -360,10 +589,17 @@ export class AgentLoop extends EventEmitter {
           return result;
         }
 
+        // Source PermissionAllowDecision retains feedback and pasted content
+        // to append AFTER the tool_result block, never inside tool output.
+        approvedPermissionFeedback = approval && typeof approval === 'object'
+          ? approval : undefined;
         if (approval?.updatedInput !== undefined) {
           const applied = await applyUpdatedInput(approval.updatedInput, 'approval handler');
           if (applied.result) return applied.result;
           if (applied.changed) {
+            // Original permissionDecision.userModified is passed to Tool.call
+            // only for an actual user-approved input rewrite, not Hook backfill.
+            userModified = true;
             // An approval for one input does not authorize a different input.
             // Re-check policy and, if needed, request approval for the replacement.
             permissionResult = await requestPermissionDecision(executionInput, 'recheck');
@@ -413,23 +649,184 @@ export class AgentLoop extends EventEmitter {
     }
 
     abortIfNeeded(signal);
+    let permissionContentBlocks;
+    try {
+      permissionContentBlocks = getOriginalPermissionContentBlocks(
+        { ...decision, behavior: 'allow' }, approvedPermissionFeedback,
+      );
+    } catch (error) {
+      const result = toolError(toolUse,
+        'Invalid permission feedback: ' + errorText(error));
+      this.emit('toolCallFinished', {
+        turn, toolUseId: toolUse.id, toolName: tool.name,
+        isError: true, denied: true,
+      });
+      return result;
+    }
+    // Original 2.1.88 Tool.call receives the same policy resolver used by
+    // top-level tool authorization. Parent approval is never inherited.
+    // The callee requests permission only; it owns any subsequent action.
+    const canUseNestedTool = async (
+      proposedTool, proposedInput, nestedContext, _assistantMessage,
+      nestedId, forceDecision,
+    ) => originalCanUseNestedTool({
+      proposedTool, input:proposedInput, toolUseId:nestedId,
+      toolUseContext:nestedContext ?? sourceToolUseContext,
+      forceDecision,
+      getTool:name=>this.#tools.get(name),
+      validateInput:(name,input,context,expected)=>
+        this.#tools.validateInput(name,input,context,expected),
+      requestPermissionDecision,
+      approvalHandler:this.#approvalHandler,
+      signal,
+      onPermissionRequired:event=>this.emit('permissionRequired',{turn,...event}),
+    });
     this.emit('toolCallStarted', { turn, toolUseId: toolUse.id, toolName: tool.name });
     try {
       // The final input was validated and authorized before this call.
-      const result = await invokeToolCallAndMapResult(tool, executionInput, {
+      const exactCallInput = restoreToolCallInput(
+        executionInput, callInput, backfilledClone,
+      );
+      const result = await invokeToolCallAndMapResult(tool, exactCallInput, {
         toolUseId: toolUse.id, signal, messages: history, assistantMessage,
         onProgress: onToolProgress,
+        toolResultStorage: this.#toolResultStorage,
+        nativeToolUseContext: sourceToolUseContext,
+        canUseNestedTool,
+        userModified: userModified || decision?.userModified === true,
+        onToolNewMessages: async ({sourceMessages, blocks}) => {
+          const event = {
+            turn, toolUseId: toolUse.id, toolName: tool.name,
+            sourceMessages: structuredClone(sourceMessages),
+            blocks: structuredClone(blocks),
+          };
+          this.#toolNativeMessages.push(event);
+          this.emit('toolNewMessages', event);
+        },
+        onToolAttachment: async attachment => {
+          // Original toolExecution.ts emits structured_output as a distinct
+          // attachment; it is not an API user message or a tool_result.
+          const event = { turn, toolUseId: toolUse.id, toolName: tool.name,
+            attachment: structuredClone(attachment) };
+          this.#toolAttachments.push(event);
+          this.emit('toolAttachment', event);
+        },
+        // Original 2.1.88 toolExecution.ts processes/memoizes the result
+        // BEFORE invoking PostToolUse. Preserve the exact raw tool data.
+        onToolResult: async ({ toolOutput }) => {
+          if (!this.#postToolUseHooks.length) return;
+          await this.#emitPostToolUseHooks({
+            tool, toolUse, turn, signal, executionInput, toolOutput,
+          });
+        },
       });
       abortIfNeeded(signal);
+      if (shouldPreventContinuation && result.is_error !== true) {
+        // Original 2.1.88 toolExecution.ts ~1572 yields this *after*
+        // map/persist tool_result and PostToolUse. Query converts it into
+        // a stop after its complete assistant/tool_result checkpoint.
+        this.#recordPostHookMessage({
+          toolUse, tool, turn,
+          message: { type: 'attachment', attachment: {
+            type: 'hook_stopped_continuation',
+            message: preHookStopReason || 'Execution stopped by hook',
+            hookName: 'PreToolUse:' + tool.name,
+            toolUseID: toolUse.id, hookEvent: 'PreToolUse',
+          } },
+        });
+      }
       this.emit('toolCallFinished', {
         turn, toolUseId: toolUse.id, toolName: tool.name, isError: result.is_error === true,
       });
-      return result;
+      // The callback above completed result mapping/persistence and PostToolUse.
+      // Carry source allow-content through the legacy stream adapter without
+      // altering the actual tool_result block or its persisted contents.
+      return permissionContentBlocks.length > 0
+        ? { ...result, permissionContentBlocks }
+        : result;
     } catch (error) {
-      if (signal?.aborted) abortIfNeeded(signal);
+      // Original 2.1.88 checkPermissionsAndCallTool() catches AbortError
+      // and dispatches PostToolUseFailure with isInterrupt=true BEFORE
+      // returning its tool_result. The current Node Query propagates
+      // cancellation to its caller, but must still execute the original
+      // failure-Hook lifecycle and terminal tool status first.
+      if (signal?.aborted) {
+        try {
+          if (this.#postToolUseFailureHooks.length) {
+            await this.#emitPostToolUseFailureHooks({
+              tool, toolUse, turn, signal, executionInput,
+              error: errorText(error), isInterrupt: true,
+            });
+          }
+        } finally {
+          this.emit('toolCallFinished', {
+            turn, toolUseId: toolUse.id, toolName: tool.name,
+            isError: true, interrupted: true,
+          });
+          abortIfNeeded(signal);
+        }
+      }
+      if (this.#postToolUseFailureHooks.length) {
+        await this.#emitPostToolUseFailureHooks({
+          tool, toolUse, turn, signal, executionInput,
+          error: errorText(error), isInterrupt: false,
+        });
+      }
       const result = toolError(toolUse, 'Tool execution failed: ' + errorText(error));
       this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true });
       return result;
+    }
+  }
+  // Keep Hook attachment updates tied to the originating tool_use, including
+  // when tools finish concurrently. They are preserved in run().hookMessages
+  // and delivered as EventEmitter hookMessage events; the headless Query
+  // still lacks the original attachment-to-model context converter.
+  #recordPostHookMessage({ toolUse, tool, turn, message }) {
+    const event = {
+      turn, toolUseId: toolUse.id, toolName: tool.name,
+      message: structuredClone(message),
+    };
+    this.#hookMessages.push(event);
+    if (message?.attachment?.type === 'hook_stopped_continuation') {
+      this.#hookStopReason = message.attachment.message ||
+        'PostToolUse Hook requested stopping the conversation.';
+    }
+    this.emit('hookMessage', event);
+  }
+
+  #createPostHookContext(signal) {
+    return {
+      abortController: { signal },
+      workspace: this.#hookWorkspace,
+      getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
+      toolHooks: {
+        PostToolUse: this.#postToolUseHooks,
+        PostToolUseFailure: this.#postToolUseFailureHooks,
+      },
+    };
+  }
+
+  async #emitPostToolUseHooks({ tool, toolUse, turn, signal, executionInput, toolOutput }) {
+    // Transplanted method body from original 2.1.88 toolHooks.ts.
+    for await (const update of runPostToolUseHooks(
+      this.#createPostHookContext(signal), tool, toolUse.id, toolUse.id,
+      structuredClone(executionInput), toolOutput, undefined, undefined, undefined,
+    )) {
+      if ('updatedMCPToolOutput' in update) {
+        throw new Error('MCP PostToolUse output rewriting is not supported.');
+      }
+      this.#recordPostHookMessage({ toolUse, tool, turn, message: update.message });
+    }
+  }
+
+  async #emitPostToolUseFailureHooks({ tool, toolUse, turn, signal, executionInput, error, isInterrupt = false }) {
+    // PostToolUseFailure is only called after actual tool execution fails,
+    // not after a policy denial. Hook feedback never replaces the error result.
+    for await (const update of runPostToolUseFailureHooks(
+      this.#createPostHookContext(signal), tool, toolUse.id, toolUse.id,
+      structuredClone(executionInput), error, isInterrupt, undefined, undefined, undefined,
+    )) {
+      this.#recordPostHookMessage({ toolUse, tool, turn, message: update.message });
     }
   }
 }

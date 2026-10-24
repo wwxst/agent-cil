@@ -2,17 +2,20 @@
 import { stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
 import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
+import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
+import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
 const MAX_TOOL_OUTPUT_BYTES = 1024 * 1024;
 const MAX_WALK_FILES = 5000;
-const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.cache']);
+const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.cache', '.agent-cil']);
 const BACKSLASH = String.fromCharCode(92);
 const REGEX_META = new Set(['.', '+', '^', '$', '(', ')', '|', '[', ']', '{', '}', BACKSLASH]);
 
@@ -36,6 +39,12 @@ export const HELP = [
   '      --compact-threshold <n>  Auto-compact above approximate input tokens (0 disables)',
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
   '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
+  '      --allowedTools <name>    Allow tool or literal Bash(command), repeatable',
+  '      --disallowedTools <name> Deny tool or Bash(command/prefix/wildcard), repeatable',
+  '      --askTools <name>        Ask tool or Bash(command/prefix/wildcard), repeatable',
+  '      --hooks-file <path> Explicitly trust a tool-hook settings JSON file (Pre/Post/Failure)',
+  '      --session-id <uuid> Start a fresh, named persisted CLI session',
+  '      --resume <uuid>     Resume a session; omit prompt to finish a committed tool round',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
   '',
@@ -54,7 +63,8 @@ export const HELP = [
   '  Write, Edit, Bash      Require interactive approval before execution',
   '',
   'This first CLI slice uses the repository AgentLoop and Messages API adapter.',
-  'It does not yet implement the full official CLI configuration, OAuth, MCP, or resume contract.',
+  'Resume uses a versioned committed-checkpoint JSONL subset; full original sessionStorage is pending.',
+  'The full official CLI configuration, OAuth and MCP contract is not implemented.',
 ].join('\n') + '\n';
 
 export class CliArgumentError extends Error {
@@ -84,6 +94,10 @@ export function parseArgs(argv) {
     compactThreshold: undefined,
     maxRetries: 2,
     allowEdits: false,
+    permissionRules: { allow: [], deny: [], ask: [] },
+    hooksFile: undefined,
+    sessionId: undefined,
+    resume: undefined,
     system: undefined,
     cwd: process.cwd(),
     positional: [],
@@ -107,6 +121,48 @@ export function parseArgs(argv) {
       options.print = true;
     } else if (arg === '--allow-edits') {
       options.allowEdits = true;
+    } else if (['--allowedTools', '--disallowedTools', '--askTools'].some(
+      flag => arg === flag || arg.startsWith(flag + '=')
+    )) {
+      const [flag, ...inlineValue] = arg.split('=');
+      const behavior = flag === '--allowedTools' ? 'allow'
+        : flag === '--disallowedTools' ? 'deny' : 'ask';
+      const raw = inlineValue.length ? inlineValue.join('=') : takeValue(flag, i++);
+      const parsed = permissionRuleValueFromString(raw);
+      const wholeTool = parsed.ruleContent === undefined && raw === parsed.toolName;
+      // The original Bash exact-command checkPermissions method is now
+      // connected. Wildcard/prefix/compound rule matching still needs the
+      // original bashPermissions.ts AST dependency closure, so reject such
+      // rules instead of approximating them with a dangerous regex.
+      const bashContent = parsed.toolName === 'Bash' &&
+        typeof parsed.ruleContent === 'string' &&
+        parsed.ruleContent.length > 0 &&
+        parsed.ruleContent.trim() === parsed.ruleContent &&
+        raw === permissionRuleValueToString(parsed);
+      // Literal exact Bash allow remains narrowly permitted. Original
+      // prefix/wildcard shell matching is connected for restrictive deny/ask
+      // rules only: an unrestricted allow would require original AST checks.
+      const bashRule = bashContent && (behavior !== 'allow' ||
+        !parsed.ruleContent.includes('*'));
+      if (!['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'].includes(parsed.toolName) ||
+          !(wholeTool || bashRule)) {
+        throw new CliArgumentError(flag +
+          ' accepts whole built-in names or Bash(command);' +
+          ' wildcard/prefix Bash allow, other content-specific rules and MCP require original AST security checks.');
+      }
+      options.permissionRules[behavior].push(parsed);
+    } else if (arg === '--hooks-file' || arg.startsWith('--hooks-file=')) {
+      options.hooksFile = arg === '--hooks-file' ? takeValue(arg, i++) : arg.slice('--hooks-file='.length);
+      if (!options.hooksFile) throw new CliArgumentError('--hooks-file requires a path.');
+    } else if (arg === '--session-id' || arg.startsWith('--session-id=') ||
+               arg === '--resume' || arg.startsWith('--resume=')) {
+      const flag = arg.split('=')[0];
+      const id = arg === flag ? takeValue(flag, i++) : arg.slice(flag.length+1);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+        throw new CliArgumentError(flag + ' requires a valid UUID.');
+      }
+      if (flag === '--session-id') options.sessionId = id;
+      else options.resume = id;
     } else if (arg === '--provider' || arg.startsWith('--provider=')) {
       const provider = arg === '--provider' ? takeValue(arg, i++) : arg.slice('--provider='.length);
       if (!['anthropic', 'deepseek', 'openai'].includes(provider)) {
@@ -165,6 +221,9 @@ export function parseArgs(argv) {
     }
   }
 
+  if (options.sessionId && options.resume) {
+    throw new CliArgumentError('--session-id and --resume cannot be used together.');
+  }
   options.cwd = resolve(options.cwd);
   options.prompt = options.positional.join(' ').trim();
   return options;
@@ -224,14 +283,19 @@ async function assertPathWithinWorkspace(workspace, target) {
  * Additional rule persistence stays disabled until the original dependency
  * closure is runnable and independently verified.
  */
-export function createCliPermissionContext({ allowEdits = false } = {}) {
+export function createCliPermissionContext({ allowEdits = false, permissionRules = {} } = {}) {
+  const updates = allowEdits ? [{ type: 'setMode', destination: 'cliArg', mode: 'acceptEdits' }] : [];
+  for (const behavior of ['allow', 'deny', 'ask']) {
+    const rules = permissionRules[behavior] || [];
+    if (rules.length) updates.push({ type: 'addRules', destination: 'cliArg', behavior, rules });
+  }
   return applyPermissionUpdates({
     mode: 'default',
     alwaysAllowRules: {},
     alwaysDenyRules: {},
     alwaysAskRules: {},
     additionalWorkingDirectories: new Map(),
-  }, allowEdits ? [{ type: 'setMode', destination: 'cliArg', mode: 'acceptEdits' }] : []);
+  }, updates);
 }
 
 export function createCliPermissionPolicy({
@@ -276,7 +340,8 @@ export function createCliPermissionPolicy({
 
     if (name === 'Bash') {
       return checkWholeToolPermissionRules(permissionContext, { name }) ||
-        { behavior: 'ask', reason: 'This command executes a shell process.' };
+        { behavior: 'ask', reason: 'This command executes a shell process.',
+          decisionReason: { type: 'mode', mode: 'default' } };
     }
 
     return { behavior: 'deny', reason: 'No CLI permission rule exists for tool ' + String(name) + '.' };
@@ -285,6 +350,7 @@ export function createCliPermissionPolicy({
   // the immutable workspace/rule context, never the evolving assistant text.
   // Custom policies do not receive this opt-in and are always deferred.
   Object.defineProperty(policy, 'supportsStreamingPreflight', { value: true });
+  Object.defineProperty(policy, 'isBuiltinCliPolicy', { value: true });
   return policy;
 }
 
@@ -619,7 +685,7 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
   });
 }
 
-export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
+export async function createBuiltinTools({ workspace = process.cwd(), permissionContext = createCliPermissionContext() } = {}) {
   const { ToolRegistry } = await import('../../runtime/src/tool-registry.js');
   const root = resolve(workspace);
   const tools = new ToolRegistry();
@@ -638,6 +704,7 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
 
   tools.register({
     name: 'Read',
+    maxResultSizeChars: Infinity,
     isConcurrencySafe: () => true,
     // Built-in workspace-only read/search operations may start at tool_use
     // block_stop, before the model has finished streaming.
@@ -813,7 +880,11 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
 
   tools.register({
     name: 'Bash',
-    description: 'Run a shell command in the workspace. Each command requires explicit interactive approval.',
+    description: 'Run a shell command in the workspace. Requires approval unless permitted by an exact command rule.',
+    // Original BashTool.checkPermissions delegates to bashToolHasPermission.
+    // Until AST, wrapper, wildcard and sandbox matching are transplanted, this
+    // is restricted to exact command rule decisions only (fail closed).
+    checkPermissions: async input => bashToolCheckExactMatchPermission(input, permissionContext),
     inputSchema: {
       type: 'object',
       properties: {
@@ -883,11 +954,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // A positional first prompt should start the interactive session on a TTY,
   // not silently force one-shot mode. --print remains explicitly one-shot.
   const interactiveInput = process.stdin.isTTY && process.stdout.isTTY && !options.print;
-  if (options.print && prompt.length === 0 && process.stdin.isTTY) {
+  if (options.print && prompt.length === 0 && process.stdin.isTTY && !options.resume) {
     printError('No prompt provided. Pass a prompt or pipe stdin.');
     return 2;
   }
-  if (!interactiveInput && prompt.length === 0) {
+  if (!interactiveInput && prompt.length === 0 &&
+      (!options.resume || !process.stdin.isTTY)) {
+    // An explicit --resume can continue a durable tool checkpoint without
+    // another user message, but a piped prompt still takes precedence.
+    // readStdin() reaches EOF for an empty pipe; it does not invent content.
     try {
       prompt = await readStdin();
     } catch (error) {
@@ -895,7 +970,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return 2;
     }
   }
-  if (!interactiveInput && prompt.length === 0) {
+  if (!interactiveInput && prompt.length === 0 && !options.resume) {
     printError('No prompt provided. Pass a prompt, pipe stdin, or start an interactive session.');
     return 2;
   }
@@ -945,7 +1020,25 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       system: options.system,
     });
   }
-  const tools = await createBuiltinTools({ workspace });
+  const permissionContext = createCliPermissionContext({
+    allowEdits: options.allowEdits, permissionRules: options.permissionRules,
+  });
+  const tools = await createBuiltinTools({ workspace, permissionContext });
+  let toolHooks = { PreToolUse: [], PostToolUse: [], PostToolUseFailure: [] };
+  if (options.hooksFile) {
+    try {
+      const { loadToolHookSettings } = await import(
+        '../../runtime/src/legacy-tools/pretooluse-node-compat.js'
+      );
+      // Explicit CLI flag is the trust boundary. Never auto-execute commands
+      // from an untrusted repository's settings on startup.
+      toolHooks = await loadToolHookSettings(options.hooksFile);
+    } catch (error) {
+      printError('Tool Hook configuration failed: ' +
+        (error instanceof Error ? error.message : String(error)));
+      return 2;
+    }
+  }
   // DeepSeek V4.1 Flash advertises a 1M-token context window; reserve ample
   // headroom for system/tools/output. Other providers remain opt-in until
   // their model-specific context windows can be determined accurately.
@@ -961,13 +1054,48 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   compactThreshold ??= provider === 'deepseek' ? 850000 : 0;
   const { createAutoCompact } = await import('../../runtime/src/legacy-compact/auto-compact.js');
   const autoCompact = createAutoCompact({ thresholdTokens: compactThreshold });
+  const { openSessionJournal } = await import('../../runtime/src/legacy-session/session-storage.js');
+  let journal;
+  try {
+    journal = await openSessionJournal({
+      workspace,
+      ...(options.sessionId || options.resume
+        ? { sessionId: options.sessionId || options.resume } : {}),
+      resume: !!options.resume,
+    });
+  } catch(error) {
+    printError('Session initialization failed: ' +
+      (error instanceof Error ? error.message : String(error)));
+    return 2;
+  }
+  process.stderr.write('[session] ' + journal.id + (options.resume ? ' resumed' : ' created') + '\n');
+  if (!interactiveInput && prompt.length === 0 && !journal.canContinueWithoutPrompt) {
+    // The source Query can continue *a completed tool transaction* without
+    // a synthetic new user message. It must not ask the model to regenerate
+    // a previously final answer or resume a partial/invalid tool batch.
+    printError('Session has no committed pending tool result. Supply a new prompt to continue.');
+    await journal.close();
+    return 2;
+  }
   const loop = new AgentLoop({
     model,
     tools,
+    toolResultStorage: {
+      workspace,
+      directory: join(workspace, '.agent-cil', 'sessions', journal.id, 'tool-results'),
+    },
+    preToolUseHooks: toolHooks.PreToolUse,
+    postToolUseHooks: toolHooks.PostToolUse,
+    postToolUseFailureHooks: toolHooks.PostToolUseFailure,
+    hookWorkspace: workspace,
     compactContext: context => autoCompact.compact(context),
+    // The old sessionStorage.ts enqueues JSONL transcript commits. The
+    // portable Node journal implements only completed checkpoint records.
+    // Await it in Query before any subsequent provider request.
+    onSessionCheckpoint: checkpoint => journal.append(checkpoint),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
-      permissionContext: createCliPermissionContext({ allowEdits: options.allowEdits }),
+      permissionContext,
     }),
     maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
@@ -986,7 +1114,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     rl = createInterface({ input: process.stdin, output: process.stdout });
   }
 
-  let history = [];
+  let history = journal.messages;
   let activeController;
   const onSigint = () => {
     if (activeController && !activeController.signal.aborted) {
@@ -1029,7 +1157,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     loop.on('turnFinished', onTurnFinished);
     loop.on('contextCompacted', onContextCompacted);
     try {
-      const result = await loop.run({ messages: history, input: text, signal: activeController.signal });
+      const result = await loop.run({
+        messages: history,
+        ...(text === undefined ? {} : { input: text }),
+        signal: activeController.signal,
+      });
       history = result.messages;
       process.stdout.write('\n');
       if (result.stopReason === 'max_tokens') {
@@ -1064,7 +1196,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   try {
     if (!interactiveInput) {
-      return await runPrompt(prompt, { plain: options.print });
+      return await runPrompt(prompt.length ? prompt : undefined, { plain: options.print });
     }
     process.stderr.write('agent-cil interactive mode. Type /exit to quit.\n');
     if (prompt) {
@@ -1091,6 +1223,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   } finally {
     process.off('SIGINT', onSigint);
     rl?.close();
+    await journal.close();
   }
 }
 
