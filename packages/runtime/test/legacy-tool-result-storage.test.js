@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm, symlink, mkdir, access } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, symlink, mkdir, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -132,6 +132,12 @@ test('old storage keeps successful original result when exclusive file write fai
       original, 'Grep', 50_000, storage);
     assert.deepEqual(response, original,
       'an I/O failure must not erase successful model-visible tool output');
+    await writeFile(join(storage.directory, 'collision.txt'), 'unrelated previous result');
+    const collision = mapped('collision', 'new actual result\n'.repeat(5000));
+    const notReplaced = await processPreMappedToolResultBlock(
+      collision, 'Grep', 50_000, storage);
+    assert.deepEqual(notReplaced, collision,
+      'an existing file with different contents must not be reported as the new result');
   });
 });
 
