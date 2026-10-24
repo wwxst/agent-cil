@@ -67,6 +67,9 @@ jobs:
           # A typed prompt-too-long HTTP 400 after successful Edit must
           # trigger one tool-free summary then continue without redoing Edit.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-reactive-recovery-cli.test.js
+          # Reuse the installed binary across two processes: Edit succeeds,
+          # provider fails, then --resume must retain tool_result exactly once.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/session-resume-cli.test.js
           # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 
