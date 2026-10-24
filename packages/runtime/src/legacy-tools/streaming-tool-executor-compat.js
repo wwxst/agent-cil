@@ -47,9 +47,16 @@ export async function* runToolUse(block, assistantMessage, canUseTool, context) 
         yield { message: { type: 'progress', progress: update.progress } };
       }
       if (update?.message) {
-        yield { message: { type: 'user', message: update.message } };
+        // Original runToolUse emits contextModifier ON THE SAME MessageUpdate
+        // as the tool_result. Do not split into a message-less update:
+        // the transplanted scheduler inspects update.message.type.
+        yield {
+          message: { type: 'user', message: update.message },
+          ...(update.contextModifier ? { contextModifier: update.contextModifier } : {}),
+        };
+      } else if (update?.contextModifier) {
+        throw new TypeError('Original contextModifier requires a tool result message.');
       }
-      if (update?.contextModifier) yield { contextModifier: update.contextModifier };
     }
   } catch (error) {
     yield { message: createUserMessage({ content: [{
