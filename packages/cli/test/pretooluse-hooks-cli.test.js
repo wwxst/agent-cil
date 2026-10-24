@@ -38,8 +38,12 @@ test('2.1.88 hook settings reject unsupported callbacks and event types (no sile
       matcher:'Write',hooks:[{type:'prompt',prompt:'do something'}]
     }]}}));
     await assert.rejects(loadPreToolUseHookSettings(file), /Only synchronous/);
+    // Original PostToolUse has now been connected to the CLI source chain;
+    // unsupported non-tool Hook events still fail at the trust boundary.
     await writeFile(file, JSON.stringify({hooks:{PostToolUse:[] ,PreToolUse:[]}}));
-    await assert.rejects(loadPreToolUseHookSettings(file), /Only PreToolUse/);
+    assert.deepEqual(await loadPreToolUseHookSettings(file), []);
+    await writeFile(file, JSON.stringify({hooks:{SessionStart:[] ,PreToolUse:[]}}));
+    await assert.rejects(loadPreToolUseHookSettings(file), /Only PreToolUse, PostToolUse/);
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 
