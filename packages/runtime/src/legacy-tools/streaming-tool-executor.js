@@ -339,7 +339,7 @@ export class StreamingToolExecutor {
       return {
         type: 'tool_result', tool_use_id: tool.id, is_error: true,
         content: maybeExecuted
-          ? '<tool_use_error>Interrupted: tool was started but its side effects or result may have completed. Inspect the workspace before retrying; do not automatically replay this call.</tool_use_error>'
+          ? '<tool_use_error>Interrupted: tool was started; side effects may have occurred or the result may have completed. Inspect the workspace before retrying; do not automatically replay this call.</tool_use_error>'
           : '<tool_use_error>Interrupted: tool was not started; no tool execution was attempted.</tool_use_error>',
       };
     });
