@@ -13,6 +13,7 @@
  * treats received tool_use blocks, not stop_reason, as follow-up authority.
  */
 import { StreamingToolExecutor } from '../legacy-tools/streaming-tool-executor.js';
+import { hasCompleteApiUsage } from '../legacy-compact/legacy-token-adapter.js';
 import { runToolUse } from '../legacy-tools/tool-execution.js';
 import { ModelContextLengthError } from '../anthropic-messages-adapter.js';
 
@@ -125,6 +126,7 @@ export async function query({
         const content = [];
         const toolUses = [];
         let stopReason;
+        let lastUsage;
         let messageEnded = false;
         let sawStreamEvent = false;
         // Original 2.1.88 query.ts starts its StreamingToolExecutor before
@@ -137,6 +139,12 @@ export async function query({
         const executor = new StreamingToolExecutor({
           getTool: name => tools.get(name),
           signal,
+          // Original executor handles unknown tools before runToolUse dispatch.
+          onUnknownTool: unknown => {
+            emit('toolCallFinished', {
+              turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
+            });
+          },
           execute: (block, { signal: toolSignal }) =>
             runToolUse(
               block,
@@ -249,6 +257,11 @@ export async function query({
               stopReason = reason;
               messageEnded = true;
             } else if (event.type === 'usage') {
+              if (event.usage && typeof event.usage === 'object' && !Array.isArray(event.usage)) {
+                // The SSE adapter emits evolving snapshots. Keep only the
+                // last complete response snapshot; never add deltas together.
+                lastUsage = structuredClone(event.usage);
+              }
               emit('usage', { turn, usage: event.usage });
             } else {
               throw new ModelProtocolError('Unsupported model stream event: ' + event.type);
@@ -312,6 +325,9 @@ export async function query({
         const needsFollowUp = toolUses.length > 0;
 
         assistantMessage.stop_reason = stopReason;
+        if (hasCompleteApiUsage(lastUsage)) {
+          assistantMessage.usage = lastUsage;
+        }
         history.push(assistantMessage);
         emit('assistantMessage', { turn, message: structuredClone(assistantMessage) });
 
