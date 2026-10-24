@@ -18,7 +18,7 @@ jobs:
           node-version: 22
       - name: Verify integrated original stream, tokens, tool results, permission and Hook chain on Windows
         run: |
-          node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/pretooluse-hooks-cli.test.js packages/cli/test/permission-rules-cli.test.js packages/cli/test/tool-result-storage-cli.test.js packages/cli/test/usage-context-compact-cli.test.js packages/cli/test/streaming-readonly-cli.test.js packages/runtime/test/pretooluse-hook-cancellation.test.js
+          node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/pretooluse-hooks-cli.test.js packages/cli/test/posttooluse-hooks-cli.test.js packages/cli/test/permission-rules-cli.test.js packages/cli/test/tool-result-storage-cli.test.js packages/cli/test/usage-context-compact-cli.test.js packages/cli/test/streaming-readonly-cli.test.js packages/runtime/test/pretooluse-hook-cancellation.test.js
 
   runtime-tests:
     runs-on: ubuntu-latest
@@ -72,6 +72,8 @@ jobs:
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/pretooluse-hooks-cli.test.js
           # Verify full integrated original 2.1.88 mechanisms on packed entry point.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/usage-context-compact-cli.test.js packages/cli/test/tool-result-storage-cli.test.js packages/cli/test/permission-rules-cli.test.js
+          # Source PostToolUse and PostToolUseFailure must survive npm packing.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/posttooluse-hooks-cli.test.js
           # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 
