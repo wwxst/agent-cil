@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { aggregateHookResults } from '../src/legacy-tools/pretooluse-hook-aggregation.js';
-import { runPreToolUseHooks } from '../src/legacy-tools/pretooluse-core.js';
 
 async function collect(outcomes) {
   const result = [];
@@ -51,17 +50,10 @@ test('denied hook never forwards updatedInput into original permission resolver'
   assert.equal(decision.permissionBehavior, 'deny');
   assert.equal(decision.updatedInput, undefined);
 });
-test('original generator preserves aggregated denial over an explicitly later allow', async () => {
-  const updates = [];
-  const context = {
-    getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
-    abortController: new AbortController(),
-    preToolUseHooks: [
-      { matcher: 'Write', command: 'unused', type: 'command' },
-    ],
-    workspace: process.cwd(),
-  };
-  // Structural contract of source generator + adapter tested by the
-  // real CLI fixture in packages/cli/test/pretooluse-hooks-cli.test.js.
-  assert.equal(context.getAppState().toolPermissionContext.mode, 'default');
+test('hook result aggregator ignores invalid decision output and permits no allow', async () => {
+  const events = await collect([
+    { message: { type: 'attachment', attachment: { type: 'hook_non_blocking_error' } } },
+  ]);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].permissionBehavior, undefined);
 });
