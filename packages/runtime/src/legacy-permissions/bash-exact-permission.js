@@ -13,22 +13,58 @@
  */
 import { getRuleByContentsForToolName } from './permission-rules.js';
 import { parsePermissionRule, matchWildcardPattern } from './shell-rule-matching.js';
+import { stripSafeWrappers, stripAllLeadingEnvVars } from './bash-rule-candidates.js';
 
-// Source bashPermissions.ts:filterRulesByContentsMatchingInput() switch.
-// Applies to the unmodified full input only. Full wrapper/redirection and
-// per-subcommand matching remain deliberately unimplemented/fail-closed.
-function findRestrictedRule(rules, command) {
+/**
+ * 2.1.88 bashPermissions.ts:filterRulesByContentsMatchingInput() uses a
+ * fixed-point expansion of stripSafeWrappers and stripAllLeadingEnvVars for
+ * deny/ask rules. Preserve that source strategy and function names so even
+ * interleaved wrappers such as "nohup FOO=bar timeout 5 rm" are restricted.
+ *
+ * This limited stage deliberately does not use these candidates to permit
+ * execution, and it does not claim to replace the original shell-quote,
+ * extractOutputRedirections(), splitCommand() or AST validation.
+ */
+function restrictedCandidates(command) {
+  const commandsToTry = [command];
+  const seen = new Set(commandsToTry);
+  let startIdx = 0;
+  while (startIdx < commandsToTry.length) {
+    const endIdx = commandsToTry.length;
+    for (let i = startIdx; i < endIdx; i++) {
+      const candidate = commandsToTry[i];
+      if (!candidate) continue;
+      for (const stripped of [
+        stripSafeWrappers(candidate),
+        stripAllLeadingEnvVars(candidate),
+      ]) {
+        if (stripped && !seen.has(stripped)) {
+          seen.add(stripped);
+          commandsToTry.push(stripped);
+        }
+      }
+    }
+    startIdx = endIdx;
+  }
+  return commandsToTry;
+}
+
+// The rule-type switch and word boundaries come from 2.1.88
+// bashPermissions.ts:filterRulesByContentsMatchingInput().
+function findRestrictedRule(rules, commandsToTry) {
   for (const [content, rule] of rules) {
     const shellRule = parsePermissionRule(content);
-    if (shellRule.type === 'exact' && shellRule.command === command) return rule;
-    if (shellRule.type === 'prefix' && (
-      command === shellRule.prefix ||
-      command.startsWith(shellRule.prefix + ' ') ||
-      command === 'xargs ' + shellRule.prefix ||
-      command.startsWith('xargs ' + shellRule.prefix + ' ')
-    )) return rule;
-    if (shellRule.type === 'wildcard' &&
-      matchWildcardPattern(shellRule.pattern, command)) return rule;
+    for (const command of commandsToTry) {
+      if (shellRule.type === 'exact' && shellRule.command === command) return rule;
+      if (shellRule.type === 'prefix' && (
+        command === shellRule.prefix ||
+        command.startsWith(shellRule.prefix + ' ') ||
+        command === 'xargs ' + shellRule.prefix ||
+        command.startsWith('xargs ' + shellRule.prefix + ' ')
+      )) return rule;
+      if (shellRule.type === 'wildcard' &&
+        matchWildcardPattern(shellRule.pattern, command)) return rule;
+    }
   }
   return undefined;
 }
@@ -37,7 +73,8 @@ export function bashToolCheckExactMatchPermission(input, toolPermissionContext) 
   const command = input.command.trim();
   const denyRules = getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'deny');
   const askRules = getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'ask');
-  const deny = findRestrictedRule(denyRules, command);
+  const candidates = restrictedCandidates(command);
+  const deny = findRestrictedRule(denyRules, candidates);
   if (deny) {
     return {
       behavior: 'deny',
@@ -45,7 +82,7 @@ export function bashToolCheckExactMatchPermission(input, toolPermissionContext) 
       decisionReason: { type: 'rule', rule: deny },
     };
   }
-  const ask = findRestrictedRule(askRules, command);
+  const ask = findRestrictedRule(askRules, candidates);
   if (ask) {
     return {
       behavior: 'ask',
