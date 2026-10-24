@@ -8,7 +8,8 @@
  */
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 const MAX_HOOK_OUTPUT_BYTES = 128 * 1024;
 const MAX_HOOK_DURATION_MS = 30000;
@@ -140,9 +141,12 @@ export async function execCommandHook(command, hookInput, workspace, signal, tim
   const isWindows = process.platform === 'win32';
   // Historical Windows command hooks use Git Bash rather than cmd.exe.
   // Require an explicit git-bash path; unsupported shells fail closed.
-  const configuredBash = process.env.AGENT_CIL_GIT_BASH;
+  const defaultGitBash = join(process.env.ProgramFiles || 'C:\\Program Files',
+    'Git', 'bin', 'bash.exe');
+  const configuredBash = process.env.AGENT_CIL_GIT_BASH ||
+    (existsSync(defaultGitBash) ? defaultGitBash : null);
   if (isWindows && !configuredBash) {
-    throw new Error('Windows PreToolUse command hooks require AGENT_CIL_GIT_BASH.');
+    throw new Error('Windows PreToolUse requires Git Bash (set AGENT_CIL_GIT_BASH).');
   }
   const child = spawn(command, [], {
     shell: isWindows ? configuredBash : true,
@@ -159,6 +163,7 @@ export async function execCommandHook(command, hookInput, workspace, signal, tim
       abortHookProcess(child);
     }
   };
+  child.stdin.on('error', () => {}); // Child can exit before stdin flushes.
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', value => append(value, 'stdout'));
   child.stderr.on('data', value => append(value, 'stderr'));
