@@ -55,7 +55,7 @@ export async function checkRuleBasedPermissions(tool, input, toolUseContext) {
 
 // Original hooks.ts matchesPattern() with original parser aliases,
 // including exact, pipe and regex matchers.
-function matchesPattern(matchQuery, matcher) {
+export function matchesPattern(matchQuery, matcher) {
   if (!matcher || matcher === '*') return true;
   if (/^[a-zA-Z0-9_|]+$/.test(matcher)) {
     const patterns = matcher.split('|').map(name => normalizeLegacyToolName(name.trim()));
