@@ -206,3 +206,54 @@ test('real CLI uses original PreToolUse permission behavior, input rewrite, and 
     await assert.rejects(stat(join(root,'original.txt')),{code:'ENOENT'});
   } finally { await rm(root,{recursive:true,force:true,maxRetries:3,retryDelay:100}); }
 });
+
+test('real CLI PreToolUse continue:false preserves authorized Write result then stops without a second model request', {
+  timeout:30000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-prehook-stop-'));
+  const file=join(root,'hooks.json');
+  const script=join(root,'stop-pre.cjs');
+  let requests=0;
+  const server=createServer(async(req,res)=>{
+    for await(const _ of req) { /* drain */ }
+    requests++;
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.end(toolStream('stop-pre-write',{file_path:'must-exist.txt',content:'once only'}));
+  });
+  let child,timer;
+  try {
+    await writeFile(script,
+      "let input='';process.stdin.on('data',x=>input+=x);"+
+      "process.stdin.on('end',()=>{const data=JSON.parse(input);"+
+      "if(data.hook_event_name!=='PreToolUse')process.exit(7);"+
+      "console.log(JSON.stringify({continue:false,stopReason:'tool checked'}));});");
+    await writeFile(file,JSON.stringify({hooks:{PreToolUse:[{
+      matcher:'Write',hooks:[{type:'command',command:'node stop-pre.cjs',timeout:8}]
+    }]}}));
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    child=spawn(process.execPath,[cli,'--print','--provider','deepseek','--cwd',root,
+      '--allow-edits','--max-turns','3','--max-retries','0',
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic',
+      '--hooks-file',file,'Write the authorized file then stop.'],
+      {env:{...process.env,DEEPSEEK_API_KEY:'only-local-hook-token'},
+        stdio:['ignore','pipe','pipe']});
+    const stderr=[];child.stderr.on('data',x=>stderr.push(x));
+    child.stdout.resume();
+    timer=setTimeout(()=>child.kill('SIGKILL'),15000);
+    const [code,signal]=await new Promise((resolve,reject)=>{
+      child.once('error',reject);child.once('close',(code,signal)=>resolve([code,signal]));
+    });
+    assert.equal(signal,null,Buffer.concat(stderr).toString('utf8'));
+    assert.equal(code,0,Buffer.concat(stderr).toString('utf8'));
+    assert.equal(requests,1,'PreToolUse stop must suppress a second model round');
+    assert.equal(await readFile(join(root,'must-exist.txt'),'utf8'),'once only');
+  }finally{
+    if(timer)clearTimeout(timer);
+    if(child&&child.exitCode===null&&!child.killed)child.kill('SIGKILL');
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  }
+});
