@@ -164,6 +164,10 @@ export class SessionJournal {
   #messages=[];
   #closed=false;
   #poisoned=false;
+  // The original sessionStorage.ts enqueueWrite/drainWriteQueue serializes
+  // each file's writes. Keep both the chain state and fsync in one queue.
+  #writeQueue=Promise.resolve();
+  #closeTask;
   #lastEncoded='';
   #lastKind;
   #nodes = new Map();
@@ -245,6 +249,16 @@ export class SessionJournal {
   }
   async append({messages,kind}) {
     if(this.#closed || this.#poisoned)throw new Error('Session journal is not writable.');
+    // Snapshot the queued checkpoint before another caller can mutate it.
+    const checkpoint=structuredClone(messages);
+    const pending=this.#writeQueue.then(()=>this.#appendCommitted({messages:checkpoint,kind}));
+    // A rejected operation must not permanently strand the original write queue.
+    // The individual caller still receives the real rejection.
+    this.#writeQueue=pending.catch(()=>{});
+    return pending;
+  }
+  async #appendCommitted({messages,kind}) {
+    if(this.#poisoned)throw new Error('Session journal is not writable.');
     await assertLockOwner(this.#lock,this.#lockToken);
     if(!CHECKPOINT_TYPES.has(kind))throw new TypeError('Invalid session checkpoint kind.');
     validateCommittedTranscript(messages);
@@ -300,13 +314,19 @@ export class SessionJournal {
     this.#lastKind=kind;
     this.#sequence++;
   }
-  async close() {
-    if(this.#closed)return;
+  close() {
+    if(this.#closeTask)return this.#closeTask;
     this.#closed=true;
-    // Never unlink a lock belonging to a subsequent process. The old
-    // SessionStorage write queue assumes one session owner at a time.
-    await assertLockOwner(this.#lock,this.#lockToken);
-    await unlink(this.#lock);
+    // Await all writes already queued when close() was requested. Otherwise
+    // the owner lock could disappear during append()/fsync and poison a
+    // correctly executed tool-result checkpoint.
+    this.#closeTask=(async()=>{
+      await this.#writeQueue;
+      // Never unlink a lock belonging to a subsequent process.
+      await assertLockOwner(this.#lock,this.#lockToken);
+      await unlink(this.#lock);
+    })();
+    return this.#closeTask;
   }
 }
 export async function openSessionJournal({workspace,sessionId=randomUUID(),resume=false}={}){
