@@ -76,8 +76,16 @@ const aliases = { Task: 'Agent', KillShell: 'TaskStop', AgentOutputTool: 'TaskOu
 function normalizeLegacyToolName(name) { return aliases[name] ?? name; }
 function getLegacyToolNames(canonical) { return Object.entries(aliases).filter(([,n]) => n === canonical).map(([n]) => n); }
 
-export async function loadPreToolUseHookSettings(file) {
-  if (typeof file !== 'string' || !file.trim()) throw new TypeError('Hooks settings file is required.');
+const SUPPORTED_TOOL_HOOK_EVENTS = Object.freeze([
+  'PreToolUse', 'PostToolUse', 'PostToolUseFailure',
+]);
+
+/** Original hooks.ts event/matcher command configuration shape.
+ * Explicit operator-selected --hooks-file is required; no repo auto trust. */
+export async function loadToolHookSettings(file) {
+  if (typeof file !== 'string' || !file.trim()) {
+    throw new TypeError('Hooks settings file is required.');
+  }
   const name = resolve(file);
   const text = await readFile(name, { encoding: 'utf8' });
   if (Buffer.byteLength(text, 'utf8') > MAX_HOOK_SETTINGS_BYTES) {
@@ -86,33 +94,44 @@ export async function loadPreToolUseHookSettings(file) {
   const parsed = JSON.parse(text);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
       !parsed.hooks || typeof parsed.hooks !== 'object' ||
-      !Array.isArray(parsed.hooks.PreToolUse)) {
-    throw new TypeError('Hook settings require hooks.PreToolUse matcher array.');
+      Array.isArray(parsed.hooks)) {
+    throw new TypeError('Hook settings require a hooks event object.');
   }
-  // This CLI does not run unsupported hook events (PostToolUse, Stop, etc).
-  // Reject them instead of silently claiming to execute the supplied config.
-  if (Object.keys(parsed.hooks).some(name => name !== 'PreToolUse')) {
-    throw new Error('Only PreToolUse command hooks are currently supported.');
+  const events = Object.keys(parsed.hooks);
+  if (!events.length || events.some(event => !SUPPORTED_TOOL_HOOK_EVENTS.includes(event))) {
+    throw new Error('Only PreToolUse, PostToolUse and PostToolUseFailure command hooks are supported.');
   }
-  const commands = [];
-  for (const group of parsed.hooks.PreToolUse) {
-    if (!group || typeof group !== 'object' || typeof group.matcher !== 'string' ||
-        !Array.isArray(group.hooks)) {
-      throw new TypeError('Malformed PreToolUse matcher.');
-    }
-    for (const hook of group.hooks) {
-      if (!hook || hook.type !== 'command' || typeof hook.command !== 'string' ||
-          !hook.command.trim() || hook.async || hook.asyncRewake || hook.shell) {
-        throw new TypeError('Only synchronous PreToolUse {type:"command"} hooks are currently supported.');
+  const result = {};
+  for (const event of SUPPORTED_TOOL_HOOK_EVENTS) {
+    const groups = parsed.hooks[event] ?? [];
+    if (!Array.isArray(groups)) throw new TypeError('Malformed ' + event + ' hook matcher list.');
+    const commands = [];
+    for (const group of groups) {
+      if (!group || typeof group !== 'object' ||
+          typeof group.matcher !== 'string' || !Array.isArray(group.hooks)) {
+        throw new TypeError('Malformed ' + event + ' hook matcher.');
       }
-      if (hook.timeout !== undefined &&
+      for (const hook of group.hooks) {
+        if (!hook || hook.type !== 'command' || typeof hook.command !== 'string' ||
+            !hook.command.trim() || hook.async || hook.asyncRewake || hook.shell) {
+          throw new TypeError('Only synchronous ' + event + ' command hooks are supported.');
+        }
+        if (hook.timeout !== undefined &&
           (!Number.isSafeInteger(hook.timeout) || hook.timeout < 1 || hook.timeout > 30)) {
-        throw new RangeError('Hook timeout must be 1–30 seconds.');
+          throw new RangeError('Hook timeout must be 1–30 seconds.');
+        }
+        commands.push(Object.freeze({ ...hook, matcher: group.matcher }));
       }
-      commands.push({ ...hook, matcher: group.matcher });
     }
+    result[event] = Object.freeze(commands);
   }
-  return Object.freeze(commands.map(x => Object.freeze(x)));
+  return Object.freeze(result);
+}
+
+// Retain the existing adapter API for CLI/test code that uses only PreToolUse.
+export async function loadPreToolUseHookSettings(file) {
+  const settings = await loadToolHookSettings(file);
+  return settings.PreToolUse;
 }
 
 function abortHookProcess(child) {
