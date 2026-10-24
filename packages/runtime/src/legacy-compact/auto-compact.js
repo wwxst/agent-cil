@@ -10,7 +10,8 @@
  * protected thinking blocks/signatures in any surviving assistant turn.
  */
 import { ModelContextLengthError } from '../anthropic-messages-adapter.js';
-import { tokenCountForCliMessages } from './legacy-token-adapter.js';
+import { tokenCountForCliMessages,
+  estimateFreshCompactedCliMessages } from './legacy-token-adapter.js';
 
 const MIN_SUMMARY_CHARS = 12;
 const MAX_SUMMARY_CHARS = 16000;
@@ -208,10 +209,13 @@ export function createAutoCompact({ thresholdTokens, keepRecentRounds = 2 } = {}
             summary + '\nRecent messages follow unchanged.' },
           ...structuredClone(recent),
         ];
-        const nextTokens = estimateMessageTokens(next);
-        if (nextTokens >= estimatedTokens * 0.8) {
-          throw new Error('Summary did not sufficiently reduce context size.');
-        }
+        // The original compact.ts commits its summary as a new context
+        // boundary. The retained assistant's usage is from BEFORE compaction,
+        // so tokenCountWithEstimation(next) cannot estimate the new boundary.
+        // Count the new message content using the original roughTokenCount...
+        // implementation until the next real model API response arrives.
+        // The former arbitrary 80% shrink test was not in original compact.ts.
+        const nextTokens = estimateFreshCompactedCliMessages(next);
         consecutiveFailures = 0;
         return {
           messages: next, compacted: true,
