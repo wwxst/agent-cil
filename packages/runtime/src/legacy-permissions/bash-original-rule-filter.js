@@ -118,7 +118,7 @@ export function filterRulesByContentsMatchingInput(
   // prefix/wildcard matching in 'prefix' mode, and only for allow rules.
   // SECURITY: deny/ask rules must match compound commands so they can't be
   // bypassed by wrapping a denied command in a compound expression.
-  const isCompoundCommand = new Map<string, boolean>()
+  const isCompoundCommand = new Map()
   if (matchMode === 'prefix' && !skipCompoundCheck) {
     for (const cmd of commandsToTry) {
       if (!isCompoundCommand.has(cmd)) {
