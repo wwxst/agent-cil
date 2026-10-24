@@ -268,6 +268,21 @@ test('packed CLI Bash permission chain: exact allow, deny, ask, whole ask, unmat
     assert.notEqual(executed.is_error,true);
     assert.equal(await readFile(join(root,'permission-once.txt'),'utf8'),'x');
 
+    // A whole-tool allow must not execute a denied prefix subcommand with a
+    // real side effect. Also ensure compound commands fail closed instead of
+    // bypassing a deny hidden after an otherwise harmless command.
+    const forbidden = 'node -e "require(\'fs\').appendFileSync(\'blocked.txt\',\'x\')"';
+    const denied = await scenario([
+      '--allowedTools','Bash', '--disallowedTools','Bash(node:*)',
+    ], forbidden);
+    assert.equal(denied.is_error,true);
+    await assert.rejects(stat(join(root,'blocked.txt')), /ENOENT/);
+    const compounded = await scenario([
+      '--allowedTools','Bash', '--disallowedTools','Bash(node:*)',
+    ], 'echo harmless && ' + forbidden);
+    assert.equal(compounded.is_error,true);
+    await assert.rejects(stat(join(root,'blocked.txt')), /ENOENT/);
+
     for(const [flags, command] of [
       [['--disallowedTools','Bash(node --version)','--allowedTools','Bash(node --version)'], 'node --version'],
       [['--askTools','Bash(node --version)','--allowedTools','Bash(node --version)'], 'node --version'],
