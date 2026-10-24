@@ -104,16 +104,38 @@ function isPidActive(pid) {
   try { process.kill(pid, 0); return true; }
   catch(error) { return error?.code !== 'ESRCH'; }
 }
+async function assertLockOwner(path,token){
+  let handle;
+  try{
+    handle=await open(path,constants.O_RDONLY|NOFOLLOW);
+    const info=await handle.stat();
+    if(!info.isFile())throw new Error('Invalid session lock.');
+    const lock=JSON.parse(await handle.readFile('utf8'));
+    if(lock.token!==token || lock.pid!==process.pid){
+      throw new Error('Session lock ownership lost; refusing to access this session.');
+    }
+  }catch(error){
+    if(error?.code==='ENOENT')throw new Error('Session lock disappeared; refusing to access this session.');
+    if(error instanceof SyntaxError)throw new Error('Session lock was corrupted.');
+    throw error;
+  }finally{await handle?.close();}
+}
 async function acquireLock(path) {
+  const token=randomUUID();
   for(let attempt=0;attempt<2;attempt++) {
     try {
       const lock=await open(path, constants.O_CREAT|constants.O_EXCL|
         constants.O_WRONLY|NOFOLLOW,0o600);
       try {
-        await lock.writeFile(JSON.stringify({pid:process.pid,startedAt:Date.now()})+'\n');
+        await lock.writeFile(JSON.stringify({
+          pid:process.pid,startedAt:Date.now(),token,
+        })+'\n');
         await lock.sync();
       }finally{await lock.close();}
-      return;
+      // A different process could be reclaiming a stale lock at the same
+      // time. Do not grant write access if it already replaced our owner.
+      await assertLockOwner(path,token);
+      return token;
     }catch(error) {
       if(error?.code!=='EEXIST' || attempt)throw error;
       // A killed process leaves its lock. Never remove a live writer's lock.
@@ -134,6 +156,7 @@ async function acquireLock(path) {
 export class SessionJournal {
   #path;
   #lock;
+  #lockToken;
   #id;
   #workspace;
   #sequence=0;
@@ -145,8 +168,9 @@ export class SessionJournal {
   #lastKind;
   #nodes = new Map();
   #leafUuid = null;
-  constructor({path,lock,id,workspace}){
-    this.#path=path;this.#lock=lock;this.#id=id;this.#workspace=workspace;
+  constructor({path,lock,lockToken,id,workspace}){
+    this.#path=path;this.#lock=lock;this.#lockToken=lockToken;
+    this.#id=id;this.#workspace=workspace;
   }
   get id(){return this.#id;}
   get messages(){return structuredClone(this.#messages);}
@@ -156,6 +180,7 @@ export class SessionJournal {
       hasPendingToolResponse(this.#messages);
   }
   async load() {
+    await assertLockOwner(this.#lock,this.#lockToken);
     await safeExistingFile(this.#path);
     const file=await open(this.#path,constants.O_RDONLY|NOFOLLOW);
     let data;
@@ -211,6 +236,7 @@ export class SessionJournal {
     // A crash can truncate the last JSONL line. Never use that partial entry;
     // trim it under the exclusive session lock before any new append.
     if(lastLine+1 < data.length){
+      await assertLockOwner(this.#lock,this.#lockToken);
       const handle=await open(this.#path,constants.O_WRONLY|NOFOLLOW);
       try{await handle.truncate(Buffer.byteLength(complete));await handle.sync();}
       finally{await handle.close();}
@@ -219,6 +245,7 @@ export class SessionJournal {
   }
   async append({messages,kind}) {
     if(this.#closed || this.#poisoned)throw new Error('Session journal is not writable.');
+    await assertLockOwner(this.#lock,this.#lockToken);
     if(!CHECKPOINT_TYPES.has(kind))throw new TypeError('Invalid session checkpoint kind.');
     validateCommittedTranscript(messages);
     const encoded=JSON.stringify(messages);
@@ -251,6 +278,7 @@ export class SessionJournal {
     };
     const hash=digest(payload);
     const line=JSON.stringify({...payload,hash})+'\n';
+    await assertLockOwner(this.#lock,this.#lockToken);
     const handle=await open(this.#path,constants.O_WRONLY|constants.O_APPEND|NOFOLLOW);
     try {
       const before=(await handle.stat()).size;
@@ -259,6 +287,9 @@ export class SessionJournal {
       }
       await handle.writeFile(line);
       await handle.sync();
+      // If another owner stole the lock while a write was in flight, fail
+      // closed before publishing this checkpoint as committed to Query.
+      await assertLockOwner(this.#lock,this.#lockToken);
     }catch(error){this.#poisoned=true;throw error;}
     finally{await handle.close();}
     this.#nodes=validated.map;
@@ -272,9 +303,10 @@ export class SessionJournal {
   async close() {
     if(this.#closed)return;
     this.#closed=true;
-    await unlink(this.#lock).catch(error=>{
-      if(error?.code!=='ENOENT')throw error;
-    });
+    // Never unlink a lock belonging to a subsequent process. The old
+    // SessionStorage write queue assumes one session owner at a time.
+    await assertLockOwner(this.#lock,this.#lockToken);
+    await unlink(this.#lock);
   }
 }
 export async function openSessionJournal({workspace,sessionId=randomUUID(),resume=false}={}){
@@ -288,8 +320,10 @@ export async function openSessionJournal({workspace,sessionId=randomUUID(),resum
   for(const path of [prefix,sessions,directory])await safeDirectory(path);
   const path=join(directory,'transcript.jsonl');
   const lock=path+'.lock';
-  await acquireLock(lock);
-  const journal=new SessionJournal({path,lock,id:sessionId,workspace:root});
+  const lockToken=await acquireLock(lock);
+  const journal=new SessionJournal({
+    path,lock,lockToken,id:sessionId,workspace:root,
+  });
   try{
     if(resume)await journal.load();
     else {
