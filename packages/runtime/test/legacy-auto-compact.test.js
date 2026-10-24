@@ -466,3 +466,40 @@ test('context-window and output reservation limit high configured compact thresh
   assert.equal(result.compacted, true);
   assert.equal(summaries, 1);
 });
+
+
+test('real usage from before compact is invalidated until a fresh post-compact response exists', async () => {
+  const copy = structuredClone(raw);
+  // A genuine provider usage value refers to a much larger pre-compact
+  // context than the retained recent API-round payloads.
+  copy[4].usage = {
+    input_tokens: 850000, cache_read_input_tokens: 12000,
+    output_tokens: 500,
+  };
+  const compact = createAutoCompact({ thresholdTokens: 300 });
+  const response = await compact.compact({ messages: copy, model: {
+    async *stream({ purpose, tools }) {
+      assert.equal(purpose, 'compact');
+      assert.deepEqual(tools, []);
+      yield { type: 'text_delta',
+        text: 'Earlier project tools completed; only the latest rounds remain.' };
+      yield { type: 'message_end', stopReason: 'end_turn' };
+    },
+  }, force: true });
+  assert.equal(response.compacted, true);
+  assert.deepEqual(response.messages.slice(1), copy.slice(3),
+    'do not change protected or signed recent messages');
+  assert.equal(response.messages[0].__compactRetainedMessages, copy.length - 3);
+  assert.equal(tokenCountWithEstimation(response.messages),
+    estimateMessageTokens(response.messages),
+    'must ignore old 862k-token usage after compact');
+
+  const continued = [...response.messages, {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'New response' }],
+    usage: { input_tokens: 150, output_tokens: 10 },
+  }, user('next')];
+  assert.equal(tokenCountWithEstimation(continued),
+    160 + estimateMessageTokens([continued.at(-1)]),
+    'fresh usage must become authoritative after the compaction boundary');
+});
