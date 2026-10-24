@@ -37,10 +37,12 @@ function finalStream(){
     frame('message_delta',{delta:{stop_reason:'end_turn'},usage:{output_tokens:11}})+
     frame('message_stop');
 }
-async function childProcess(argv, env, timeout=18000) {
+async function childProcess(argv, env, timeout=18000, stdinText) {
   const child=spawn(process.execPath,[cli,...argv],{
-    env:{...process.env, ...env},stdio:['ignore','pipe','pipe'],
+    env:{...process.env, ...env},
+    stdio:[stdinText===undefined?'ignore':'pipe','pipe','pipe'],
   });
+  if(stdinText!==undefined)child.stdin.end(stdinText);
   const stdout=[],stderr=[];
   child.stdout.on('data',c=>stdout.push(c));
   child.stderr.on('data',c=>stderr.push(c));
@@ -138,6 +140,15 @@ test('real installed CLI: --resume with no new prompt continues pending tool res
     assert.equal(third.code,2,third.stderr);
     assert.match(third.stderr,/no committed pending tool result/i);
     assert.equal(requests.length,requestsBefore);
+    // A finished session must still accept an explicit new user prompt from
+    // stdin. Omitting a positional prompt is NOT equivalent to empty stdin.
+    const piped='A new user prompt supplied through a pipe';
+    const fourth=await childProcess([...flags,'--resume',id],env,18000,piped);
+    assert.equal(fourth.code,0,fourth.stdout+fourth.stderr);
+    assert.equal(requests.filter(x=>x.mode==='resume').length,2);
+    const latestRequest=requests.at(-1).body.messages;
+    assert.equal(latestRequest.at(-1).role,'user');
+    assert.equal(latestRequest.at(-1).content,piped);
     assert.equal(await readFile(join(root,'saved.txt'),'utf8'),
       'must persist exactly once');
     assert.equal(first.stderr.includes('mock-session-token'),false);
