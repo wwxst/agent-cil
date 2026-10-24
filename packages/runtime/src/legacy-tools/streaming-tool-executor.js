@@ -9,7 +9,7 @@ export class StreamingToolExecutor extends OriginalStreamingToolExecutor {
   #detachAbort;
   #getTool;
   #onUnknownTool;
-  constructor({ execute, getTool, signal, onUnknownTool } = {}) {
+  constructor({ execute, getTool, signal, onUnknownTool, initialContext } = {}) {
     if (typeof execute !== 'function') throw new TypeError('execute must be a function.');
     if (typeof getTool !== 'function') throw new TypeError('getTool must be a function.');
     const abortController = new AbortController();
@@ -26,7 +26,17 @@ export class StreamingToolExecutor extends OriginalStreamingToolExecutor {
     if (signal?.aborted) onAbort();
     else signal?.addEventListener('abort', onAbort, { once: true });
     const inProgress = new Set();
+    // Original query.ts carries the updated ToolUseContext across model
+    // rounds. Reuse its tool-owned state while rebuilding current-round
+    // security/lifecycle adapters (never reuse an earlier abort controller,
+    // execution dispatcher or completion bookkeeping).
+    if (initialContext !== undefined &&
+        (!initialContext || typeof initialContext !== 'object' ||
+         Array.isArray(initialContext))) {
+      throw new TypeError('Original updated ToolUseContext must be an object.');
+    }
     const toolUseContext = {
+      ...(initialContext || {}),
       abortController,
       executeAdapter: (block, context) => {
         // A queued tool must not begin after an interrupt even if an earlier
