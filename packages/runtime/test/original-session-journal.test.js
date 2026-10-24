@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdtemp, rm, readFile, appendFile, symlink, mkdir, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -206,5 +206,91 @@ test('source Query promptless resume is restricted to a fully paired terminal to
     const reloaded=await openSessionJournal({workspace:root,sessionId:id,resume:true});
     assert.equal(reloaded.canContinueWithoutPrompt,false);
     await reloaded.close();
+  });
+});
+
+test('existing v1 committed transcript resumes and migrates to 2.1.88-inspired UUID chain on next append',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const initial=await openSessionJournal({workspace:root,sessionId:id});
+    const path=initial.path;
+    await initial.close();
+    const payload={
+      type:'session_checkpoint',version:1,sessionId:id,
+      workspace:root,kind:'tool',sequence:1,
+      previousHash:'0'.repeat(64),messages:transcript,
+    };
+    const hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    await writeFile(path,JSON.stringify({...payload,hash})+'\n');
+    const old=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(old.messages,transcript,'v1 tool result and source metadata remain intact');
+    assert.equal(old.canContinueWithoutPrompt,true);
+    const finished=[...transcript,{role:'assistant',
+      content:[{type:'text',text:'migrated and finished'}]}];
+    await old.append({messages:finished,kind:'finished'});
+    await old.close();
+    const records=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(records.length,2);
+    assert.equal(records[0].version,1);
+    assert.equal(records[1].version,2);
+    assert.equal(records[1].migration,true);
+    assert.equal(records[1].entries.length,4);
+    assert.equal(records[1].entries[0].parentUuid,null);
+    assert.equal(records[1].entries[2].sourceToolAssistantUUID,
+      records[1].entries[1].uuid);
+    assert.equal(records[1].previousHash,hash);
+    const reopened=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(reopened.messages,finished);
+    await reopened.close();
+  });
+});
+test('original compact boundary starts a new parentUuid root with logicalParentUuid linking prior leaf',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    await journal.append({messages:transcript,kind:'tool'});
+    const before=JSON.parse((await readFile(journal.path,'utf8')).trim());
+    const compact=[
+      {role:'user',content:'Context summary of earlier tool work'},
+      {role:'assistant',content:[{type:'text',text:'I can continue from this summary.'}]},
+    ];
+    await journal.append({messages:compact,kind:'compact'});
+    const records=(await readFile(journal.path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(records.length,2);
+    assert.equal(records[1].root,true);
+    assert.equal(records[1].entries[0].parentUuid,null);
+    assert.equal(records[1].entries[0].logicalParentUuid,before.leafUuid);
+    assert.equal(records[1].entries[1].parentUuid,records[1].entries[0].uuid);
+    await journal.close();
+    const reopened=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(reopened.messages,compact);
+    assert.equal(reopened.canContinueWithoutPrompt,false);
+    await reopened.close();
+  });
+});
+test('a recomputed checksum cannot legitimize invalid parentUuid or a forged tool-result source association',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const initial=await openSessionJournal({workspace:root,sessionId:id});
+    await initial.append({messages:transcript,kind:'tool'});
+    const path=initial.path;
+    await initial.close();
+    const raw=JSON.parse((await readFile(path,'utf8')).trim());
+    const manipulate=async(edited,error)=>{
+      const {hash:_old,...payload}=edited;
+      const hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+      await writeFile(path,JSON.stringify({...payload,hash})+'\n');
+      await assert.rejects(openSessionJournal({workspace:root,sessionId:id,resume:true}),error);
+    };
+    const broken=structuredClone(raw);
+    broken.entries[1].parentUuid=randomUUID();
+    await manipulate(broken,/parentUuid chain is broken/);
+    const forged=structuredClone(raw);
+    forged.entries[2].sourceToolAssistantUUID=forged.entries[0].uuid;
+    await manipulate(forged,/Invalid sourceToolAssistantUUID association/);
+    await writeFile(path,JSON.stringify(raw)+'\n');
+    const good=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(good.messages,transcript);
+    await good.close();
   });
 });
