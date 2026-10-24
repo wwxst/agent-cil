@@ -104,6 +104,10 @@ export class AgentSessionManager {
           const next = { ...record, messages: snapshot, updatedAt: timestamp(this.#clock) };
           record = await this.#store.save(next, { expectedRevision: record.revision });
         });
+        // A disk write may fail while the model is still streaming. Mark the
+        // rejection observed immediately; the enclosing run still awaits the
+        // original rejected promise and reports the storage failure.
+        void checkpointWrites.catch(() => {});
       };
       const listen = typeof this.#loop.on === 'function' &&
         typeof this.#loop.off === 'function';
