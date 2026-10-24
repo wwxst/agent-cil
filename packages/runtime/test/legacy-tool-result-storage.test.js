@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm, symlink, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, mkdir, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,6 +10,7 @@ import {
 } from '../src/legacy-tools/tool-result-storage.js';
 import { AgentLoop } from '../src/agent-loop.js';
 import { ToolRegistry } from '../src/tool-registry.js';
+import { invokeToolCallAndMapResult } from '../src/legacy-tools/tool-execution.js';
 
 async function tempStore(fn) {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cli-original-storage-'));
@@ -118,5 +119,49 @@ test('real AgentLoop sends persisted original tool_result to model without redoi
     assert.equal(invoked, 1);
     assert.match(result.messages[2].content[0].content, /^<persisted-output>/);
     assert.equal(result.messages.at(-1).content[0].text, 'Full result persisted.');
+  });
+});
+
+
+test('old storage keeps successful original result when exclusive file write fails', async () => {
+  await tempStore(async storage => {
+    await mkdir(storage.directory, { recursive: true });
+    await mkdir(join(storage.directory, 'blocked.txt'));
+    const original = mapped('blocked', 'original output still matters\n'.repeat(3000));
+    const response = await processPreMappedToolResultBlock(
+      original, 'Grep', 50_000, storage);
+    assert.deepEqual(response, original,
+      'an I/O failure must not erase successful model-visible tool output');
+  });
+});
+
+test('cancelling active original tool call cannot write a persisted result afterward', async () => {
+  await tempStore(async storage => {
+    const controller = new AbortController();
+    let started;
+    const callStarted = new Promise(resolve => { started = resolve; });
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const tool = {
+      name: 'Huge', maxResultSizeChars: 50_000,
+      async call() {
+        started();
+        await gate;
+        return { data: 'late output\n'.repeat(9000) };
+      },
+      mapToolResultToToolResultBlockParam(data, id) {
+        return mapped(id, data);
+      },
+    };
+    const execution = invokeToolCallAndMapResult(tool, {}, {
+      toolUseId: 'cancelled-large-tool', signal: controller.signal,
+      toolResultStorage: storage,
+    });
+    await callStarted;
+    controller.abort(new Error('operator interrupted tool'));
+    release();
+    await assert.rejects(execution, /operator interrupted tool/);
+    await assert.rejects(access(join(storage.directory, 'cancelled-large-tool.txt')),
+      { code: 'ENOENT' }, 'cancelled call must not leave model-visible persisted output');
   });
 });
