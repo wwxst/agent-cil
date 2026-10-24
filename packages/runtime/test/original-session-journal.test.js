@@ -144,7 +144,7 @@ test('crashed session stale PID lock is recovered before resuming an intact chec
     const lock=previous.path+'.lock';
     await previous.close();
     // Simulates process death after fsync but before the shutdown finally.
-    await writeFile(lock,JSON.stringify({pid:2147483000,startedAt:1})+'\\n');
+    await writeFile(lock,JSON.stringify({pid:2147483000,startedAt:1}));
     const recovered=await openSessionJournal({
       workspace:root,sessionId:id,resume:true,
     });
