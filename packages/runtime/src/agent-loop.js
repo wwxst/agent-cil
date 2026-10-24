@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
 import { invokeToolCallAndMapResult } from './legacy-tools/tool-execution.js';
+import { getOriginalPermissionContentBlocks } from './legacy-tools/original-permission-result-content.js';
 import { prepareObservableToolInput, restoreToolCallInput } from './legacy-tools/tool-call-input.js';
 import { runPreToolUseHooks, resolveHookPermissionDecision } from './legacy-tools/pretooluse-core.js';
 import { runPostToolUseHooks, runPostToolUseFailureHooks } from './legacy-tools/posttooluse-core.js';
@@ -411,6 +412,7 @@ export class AgentLoop extends EventEmitter {
     }
 
     let userModified = false;
+    let approvedPermissionFeedback;
     let permissionResult = hookResolvedDecision
       ? { decision: hookResolvedDecision }
       : await requestPermissionDecision(executionInput, 'initial');
@@ -503,6 +505,10 @@ export class AgentLoop extends EventEmitter {
           return result;
         }
 
+        // Source PermissionAllowDecision retains feedback and pasted content
+        // to append AFTER the tool_result block, never inside tool output.
+        approvedPermissionFeedback = approval && typeof approval === 'object'
+          ? approval : undefined;
         if (approval?.updatedInput !== undefined) {
           const applied = await applyUpdatedInput(approval.updatedInput, 'approval handler');
           if (applied.result) return applied.result;
@@ -559,6 +565,20 @@ export class AgentLoop extends EventEmitter {
     }
 
     abortIfNeeded(signal);
+    let permissionContentBlocks;
+    try {
+      permissionContentBlocks = getOriginalPermissionContentBlocks(
+        { ...decision, behavior: 'allow' }, approvedPermissionFeedback,
+      );
+    } catch (error) {
+      const result = toolError(toolUse,
+        'Invalid permission feedback: ' + errorText(error));
+      this.emit('toolCallFinished', {
+        turn, toolUseId: toolUse.id, toolName: tool.name,
+        isError: true, denied: true,
+      });
+      return result;
+    }
     this.emit('toolCallStarted', { turn, toolUseId: toolUse.id, toolName: tool.name });
     try {
       // The final input was validated and authorized before this call.
@@ -597,7 +617,12 @@ export class AgentLoop extends EventEmitter {
       this.emit('toolCallFinished', {
         turn, toolUseId: toolUse.id, toolName: tool.name, isError: result.is_error === true,
       });
-      return result;
+      // The callback above completed result mapping/persistence and PostToolUse.
+      // Carry source allow-content through the legacy stream adapter without
+      // altering the actual tool_result block or its persisted contents.
+      return permissionContentBlocks.length > 0
+        ? { ...result, permissionContentBlocks }
+        : result;
     } catch (error) {
       // Original 2.1.88 checkPermissionsAndCallTool() catches AbortError
       // and dispatches PostToolUseFailure with isInterrupt=true BEFORE
