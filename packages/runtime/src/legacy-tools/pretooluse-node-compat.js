@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { aggregateHookResults } from './pretooluse-hook-aggregation.js';
 
 const MAX_HOOK_OUTPUT_BYTES = 128 * 1024;
 const MAX_HOOK_DURATION_MS = 30000;
@@ -258,11 +259,16 @@ export async function* executePreToolHooks(toolName, toolUseID, toolInput,
       blockingError: { blockingError: formatError(error) },
       ...(signal?.aborted ? { preventContinuation: true } : {}),
     })));
-  for (const p of outcomes) {
-    if (signal?.aborted) {
-      yield { message: createAttachmentMessage({ type: 'hook_cancelled', hookEvent: 'PreToolUse' }) };
-      return;
-    }
-    yield await p;
+  // Original hooks.ts executeHooks aggregates all command decisions with
+  // deny > ask > allow before emitting each permissionBehavior update.
+  // The previous Node adapter yielded each raw hook result and incorrectly
+  // let a trailing allow undo an earlier deny.
+  for await (const aggregate of aggregateHookResults(outcomes, signal)) {
+    yield aggregate;
+  }
+  if (signal?.aborted) {
+    yield { message: createAttachmentMessage({
+      type: 'hook_cancelled', hookEvent: 'PreToolUse',
+    }) };
   }
 }
