@@ -10,6 +10,7 @@
  * protected thinking blocks/signatures in any surviving assistant turn.
  */
 import { ModelContextLengthError } from '../anthropic-messages-adapter.js';
+import { tokenCountForCliMessages } from './legacy-token-adapter.js';
 
 const MIN_SUMMARY_CHARS = 12;
 const MAX_SUMMARY_CHARS = 16000;
@@ -26,38 +27,11 @@ function isRecord(x) {
   return x !== null && typeof x === 'object' && !Array.isArray(x);
 }
 
-function approximateTokens(text) {
-  return Math.ceil(Buffer.byteLength(text, 'utf8') / 4);
-}
-
-/**
- * From 2.1.88 microCompact.ts: estimate block payload, not signatures, and
- * pad by 4/3. Includes structural overhead for API-style messages.
- */
+/** Canonical 2.1.88 tokens.ts tokenCountWithEstimation path.
+ * Full API usage anchors the last response; only suffix messages use rough
+ * estimation. Never sum per-SSE usage snapshots or infer missing output. */
 export function estimateMessageTokens(messages) {
-  let total = 0;
-  for (const message of messages) {
-    if (!isRecord(message)) throw new TypeError('Invalid message in context.');
-    total += 8;
-    if (typeof message.content === 'string') {
-      total += approximateTokens(message.content);
-      continue;
-    }
-    if (!Array.isArray(message.content)) throw new TypeError('Unsupported message content.');
-    for (const block of message.content) {
-      if (!isRecord(block)) throw new TypeError('Invalid content block.');
-      if (block.type === 'text') total += approximateTokens(block.text ?? '');
-      else if (block.type === 'thinking') total += approximateTokens(block.thinking ?? '');
-      else if (block.type === 'redacted_thinking') total += approximateTokens(block.data ?? '');
-      else if (block.type === 'tool_use') total += approximateTokens(
-        String(block.name ?? '') + JSON.stringify(block.input ?? {}));
-      else if (block.type === 'tool_result') total += approximateTokens(
-        typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? ''));
-      else total += approximateTokens(JSON.stringify(block));
-      total += 4;
-    }
-  }
-  return Math.ceil(total * 4 / 3);
+  return tokenCountForCliMessages(messages);
 }
 
 /**
