@@ -43,7 +43,7 @@ export const HELP = [
   '      --askTools <name>        Whole-tool ask rule, repeatable',
   '      --hooks-file <path> Explicitly trust a tool-hook settings JSON file (Pre/Post/Failure)',
   '      --session-id <uuid> Start a fresh, named persisted CLI session',
-  '      --resume <uuid>     Resume the last committed transcript for a session',
+  '      --resume <uuid>     Resume a session; omit prompt to finish a committed tool round',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
   '',
@@ -933,11 +933,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // A positional first prompt should start the interactive session on a TTY,
   // not silently force one-shot mode. --print remains explicitly one-shot.
   const interactiveInput = process.stdin.isTTY && process.stdout.isTTY && !options.print;
-  if (options.print && prompt.length === 0 && process.stdin.isTTY) {
+  if (options.print && prompt.length === 0 && process.stdin.isTTY && !options.resume) {
     printError('No prompt provided. Pass a prompt or pipe stdin.');
     return 2;
   }
-  if (!interactiveInput && prompt.length === 0) {
+  if (!interactiveInput && prompt.length === 0 && !options.resume) {
     try {
       prompt = await readStdin();
     } catch (error) {
@@ -945,7 +945,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return 2;
     }
   }
-  if (!interactiveInput && prompt.length === 0) {
+  if (!interactiveInput && prompt.length === 0 && !options.resume) {
     printError('No prompt provided. Pass a prompt, pipe stdin, or start an interactive session.');
     return 2;
   }
@@ -1041,6 +1041,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 2;
   }
   process.stderr.write('[session] ' + journal.id + (options.resume ? ' resumed' : ' created') + '\n');
+  if (!interactiveInput && prompt.length === 0 && !journal.canContinueWithoutPrompt) {
+    // The source Query can continue *a completed tool transaction* without
+    // a synthetic new user message. It must not ask the model to regenerate
+    // a previously final answer or resume a partial/invalid tool batch.
+    printError('Session has no committed pending tool result. Supply a new prompt to continue.');
+    await journal.close();
+    return 2;
+  }
   const loop = new AgentLoop({
     model,
     tools,
@@ -1121,7 +1129,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     loop.on('turnFinished', onTurnFinished);
     loop.on('contextCompacted', onContextCompacted);
     try {
-      const result = await loop.run({ messages: history, input: text, signal: activeController.signal });
+      const result = await loop.run({
+        messages: history,
+        ...(text === undefined ? {} : { input: text }),
+        signal: activeController.signal,
+      });
       history = result.messages;
       process.stdout.write('\n');
       if (result.stopReason === 'max_tokens') {
@@ -1156,7 +1168,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   try {
     if (!interactiveInput) {
-      return await runPrompt(prompt, { plain: options.print });
+      return await runPrompt(prompt.length ? prompt : undefined, { plain: options.print });
     }
     process.stderr.write('agent-cil interactive mode. Type /exit to quit.\n');
     if (prompt) {
