@@ -8,7 +8,15 @@
  * content,usage} transport shape is converted only at its calling boundary.
  */
 const SYNTHETIC_MODEL = '<synthetic>';
-const SYNTHETIC_MESSAGES = new Set();
+// Literal exports from original 2.1.88 restored-src/src/utils/messages.ts.
+// Synthetic tool-control responses are not billable assistant API usage.
+const SYNTHETIC_MESSAGES = new Set([
+  '[Request interrupted by user]',
+  '[Request interrupted by user for tool use]',
+  "The user doesn't want to take this action right now. STOP what you are doing and wait for the user to tell you how to proceed.",
+  "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+  'No response requested.',
+]);
 const jsonStringify = JSON.stringify;
 
 export function roughTokenCountEstimation(content, bytesPerToken = 4) {
