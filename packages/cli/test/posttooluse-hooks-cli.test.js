@@ -70,7 +70,7 @@ test('real installed CLI invokes original PostToolUse after Write and failure Ho
         'source normalizeAttachmentForAPI must include exactly one meta Hook context');
       assert.equal(afterToolResults[0].type,'text');
       const originalEventName=expectedFailure ? 'PostToolUseFailure' : 'PostToolUse';
-      assert.match(afterToolResults[0].text,/^<system-reminder>\\n/);
+      assert.ok(afterToolResults[0].text.startsWith('<system-reminder>' + String.fromCharCode(10)));
       assert.match(afterToolResults[0].text,
         new RegExp(originalEventName+':'+name+' hook additional context:'));
       assert.match(afterToolResults[0].text,
