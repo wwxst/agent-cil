@@ -116,6 +116,15 @@ test('real CLI uses original PreToolUse permission behavior, input rewrite, and 
       assert.equal(requests.length,2);
       const block=requests[1].messages.at(-1).content[0];
       assert.equal(block.tool_use_id,'hook-tool-'+mode);
+      if (output?.hookSpecificOutput?.additionalContext) {
+        // 2.1.88 PreToolUse additionalContext is NOT a stop signal:
+        // the normal tool result still comes first, followed by meta text.
+        assert.equal(block.is_error,undefined);
+        const reminder=requests[1].messages.at(-1).content[1];
+        assert.equal(reminder.type,'text');
+        assert.match(reminder.text,/PreToolUse:Write hook additional context:/);
+        assert.ok(reminder.text.includes(output.hookSpecificOutput.additionalContext));
+      }
       assert.equal(stderr.includes('local-hook-token'),false);
       return block;
     } finally {
@@ -181,6 +190,13 @@ test('real CLI uses original PreToolUse permission behavior, input rewrite, and 
     const outside=await runScenario('allow',{file_path:'../unsafe-hook.txt',content:'outside'});
     assert.equal(outside.is_error,true,'Hook allow cannot evade workspace');
     await assert.rejects(stat(join(root,'..','unsafe-hook.txt')),{code:'ENOENT'});
+    const context=await runScenario('allow',
+      {file_path:'context.txt',content:'precontext output'},[],{
+        hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'allow',
+          additionalContext:'Check this before next model round'}
+      });
+    assert.equal(context.is_error,undefined);
+    assert.equal(await readFile(join(root,'context.txt'),'utf8'),'precontext output');
     const rewrite=await runScenario('allow',{file_path:'original.txt',content:'original'},[],{
       hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'allow',
         updatedInput:{file_path:'rewritten.txt',content:'rewritten'}}
