@@ -116,7 +116,22 @@ export function getTokenCountFromUsage(usage) {
 }
 
 export function tokenCountWithEstimation(messages) {
+  // 2.1.88 utils/tokens.ts anchors on the most recent REAL response, but
+  // that usage is stale immediately after a compact boundary. 2.1.304
+  // excludes pre-compact response usage until a new post-compact response
+  // arrives. Our synthetic summary marks how many recent original messages
+  // were retained; do not mutate their signed assistant blocks or usage.
+  let firstPostCompactResponse = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role === 'user' &&
+      Number.isSafeInteger(message.__compactRetainedMessages) &&
+      message.__compactRetainedMessages >= 0) {
+      firstPostCompactResponse = i + 1 + message.__compactRetainedMessages;
+      break;
+    }
+  }
+  for (let i = messages.length - 1; i >= firstPostCompactResponse; i--) {
     const message = messages[i];
     if (message?.role !== 'assistant' || !message.usage) continue;
     const measured = getTokenCountFromUsage(message.usage);
@@ -357,7 +372,10 @@ export function createAutoCompact({
         const next = [
           { role: 'user', content:
             'This conversation continues after context compaction. Earlier completed work:\n' +
-            summary + '\nRecent messages follow unchanged.' },
+            summary + '\nRecent messages follow unchanged.',
+            // Metadata is intentionally not serialized to DeepSeek. It
+            // invalidates pre-compact usage without changing recent blocks.
+            __compactRetainedMessages: recent.length },
           ...structuredClone(recent).map(message => {
             // Precompact response usage describes the OLD context size. Keep
             // all protected content/signatures byte-for-byte but clear only
