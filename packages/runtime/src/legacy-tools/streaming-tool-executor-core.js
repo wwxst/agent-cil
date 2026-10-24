@@ -396,7 +396,8 @@ export class StreamingToolExecutor {
         }
 
         markToolUseAsComplete(this.toolUseContext, tool.id)
-      } else if (tool.status === 'executing' && !tool.isConcurrencySafe) {
+      } else if ((this.toolUseContext.strictOrderedResults && tool.status !== 'yielded') ||
+                 (tool.status === 'executing' && !tool.isConcurrencySafe)) {
         break
       }
     }
@@ -456,6 +457,13 @@ export class StreamingToolExecutor {
    * Check if there are any completed results ready to yield
    */
   hasCompletedResults() {
+    if (this.toolUseContext.strictOrderedResults) {
+      // Node model round emits one assistant message and one ordered batch
+      // of tool_results. Keep later safe results buffered until earlier IDs
+      // are ready, without changing the source queue/execution algorithm.
+      const first = this.tools.find(t => t.status !== 'yielded')
+      return first?.status === 'completed'
+    }
     return this.tools.some(t => t.status === 'completed')
   }
 
