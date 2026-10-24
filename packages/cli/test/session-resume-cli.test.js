@@ -55,7 +55,7 @@ async function childProcess(argv, env, timeout=18000) {
   }finally{clearTimeout(timer);if(child.exitCode===null && !child.killed)child.kill('SIGKILL');}
 }
 
-test('real installed CLI: Write committed to JSONL before next failed model request; independent --resume process does not repeat Write', {
+test('real installed CLI: --resume with no new prompt continues pending tool result, then finished session refuses empty replay', {
   timeout:65000,
 },async()=>{
   const root=await mkdtemp(join(tmpdir(),'agent-cil-live-session-'));
@@ -105,7 +105,7 @@ test('real installed CLI: Write committed to JSONL before next failed model requ
 
     mode='resume';
     const second=await childProcess([
-      ...flags,'--resume',id,'Continue from the completed tool result.',
+      ...flags,'--resume',id,
     ],env);
     assert.equal(second.signal,null,second.stderr);
     assert.equal(second.code,0,second.stdout+second.stderr);
@@ -124,12 +124,22 @@ test('real installed CLI: Write committed to JSONL before next failed model requ
     );
     assert.equal(stored[1].stop_reason,'tool_use');
     assert.equal(stored[1].usage.input_tokens,37);
-    assert.equal(resumed.at(-1).content,'Continue from the completed tool result.');
+    assert.equal(resumed.length,stored.length,
+      'promptless resume must not create a synthetic user message');
     assert.equal(await readFile(join(root,'saved.txt'),'utf8'),'must persist exactly once');
     const latest=(await readFile(join(root,'.agent-cil','sessions',id,'transcript.jsonl'),'utf8'))
       .trim().split('\n').map(JSON.parse).at(-1);
     assert.equal(latest.kind,'finished');
     assert.match(latest.messages.at(-1).content[0].text,/Resumed without another Write/);
+    // A final assistant answer is already committed. Trying another
+    // promptless resume must fail without even issuing an API request.
+    const requestsBefore= requests.length;
+    const third=await childProcess([...flags,'--resume',id],env);
+    assert.equal(third.code,2,third.stderr);
+    assert.match(third.stderr,/no committed pending tool result/i);
+    assert.equal(requests.length,requestsBefore);
+    assert.equal(await readFile(join(root,'saved.txt'),'utf8'),
+      'must persist exactly once');
     assert.equal(first.stderr.includes('mock-session-token'),false);
     assert.equal(second.stderr.includes('mock-session-token'),false);
   }finally{
