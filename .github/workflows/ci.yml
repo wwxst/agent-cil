@@ -16,8 +16,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Verify .js CLI startup and Read/Edit acceptance on Windows
-        run: node --test packages/cli/test/live-provider-launch.test.js
+      - name: Verify original executor in actual Windows CLI (scheduling, early Read, abort)
+        run: node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/legacy-scheduler-cli.test.js packages/cli/test/streaming-readonly-cli.test.js packages/cli/test/streaming-read-abort.test.js
 
   runtime-tests:
     runs-on: ubuntu-latest
