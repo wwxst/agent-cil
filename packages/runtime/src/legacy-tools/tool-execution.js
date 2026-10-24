@@ -219,7 +219,7 @@ async function checkPermissionsAndCallTool(
  */
 export async function invokeToolCallAndMapResult(tool, input, {
   toolUseId, signal, messages = [], assistantMessage, onProgress,
-  toolResultStorage, onToolResult, userModified = false,
+  toolResultStorage, onToolResult, onToolAttachment, userModified = false,
 } = {}) {
   if (typeof toolUseId !== 'string' || !toolUseId) {
     throw new TypeError('An authenticated toolUseId is required.');
@@ -228,6 +228,8 @@ export async function invokeToolCallAndMapResult(tool, input, {
 
   let mapped;
   let toolOutput;
+  let structuredOutput;
+  let hasStructuredOutput = false;
   if (typeof tool.call === 'function') {
     if (typeof tool.mapToolResultToToolResultBlockParam !== 'function') {
       throw new TypeError('Legacy tool is missing its result mapper.');
@@ -255,10 +257,14 @@ export async function invokeToolCallAndMapResult(tool, input, {
     }
     if ((Array.isArray(toolResult.newMessages) && toolResult.newMessages.length > 0) ||
       toolResult.contextModifier !== undefined ||
-      toolResult.mcpMeta !== undefined ||
-      toolResult.structured_output !== undefined) {
+      toolResult.mcpMeta !== undefined) {
       throw new Error('Legacy tool returned unsupported messages or context metadata.');
     }
+    // Original 2.1.88 checkPermissionsAndCallTool() ~1272: when a
+    // native Tool.call() supplies structured_output, emit it as a separate
+    // display/session attachment; do not turn a successful tool into error.
+    hasStructuredOutput = Object.hasOwn(toolResult, 'structured_output');
+    if (hasStructuredOutput) structuredOutput = toolResult.structured_output;
     toolOutput = toolResult.data;
     mapped = await tool.mapToolResultToToolResultBlockParam(toolResult.data, toolUseId);
   } else {
@@ -293,6 +299,15 @@ export async function invokeToolCallAndMapResult(tool, input, {
   // the result. An observer receives the ORIGINAL raw tool output, not
   // the on-disk preview or the API block, and cannot remap the result.
   if (onToolResult) await onToolResult({ toolOutput, mappedResult: processed });
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  if (hasStructuredOutput) {
+    // The original Query emits this attachment to its display/session
+    // stream but normalizeAttachmentForAPI('structured_output') returns [].
+    // Never attach it as a second tool_result or a model-visible user block.
+    if (onToolAttachment) await onToolAttachment({
+      type: 'structured_output', data: structuredOutput,
+    });
+  }
   if (signal?.aborted) throw cancelledToolCall(signal);
   return processed;
 }
