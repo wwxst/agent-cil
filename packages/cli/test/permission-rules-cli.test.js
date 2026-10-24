@@ -40,7 +40,7 @@ test('original permissions reject unsupported content-specific rules at CLI boun
     deny: [{ toolName: 'Read' }],
     ask: [{ toolName: 'Bash' }],
   });
-  assert.throws(() => parseArgs(['--allowedTools', 'Bash(git push:*)']), /Bash wildcards\/prefixes/);
+  assert.throws(() => parseArgs(['--allowedTools', 'Bash(git push:*)']), /wildcard\/prefix/);
   assert.throws(() => parseArgs(['--allowedTools', 'mcp__server__Read']), /MCP/);
   assert.throws(() => parseArgs(['--allowedTools', 'Task']), /built-in/);
 });
