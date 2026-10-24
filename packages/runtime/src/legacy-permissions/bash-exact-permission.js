@@ -37,6 +37,21 @@ export function bashToolCheckExactMatchPermission(input, toolPermissionContext) 
       decisionReason: { type: 'rule', rule: allow },
     };
   }
+  // This restricted source slice does not yet decompose wrappers,
+  // redirections and compounds. When a whole-tool Bash allow coexists with
+  // a command-level deny/ask, unknown command shapes must require review:
+  // never let "VAR=x denied_command" bypass a content-specific deny merely
+  // because our unported source matcher did not recognize the wrapper.
+  const hasRestrictiveContentRules =
+    getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'deny').size > 0 ||
+    getRuleByContentsForToolName(toolPermissionContext, 'Bash', 'ask').size > 0;
+  if (hasRestrictiveContentRules) {
+    return {
+      behavior: 'ask',
+      message: 'Bash command needs review because content-specific restrictions are configured.',
+      decisionReason: { type: 'safetyCheck', reason: 'Unported Bash compound command analysis' },
+    };
+  }
   return {
     behavior: 'passthrough',
     message: 'Permission to use Bash requires approval.',
