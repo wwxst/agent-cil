@@ -47,7 +47,7 @@ test('real CLI uses original PreToolUse permission behavior, input rewrite, and 
   timeout:60000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(),'agent-cil-pretooluse-cli-'));
-  async function runScenario(mode, originalInput, args = [], output = undefined) {
+  async function runScenario(mode, originalInput, args = [], output = undefined, extraModes = []) {
     const script = join(root,'prehook.cjs');
     const settings = join(root,'hook-settings.json');
     const response = output ?? {
@@ -60,8 +60,23 @@ test('real CLI uses original PreToolUse permission behavior, input rewrite, and 
       "if(input.hook_event_name!=='PreToolUse'||input.tool_name!=='Write')process.exit(9);"+
       "process.stdout.write("+JSON.stringify(JSON.stringify(response))+");});"
     );
+    const configuredHooks = [{type:'command',command:'node prehook.cjs',timeout:8}];
+    for (const [index, extraMode] of extraModes.entries()) {
+      const filename='prehook-extra-'+index+'.cjs';
+      const extraOutput = extraMode === 'exit2'
+        ? "console.error('Explicit hook exit 2 blocked');process.exitCode=2;"
+        : "console.log("+JSON.stringify(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: extraMode,
+            permissionDecisionReason: 'second Hook ' + extraMode,
+          },
+        }))+");";
+      await writeFile(join(root, filename),extraOutput);
+      configuredHooks.push({type:'command',command:'node '+filename,timeout:8});
+    }
     await writeFile(settings,JSON.stringify({hooks:{PreToolUse:[{
-      matcher:'Write',hooks:[{type:'command',command:'node prehook.cjs',timeout:8}]
+      matcher:'Write',hooks:configuredHooks
     }]}}));
     const requests = [];
     const server = createServer(async (req,res) => {
@@ -137,6 +152,28 @@ test('real CLI uses original PreToolUse permission behavior, input rewrite, and 
     assert.equal(unsafeRewrite.is_error,true,'Hook rewritten input is revalidated before policy allow');
     await assert.rejects(stat(join(root,'..','escaped-by-hook.txt')),{code:'ENOENT'});
 
+    // 2.1.88 executeHooks aggregates across every hook; previous Node shim
+    // let a late allow override earlier deny, silently skipping team guardrails.
+    const denyThenAllow=await runScenario('deny',
+      {file_path:'deny-then-allow.txt',content:'bad'},
+      ['--allow-edits'],undefined,['allow']);
+    assert.equal(denyThenAllow.is_error,true,'deny wins even when allow is later');
+    await assert.rejects(stat(join(root,'deny-then-allow.txt')),{code:'ENOENT'});
+    const allowThenDeny=await runScenario('allow',
+      {file_path:'allow-then-deny.txt',content:'bad'},
+      ['--allow-edits'],undefined,['deny']);
+    assert.equal(allowThenDeny.is_error,true,'deny wins even when allow is earlier');
+    await assert.rejects(stat(join(root,'allow-then-deny.txt')),{code:'ENOENT'});
+    const allowThenAsk=await runScenario('allow',
+      {file_path:'allow-then-ask.txt',content:'bad'},
+      ['--allow-edits'],undefined,['ask']);
+    assert.equal(allowThenAsk.is_error,true,'ask wins over allow with no TTY');
+    await assert.rejects(stat(join(root,'allow-then-ask.txt')),{code:'ENOENT'});
+    const exitTwoThenAllow=await runScenario('allow',
+      {file_path:'exit2-then-allow.txt',content:'bad'},
+      ['--allow-edits'],undefined,['exit2']);
+    assert.equal(exitTwoThenAllow.is_error,true,'exit-code-2 block cannot be undone');
+    await assert.rejects(stat(join(root,'exit2-then-allow.txt')),{code:'ENOENT'});
     const outside=await runScenario('allow',{file_path:'../unsafe-hook.txt',content:'outside'});
     assert.equal(outside.is_error,true,'Hook allow cannot evade workspace');
     await assert.rejects(stat(join(root,'..','unsafe-hook.txt')),{code:'ENOENT'});
