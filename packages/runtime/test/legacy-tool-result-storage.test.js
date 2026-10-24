@@ -73,6 +73,8 @@ test('source-compatible persistence refuses traversal IDs and symlinked storage 
       const outside = await mkdtemp(join(tmpdir(), 'agent-cli-outside-'));
       try {
         await mkdir(join(workspace, '.agent-cil'), { recursive: true });
+        // Earlier rejection-path checks already created this tree.
+        await rm(join(workspace, '.agent-cil', 'sessions'), { recursive: true, force: true });
         await symlink(outside, join(workspace, '.agent-cil', 'sessions'));
         await assert.rejects(persistToolResult('x'.repeat(100), 'safe-id', storage),
           /Symlink not permitted/);
