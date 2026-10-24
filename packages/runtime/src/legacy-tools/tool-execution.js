@@ -205,7 +205,7 @@ async function checkPermissionsAndCallTool(
  */
 export async function invokeToolCallAndMapResult(tool, input, {
   toolUseId, signal, messages = [], assistantMessage, onProgress,
-  toolResultStorage,
+  toolResultStorage, onToolResult,
 } = {}) {
   if (typeof toolUseId !== 'string' || !toolUseId) {
     throw new TypeError('An authenticated toolUseId is required.');
@@ -213,6 +213,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
   if (signal?.aborted) throw cancelledToolCall(signal);
 
   let mapped;
+  let toolOutput;
   if (typeof tool.call === 'function') {
     if (typeof tool.mapToolResultToToolResultBlockParam !== 'function') {
       throw new TypeError('Legacy tool is missing its result mapper.');
@@ -241,6 +242,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
       toolResult.structured_output !== undefined) {
       throw new Error('Legacy tool returned unsupported messages or context metadata.');
     }
+    toolOutput = toolResult.data;
     mapped = await tool.mapToolResultToToolResultBlockParam(toolResult.data, toolUseId);
   } else {
     if (typeof tool.execute !== 'function') {
@@ -250,6 +252,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
       toolUseId, signal, messages: structuredClone(messages),
     });
     if (signal?.aborted) throw cancelledToolCall(signal);
+    toolOutput = output;
     mapped = {
       type: 'tool_result',
       tool_use_id: toolUseId,
@@ -268,6 +271,11 @@ export async function invokeToolCallAndMapResult(tool, input, {
     ? await processPreMappedToolResultBlock(
         checked, tool.name, tool.maxResultSizeChars, toolResultStorage)
     : checked;
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  // Original toolExecution.ts runs PostToolUse after mapping and saving
+  // the result. An observer receives the ORIGINAL raw tool output, not
+  // the on-disk preview or the API block, and cannot remap the result.
+  if (onToolResult) await onToolResult({ toolOutput, mappedResult: processed });
   if (signal?.aborted) throw cancelledToolCall(signal);
   return processed;
 }
