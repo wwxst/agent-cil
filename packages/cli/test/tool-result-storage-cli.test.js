@@ -94,9 +94,6 @@ test('real CLI: 100KB Grep result persists; model reads exact file through origi
     assert.equal(status, 0, out + err);
     assert.equal(requests.length, 3);
     assert.match(out, /Restored full Grep output/);
-    assert.equal(await readFile(persistedPath, 'utf8'), requests[1].messages.at(-1).content[0]
-      .content.includes('ORIGINAL_RESULT') ? await readFile(persistedPath, 'utf8')
-      : await readFile(persistedPath, 'utf8'));
     const saved = await readFile(persistedPath, 'utf8');
     assert.ok(saved.length > 90_000);
     assert.ok(saved.includes('ORIGINAL_RESULT 199'));
