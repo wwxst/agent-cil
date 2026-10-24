@@ -41,7 +41,7 @@ export const HELP = [
   '      --allowedTools <name>    Whole-tool allow rule, repeatable',
   '      --disallowedTools <name> Whole-tool deny rule, repeatable',
   '      --askTools <name>        Whole-tool ask rule, repeatable',
-  '      --hooks-file <path> Explicitly trust a PreToolUse command-hook settings JSON file',
+  '      --hooks-file <path> Explicitly trust a tool-hook settings JSON file (Pre/Post/Failure)',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
   '',
@@ -979,17 +979,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     });
   }
   const tools = await createBuiltinTools({ workspace });
-  let preToolUseHooks = [];
+  let toolHooks = { PreToolUse: [], PostToolUse: [], PostToolUseFailure: [] };
   if (options.hooksFile) {
     try {
-      const { loadPreToolUseHookSettings } = await import(
+      const { loadToolHookSettings } = await import(
         '../../runtime/src/legacy-tools/pretooluse-node-compat.js'
       );
       // Explicit CLI flag is the trust boundary. Never auto-execute commands
       // from an untrusted repository's settings on startup.
-      preToolUseHooks = await loadPreToolUseHookSettings(options.hooksFile);
+      toolHooks = await loadToolHookSettings(options.hooksFile);
     } catch (error) {
-      printError('PreToolUse hooks configuration failed: ' +
+      printError('Tool Hook configuration failed: ' +
         (error instanceof Error ? error.message : String(error)));
       return 2;
     }
@@ -1016,7 +1016,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       workspace,
       directory: join(workspace, '.agent-cil', 'sessions', randomUUID(), 'tool-results'),
     },
-    preToolUseHooks,
+    preToolUseHooks: toolHooks.PreToolUse,
+    postToolUseHooks: toolHooks.PostToolUse,
+    postToolUseFailureHooks: toolHooks.PostToolUseFailure,
     hookWorkspace: workspace,
     compactContext: context => autoCompact.compact(context),
     permissionPolicy: createCliPermissionPolicy({
