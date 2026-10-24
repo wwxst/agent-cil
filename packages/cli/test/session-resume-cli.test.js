@@ -101,9 +101,15 @@ test('real installed CLI: --resume with no new prompt continues pending tool res
     const records=journal.trim().split('\n').map(line=>JSON.parse(line));
     assert.ok(records.length>=1);
     assert.equal(records[0].kind,'tool');
-    assert.equal(records[0].messages[1].content[0].id,'session-write-once');
-    assert.equal(records[0].messages[2].content[0].tool_use_id,'session-write-once');
-    assert.equal(records[0].messages[2].content[0].is_error,undefined);
+    assert.equal(records[0].type,'session_commit');
+    assert.equal(records[0].version,2);
+    assert.equal(records[0].entries[0].parentUuid,null);
+    assert.equal(records[0].entries[1].parentUuid,records[0].entries[0].uuid);
+    assert.equal(records[0].entries[2].sourceToolAssistantUUID,records[0].entries[1].uuid);
+    assert.equal(records[0].entries[2].parentUuid,records[0].entries[1].uuid);
+    assert.equal(records[0].entries[1].message.content[0].id,'session-write-once');
+    assert.equal(records[0].entries[2].message.content[0].tool_use_id,'session-write-once');
+    assert.equal(records[0].entries[2].message.content[0].is_error,undefined);
 
     mode='resume';
     const second=await childProcess([
@@ -115,7 +121,7 @@ test('real installed CLI: --resume with no new prompt continues pending tool res
     assert.equal(requests.filter(x=>x.mode==='resume').length,1,
       'resumed CLI must not call model to rerun previously committed tool');
     const resumed=requests.find(x=>x.mode==='resume').body.messages;
-    const stored=records.at(-1).messages;
+    const stored=records.flatMap(record=>record.entries.map(entry=>entry.message));
     // The Anthropic adapter intentionally strips internal stop_reason and
     // usage from the outgoing API projection; the persisted journal retains
     // them. Verify every original message's identity and API-visible content.
@@ -132,7 +138,9 @@ test('real installed CLI: --resume with no new prompt continues pending tool res
     const latest=(await readFile(join(root,'.agent-cil','sessions',id,'transcript.jsonl'),'utf8'))
       .trim().split('\n').map(JSON.parse).at(-1);
     assert.equal(latest.kind,'finished');
-    assert.match(latest.messages.at(-1).content[0].text,/Resumed without another Write/);
+    assert.equal(latest.entries.length,1,'final result appends one UUID-linked message');
+    assert.equal(latest.entries[0].parentUuid,records[0].leafUuid);
+    assert.match(latest.entries.at(-1).message.content[0].text,/Resumed without another Write/);
     // A final assistant answer is already committed. Trying another
     // promptless resume must fail without even issuing an API request.
     const requestsBefore= requests.length;
