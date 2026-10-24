@@ -181,6 +181,55 @@ test('failed durable checkpoint blocks the second provider round even though the
   assert.equal(loop.active,false);
 });
 
+
+test('source enqueueWrite serializes overlapping tool checkpoints and preserves the incremental UUID chain',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const finished=[...transcript,{role:'assistant',
+      content:[{type:'text',text:'done after concurrent tool commit'}]}];
+    // Parallel callers previously saw identical sequence/previousHash and
+    // appended duplicate or divergent records, corrupting later --resume.
+    await Promise.all(Array.from({length:8},()=>journal.append({
+      messages:transcript,kind:'tool',
+    })));
+    await Promise.all([
+      journal.append({messages:finished,kind:'finished'}),
+      journal.append({messages:finished,kind:'finished'}),
+    ]);
+    const raw=await readFile(journal.path,'utf8');
+    const records=raw.trim().split('\n').map(JSON.parse);
+    assert.equal(records.length,2,'duplicate queued commits should be elided');
+    assert.deepEqual(records.map(x=>x.sequence),[1,2]);
+    assert.equal(records[1].previousHash,records[0].hash);
+    assert.equal(records[1].entries.length,1,'only new assistant delta is persisted');
+    const path=journal.path;
+    await journal.close();
+    const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(resumed.messages,finished);
+    assert.equal(resumed.path,path);
+    await resumed.close();
+  });
+});
+
+test('close drains a pending original-style write before releasing the session owner lock',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const pending=journal.append({messages:transcript,kind:'tool'});
+    const closing=journal.close();
+    // Both completed checkpoint and lock cleanup must be durable even when
+    // callers invoke close() in the same microtask as their final append().
+    await Promise.all([pending,closing,journal.close()]);
+    await assert.rejects(journal.append({messages:transcript,kind:'tool'}),
+      /not writable/);
+    const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(resumed.messages,transcript);
+    assert.equal(resumed.canContinueWithoutPrompt,true);
+    await resumed.close();
+  });
+});
+
 test('source Query promptless resume is restricted to a fully paired terminal tool batch', async()=>{
   assert.equal(hasPendingToolResponse(transcript),true);
   assert.equal(hasPendingToolResponse(transcript.slice(0,2)),false);
