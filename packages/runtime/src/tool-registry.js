@@ -17,7 +17,7 @@ export class ToolRegistryError extends Error {
 export class ToolRegistry {
   #tools = new Map();
 
-  register({ name, description, inputSchema = { type: 'object' }, validateInput, checkPermissions, isConcurrencySafe, canRunDuringStream = false, interruptBehavior, execute, call, mapToolResultToToolResultBlockParam } = {}) {
+  register({ name, description, inputSchema = { type: 'object' }, validateInput, checkPermissions, isConcurrencySafe, canRunDuringStream = false, interruptBehavior, execute, call, mapToolResultToToolResultBlockParam, maxResultSizeChars = 50_000 } = {}) {
     if (typeof name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(name)) {
       throw new ToolRegistryError('Tool name must contain 1-128 letters, digits, underscores or hyphens.');
     }
@@ -43,6 +43,10 @@ export class ToolRegistry {
     }
     if (interruptBehavior !== undefined && typeof interruptBehavior !== 'function') {
       throw new ToolRegistryError('interruptBehavior must be a function when provided.');
+    }
+    if (typeof maxResultSizeChars !== 'number' ||
+      !(maxResultSizeChars > 0 || maxResultSizeChars === Infinity)) {
+      throw new ToolRegistryError('maxResultSizeChars must be positive or Infinity.');
     }
     // Original 2.1.88 Tool.ts provides call() and a result mapper.
     // Existing CLI tools provide execute(); do not break that path.
@@ -85,6 +89,7 @@ export class ToolRegistry {
       execute,
       call,
       mapToolResultToToolResultBlockParam,
+      maxResultSizeChars,
     });
     this.#tools.set(name, tool);
     return () => {
