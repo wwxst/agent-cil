@@ -36,6 +36,7 @@ export const HELP = [
   '      --compact-threshold <n>  Auto-compact above approximate input tokens (0 disables)',
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
   '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
+  '      --hooks-file <path> Explicitly trust a PreToolUse command-hook settings JSON file',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
   '',
@@ -84,6 +85,7 @@ export function parseArgs(argv) {
     compactThreshold: undefined,
     maxRetries: 2,
     allowEdits: false,
+    hooksFile: undefined,
     system: undefined,
     cwd: process.cwd(),
     positional: [],
@@ -107,6 +109,9 @@ export function parseArgs(argv) {
       options.print = true;
     } else if (arg === '--allow-edits') {
       options.allowEdits = true;
+    } else if (arg === '--hooks-file' || arg.startsWith('--hooks-file=')) {
+      options.hooksFile = arg === '--hooks-file' ? takeValue(arg, i++) : arg.slice('--hooks-file='.length);
+      if (!options.hooksFile) throw new CliArgumentError('--hooks-file requires a path.');
     } else if (arg === '--provider' || arg.startsWith('--provider=')) {
       const provider = arg === '--provider' ? takeValue(arg, i++) : arg.slice('--provider='.length);
       if (!['anthropic', 'deepseek', 'openai'].includes(provider)) {
@@ -285,6 +290,7 @@ export function createCliPermissionPolicy({
   // the immutable workspace/rule context, never the evolving assistant text.
   // Custom policies do not receive this opt-in and are always deferred.
   Object.defineProperty(policy, 'supportsStreamingPreflight', { value: true });
+  Object.defineProperty(policy, 'isBuiltinCliPolicy', { value: true });
   return policy;
 }
 
@@ -946,6 +952,21 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     });
   }
   const tools = await createBuiltinTools({ workspace });
+  let preToolUseHooks = [];
+  if (options.hooksFile) {
+    try {
+      const { loadPreToolUseHookSettings } = await import(
+        '../../runtime/src/legacy-tools/pretooluse-node-compat.js'
+      );
+      // Explicit CLI flag is the trust boundary. Never auto-execute commands
+      // from an untrusted repository's settings on startup.
+      preToolUseHooks = await loadPreToolUseHookSettings(options.hooksFile);
+    } catch (error) {
+      printError('PreToolUse hooks configuration failed: ' +
+        (error instanceof Error ? error.message : String(error)));
+      return 2;
+    }
+  }
   // DeepSeek V4.1 Flash advertises a 1M-token context window; reserve ample
   // headroom for system/tools/output. Other providers remain opt-in until
   // their model-specific context windows can be determined accurately.
@@ -964,6 +985,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const loop = new AgentLoop({
     model,
     tools,
+    preToolUseHooks,
+    hookWorkspace: workspace,
     compactContext: context => autoCompact.compact(context),
     permissionPolicy: createCliPermissionPolicy({
       workspace,

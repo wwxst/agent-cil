@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
 import { invokeToolCallAndMapResult } from './legacy-tools/tool-execution.js';
+import { runPreToolUseHooks, resolveHookPermissionDecision } from './legacy-tools/pretooluse-core.js';
 import { query } from './legacy-query/query.js';
 export { ModelProtocolError } from './legacy-query/query.js';
 import { resolveToolSpecificPermission } from './legacy-permissions/tool-specific-permission.js';
@@ -75,6 +76,8 @@ export class AgentLoop extends EventEmitter {
   #approvalHandler;
   #maxTurns;
   #compactContext;
+  #preToolUseHooks;
+  #hookWorkspace;
   #active = false;
 
   constructor({
@@ -84,6 +87,8 @@ export class AgentLoop extends EventEmitter {
     approvalHandler,
     maxTurns = 8,
     compactContext,
+    preToolUseHooks = [],
+    hookWorkspace,
   } = {}) {
     super();
     if (!model || typeof model.stream !== 'function') {
@@ -104,6 +109,12 @@ export class AgentLoop extends EventEmitter {
     if (compactContext !== undefined && typeof compactContext !== 'function') {
       throw new TypeError('compactContext must be a function.');
     }
+    if (!Array.isArray(preToolUseHooks) ||
+      (preToolUseHooks.length > 0 && (typeof hookWorkspace !== 'string' || !hookWorkspace))) {
+      throw new TypeError('PreToolUse hooks require validated settings and a workspace.');
+    }
+    this.#preToolUseHooks = preToolUseHooks;
+    this.#hookWorkspace = hookWorkspace;
     this.#maxTurns = maxTurns;
     this.#compactContext = compactContext;
   }
@@ -270,7 +281,82 @@ export class AgentLoop extends EventEmitter {
       return { changed: true };
     };
 
-    let permissionResult = await requestPermissionDecision(executionInput, 'initial');
+    // Original toolExecution.ts calls runPreToolUseHooks after input validation
+    // and before resolveHookPermissionDecision. Both methods below are direct
+    // transplants from 2.1.88 toolHooks.ts; the only Node adapter is the
+    // explicitly configured command-hook executor / permission context.
+    let hookResolvedDecision;
+    if (this.#preToolUseHooks.length > 0) {
+      let hookPermissionResult;
+      let pendingHookInput = executionInput;
+      let hookStopped = false;
+      const context = {
+        abortController: { signal },
+        workspace: this.#hookWorkspace,
+        preToolUseHooks: this.#preToolUseHooks,
+        trustedCliDefaultPermission: this.#permissionPolicy.isBuiltinCliPolicy === true,
+        getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
+        checkRuleBasedPermissions: async (_tool, checkedInput) => {
+          const check = await requestPermissionDecision(checkedInput, 'hook-rule-check');
+          if (check.result) return { behavior: 'deny', reason: 'Permission check failed.' };
+          return check.decision;
+        },
+      };
+      for await (const event of runPreToolUseHooks(
+        context, tool, pendingHookInput, toolUse.id,
+        assistantMessage?.id || toolUse.id, undefined, undefined, undefined
+      )) {
+        if (event.type === 'hookPermissionResult') {
+          hookPermissionResult = event.hookPermissionResult;
+        } else if (event.type === 'hookUpdatedInput') {
+          pendingHookInput = event.updatedInput;
+        } else if (event.type === 'message') {
+          this.emit('hookMessage', { turn, toolUseId: toolUse.id, message: event.message });
+        } else if (event.type === 'additionalContext' ||
+                   event.type === 'preventContinuation' || event.type === 'stop') {
+          // The Node Query does not yet support arbitrary Hook attachment
+          // persistence / stopping its outer generator. Never ignore an
+          // unsupported side effect and then continue executing the tool.
+          hookStopped = true;
+          break;
+        }
+      }
+      abortIfNeeded(signal);
+      if (hookStopped) {
+        const result = toolError(toolUse, 'PreToolUse hook stopped tool execution.');
+        this.emit('toolCallFinished', {
+          turn, toolUseId: toolUse.id, toolName: tool.name, isError: true, denied: true,
+        });
+        return result;
+      }
+      const applied = await applyUpdatedInput(pendingHookInput, 'PreToolUse hook');
+      if (applied.result) return applied.result;
+      // This delegates to the existing final policy/approval path. The
+      // source resolver itself checks mandatory deny, ask and safety rules
+      // after Hook allow; an update cannot evade schema/permission recheck.
+      const canUseTool = async (_tool, proposed, _context, _assistant, _id, forceDecision) => {
+        const check = await requestPermissionDecision(proposed, 'hook-permission');
+        if (check.result) return { behavior: 'deny', reason: 'Permission check failed.' };
+        if (forceDecision?.behavior === 'ask' && check.decision?.behavior !== 'deny') {
+          return { ...forceDecision, behavior: 'ask' };
+        }
+        return check.decision;
+      };
+      const resolved = await resolveHookPermissionDecision(
+        hookPermissionResult, tool, executionInput, context,
+        canUseTool, assistantMessage, toolUse.id
+      );
+      const validated = await applyUpdatedInput(resolved.input, 'PreToolUse permission decision');
+      if (validated.result) return validated.result;
+      // A Hook allow is not allowed to override the current mandatory path
+      // checks. The source resolveHookPermissionDecision() has already
+      // performed the explicit rule/safety check using final updated input.
+      hookResolvedDecision = resolved.decision;
+    }
+
+    let permissionResult = hookResolvedDecision
+      ? { decision: hookResolvedDecision }
+      : await requestPermissionDecision(executionInput, 'initial');
     if (permissionResult.result) return permissionResult.result;
     let decision = permissionResult.decision;
 
