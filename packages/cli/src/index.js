@@ -5,6 +5,9 @@ import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
+import { AgentSessionManager } from '../../runtime/src/session-manager.js';
+import { FileSessionStore, assertSessionId } from '../../runtime/src/session-store.js';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
 
@@ -38,6 +41,8 @@ export const HELP = [
   '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
+  '      --session <id>      Create a persistent session (existing ID is refused)',
+  '      --resume <id>       Resume an existing session without replaying completed turns',
   '',
   'Environment:',
   '  ANTHROPIC_API_KEY       Required for model requests',
@@ -48,6 +53,7 @@ export const HELP = [
   '  OPENAI_MODEL            Default OpenAI model ID',
   '  OPENAI_BASE_URL         Optional OpenAI Chat API base URL',
   '  AGENT_CIL_COMPACT_THRESHOLD  Override auto-compact trigger in tokens',
+  '  AGENT_CIL_SESSION_DIR       Session file directory (default: ~/.agent-cil/sessions)',
   '',
   'Built-in tools:',
   '  Read, Glob, Grep       Read-only workspace tools',
@@ -86,6 +92,8 @@ export function parseArgs(argv) {
     allowEdits: false,
     system: undefined,
     cwd: process.cwd(),
+    sessionId: undefined,
+    resumeId: undefined,
     positional: [],
   };
 
@@ -107,6 +115,14 @@ export function parseArgs(argv) {
       options.print = true;
     } else if (arg === '--allow-edits') {
       options.allowEdits = true;
+    } else if (arg === '--session' || arg.startsWith('--session=')) {
+      const raw = arg === '--session' ? takeValue(arg, i++) : arg.slice('--session='.length);
+      try { options.sessionId = assertSessionId(raw); }
+      catch { throw new CliArgumentError('--session requires a valid session ID.'); }
+    } else if (arg === '--resume' || arg.startsWith('--resume=')) {
+      const raw = arg === '--resume' ? takeValue(arg, i++) : arg.slice('--resume='.length);
+      try { options.resumeId = assertSessionId(raw); }
+      catch { throw new CliArgumentError('--resume requires a valid session ID.'); }
     } else if (arg === '--provider' || arg.startsWith('--provider=')) {
       const provider = arg === '--provider' ? takeValue(arg, i++) : arg.slice('--provider='.length);
       if (!['anthropic', 'deepseek', 'openai'].includes(provider)) {
@@ -165,6 +181,9 @@ export function parseArgs(argv) {
     }
   }
 
+  if (options.sessionId && options.resumeId) {
+    throw new CliArgumentError('--session and --resume cannot be combined.');
+  }
   options.cwd = resolve(options.cwd);
   options.prompt = options.positional.join(' ').trim();
   return options;
@@ -987,6 +1006,38 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 
   let history = [];
+  let sessionManager;
+  const sessionId = options.sessionId || options.resumeId;
+  if (sessionId) {
+    const store = new FileSessionStore({
+      directory: env.AGENT_CIL_SESSION_DIR || join(homedir(), '.agent-cil', 'sessions'),
+    });
+    sessionManager = new AgentSessionManager({ loop, store });
+    try {
+      const canonicalWorkspace = await realpath(workspace);
+      if (options.sessionId) {
+        await sessionManager.create({
+          id: sessionId, metadata: { workspace: canonicalWorkspace, provider },
+        });
+      } else {
+        // A crashed turn is marked interrupted, not replayed automatically.
+        const saved = await sessionManager.recoverInterruptedTurns(sessionId);
+        if (saved.metadata?.workspace !== canonicalWorkspace ||
+          saved.metadata?.provider !== provider) {
+          throw new Error('Cannot resume a session from a different workspace or provider.');
+        }
+        history = saved.messages;
+      }
+    } catch (error) {
+      rl?.close();
+      printError('Session setup failed: ' + (error instanceof Error ? error.message : String(error)));
+      return 2;
+    }
+    if (interactiveInput) {
+      process.stderr.write('[session] ' + (options.resumeId ? 'resumed ' : 'created ') +
+        sessionId + '\n');
+    }
+  }
   let activeController;
   const onSigint = () => {
     if (activeController && !activeController.signal.aborted) {
@@ -1029,7 +1080,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     loop.on('turnFinished', onTurnFinished);
     loop.on('contextCompacted', onContextCompacted);
     try {
-      const result = await loop.run({ messages: history, input: text, signal: activeController.signal });
+      const result = sessionManager
+        ? (await sessionManager.run(sessionId, text, { signal: activeController.signal })).result
+        : await loop.run({ messages: history, input: text, signal: activeController.signal });
       history = result.messages;
       process.stdout.write('\n');
       if (result.stopReason === 'max_tokens') {
@@ -1043,14 +1096,22 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return 0;
     } catch (error) {
       process.stdout.write('\n');
-      if (committedHistory) {
-        // The erroring model response is NOT committed. Only the preceding
-        // completed tool rounds (including the original user request) survive.
-        history = committedHistory;
-        if (interactiveInput) {
-          process.stderr.write('[recovery] Completed tool results were retained. ' +
-            'Continue the conversation without re-running previous tools.\n');
+      if (sessionManager) {
+        try {
+          // The manager has already flushed completed Query checkpoints and
+          // recorded this turn's failure before rethrowing to the CLI.
+          history = (await sessionManager.get(sessionId)).messages;
+        } catch (readError) {
+          printError('Failed to reload session checkpoint: ' +
+            (readError instanceof Error ? readError.message : String(readError)));
         }
+      } else if (committedHistory) {
+        // Retain the in-memory CLI's existing last-committed checkpoint.
+        history = committedHistory;
+      }
+      if (committedHistory && interactiveInput) {
+        process.stderr.write('[recovery] Completed tool results were retained. ' +
+          'Continue the conversation without re-running previous tools.\n');
       }
       printError(error instanceof Error ? error.message : String(error));
       return activeController.signal.aborted ? 130 : 1;
