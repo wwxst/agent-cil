@@ -194,7 +194,7 @@ async function checkPermissionsAndCallTool(
   // authenticated tool_result, then append acceptFeedback and user-pasted
   // permission contentBlocks. The Node adapter temporarily transports those
   // blocks under an internal field; NEVER send that field to the provider.
-  const { permissionContentBlocks, ...toolResultBlock } = block;
+  const { permissionContentBlocks, nativeContextModifier, ...toolResultBlock } = block;
   const contentBlocks = [toolResultBlock];
   if (permissionContentBlocks !== undefined) {
     if (!Array.isArray(permissionContentBlocks) ||
@@ -204,7 +204,15 @@ async function checkPermissionsAndCallTool(
     }
     contentBlocks.push(...permissionContentBlocks);
   }
-  return [{ message: createUserMessage(contentBlocks) }];
+  return [{
+    message: createUserMessage(contentBlocks),
+    // Original checkPermissionsAndCallTool().addToolResult() passes this
+    // alongside the authenticated user message. Original scheduler applies
+    // it after the exclusive tool has finished (never inside tool_result).
+    ...(nativeContextModifier
+      ? { contextModifier: { toolUseID: toolUse.id, modifyContext: nativeContextModifier } }
+      : {}),
+  }];
 }
 
 /**
@@ -221,7 +229,7 @@ async function checkPermissionsAndCallTool(
 export async function invokeToolCallAndMapResult(tool, input, {
   toolUseId, signal, messages = [], assistantMessage, onProgress,
   toolResultStorage, onToolResult, onToolAttachment, onToolNewMessages,
-  userModified = false,
+  nativeToolUseContext, userModified = false,
 } = {}) {
   if (typeof toolUseId !== 'string' || !toolUseId) {
     throw new TypeError('An authenticated toolUseId is required.');
@@ -234,6 +242,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
   let hasStructuredOutput = false;
   let extraNativeMessages;
   let normalizedNativeMessageBlocks;
+  let nativeContextModifier;
   if (typeof tool.call === 'function') {
     if (typeof tool.mapToolResultToToolResultBlockParam !== 'function') {
       throw new TypeError('Legacy tool is missing its result mapper.');
@@ -246,10 +255,13 @@ export async function invokeToolCallAndMapResult(tool, input, {
     });
     const toolResult = await tool.call(
       structuredClone(input),
-      { toolUseId, signal, messages: structuredClone(messages),
-        // Original toolExecution.ts passes userModified on the native
-        // toolUseContext to Tool.call() after explicit permission approval.
-        userModified: userModified === true },
+      {
+        // The current scheduler-owned ToolUseContext may have been updated
+        // by the previous exclusive tool's original contextModifier.
+        ...(nativeToolUseContext || {}),
+        toolUseId, signal, messages: structuredClone(messages),
+        userModified: userModified === true,
+      },
       denyNestedPermission,
       structuredClone(assistantMessage),
       onProgress,
@@ -259,9 +271,14 @@ export async function invokeToolCallAndMapResult(tool, input, {
       Array.isArray(toolResult) || !Object.hasOwn(toolResult, 'data')) {
       throw new TypeError('Legacy tool.call() must return { data }.');
     }
-    if (toolResult.contextModifier !== undefined ||
-      toolResult.mcpMeta !== undefined) {
-      throw new Error('Legacy tool returned unsupported context modifier or MCP metadata.');
+    if (toolResult.mcpMeta !== undefined) {
+      throw new Error('Legacy tool returned unsupported MCP metadata.');
+    }
+    if (toolResult.contextModifier !== undefined) {
+      if (typeof toolResult.contextModifier !== 'function') {
+        throw new TypeError('Original Tool.call contextModifier must be a function.');
+      }
+      nativeContextModifier = toolResult.contextModifier;
     }
     // Old toolExecution.ts pushes result.newMessages after PostToolUse and
     // tool_result. Source user messages flow through normalizeMessagesForAPI.
@@ -330,7 +347,9 @@ export async function invokeToolCallAndMapResult(tool, input, {
     });
   }
   if (signal?.aborted) throw cancelledToolCall(signal);
-  return processed;
+  return nativeContextModifier
+    ? { ...processed, nativeContextModifier }
+    : processed;
 }
 
 function cancelledToolCall(signal) {
