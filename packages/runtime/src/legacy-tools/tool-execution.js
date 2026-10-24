@@ -17,7 +17,7 @@ import { validateToolInputValues } from '../tool-registry.js';
 import { processPreMappedToolResultBlock } from './tool-result-storage.js';
 
 function createUserMessage(block) {
-  return { role: 'user', content: [block] };
+  return { role: 'user', content: Array.isArray(block) ? block : [block] };
 }
 
 function errorResult(toolUse, content) {
@@ -189,7 +189,21 @@ async function checkPermissionsAndCallTool(
   if (!block || block.type !== 'tool_result' || block.tool_use_id !== toolUse.id) {
     throw new Error('Tool execution adapter returned a mismatched tool_result.');
   }
-  return [{ message: createUserMessage(block) }];
+  // Original checkPermissionsAndCallTool().addToolResult: first preserve the
+  // authenticated tool_result, then append acceptFeedback and user-pasted
+  // permission contentBlocks. The Node adapter temporarily transports those
+  // blocks under an internal field; NEVER send that field to the provider.
+  const { permissionContentBlocks, ...toolResultBlock } = block;
+  const contentBlocks = [toolResultBlock];
+  if (permissionContentBlocks !== undefined) {
+    if (!Array.isArray(permissionContentBlocks) ||
+        permissionContentBlocks.some(extra => !extra ||
+          !['text','image'].includes(extra.type))) {
+      throw new TypeError('Tool authorization returned invalid extra content blocks.');
+    }
+    contentBlocks.push(...permissionContentBlocks);
+  }
+  return [{ message: createUserMessage(contentBlocks) }];
 }
 
 /**
