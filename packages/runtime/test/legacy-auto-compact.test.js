@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { AgentLoop } from '../src/agent-loop.js';
 import { ToolRegistry } from '../src/tool-registry.js';
 import {
-  createAutoCompact, estimateMessageTokens, groupMessagesByApiRound,
+  createAutoCompact, estimateMessageTokens, tokenCountWithEstimation, groupMessagesByApiRound,
   selectCompletedPrefix, formatCompactSummary,
 } from '../src/legacy-compact/auto-compact.js';
 
