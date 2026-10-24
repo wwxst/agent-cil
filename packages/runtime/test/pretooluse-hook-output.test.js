@@ -19,8 +19,9 @@ test('original command Hook exit 2 blocks and never grants permission',async()=>
     const result=[];
     for await(const event of executePreToolHooks('Write','t1',{},c,'default',
       new AbortController().signal))result.push(event);
-    assert.equal(result.length,1);
-    assert.match(result[0].blockingError.blockingError,/Hook rejected tool/);
+    assert.ok(result.length>=2,'source aggregation emits both blocking error and terminal deny');
+    assert.match(result.find(e=>e.blockingError).blockingError.blockingError,/Hook rejected tool/);
+    assert.equal(result.at(-1).permissionBehavior,'deny');
     const sourceContext={...c,abortController:new AbortController(),
       getAppState:()=>({toolPermissionContext:{mode:'default'}})};
     const source=[];
