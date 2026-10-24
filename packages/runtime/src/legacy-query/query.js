@@ -155,7 +155,7 @@ export async function query({
               turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
             });
           },
-          execute: (block, { signal: toolSignal }) =>
+          execute: (block, { signal: toolSignal, toolUseContext: sourceToolUseContext }) =>
             runToolUse(
               block,
               assistantMessage,
@@ -164,6 +164,7 @@ export async function query({
                   history, turn, signal: verifiedSignal,
                   validatedTool, validatorContext: toolUseContext,
                   assistantMessage, onToolProgress,
+                  sourceToolUseContext,
                   speculative: earlyIds.has(block.id),
                 }),
               {
