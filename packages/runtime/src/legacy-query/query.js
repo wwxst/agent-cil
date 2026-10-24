@@ -100,6 +100,11 @@ export async function query({
       // A single error cannot recursively start an unbounded model/compact
       // retry chain. A new successful tool turn may have one fresh chance.
       let recoveredTurn = 0;
+      // Original query.ts ~1402 propagates update.newContext back into the
+      // next query iteration. The source tool scheduler already owns the
+      // modifier; retain its resulting state across model rounds rather than
+      // reinitializing an empty ToolUseContext for every assistant turn.
+      let sourceToolUseContext;
       while (true) {
         let { messages: history, turnCount: turn } = state;
         abortIfNeeded(signal);
@@ -147,6 +152,7 @@ export async function query({
         let scheduledCount = 0;
         let deferredBarrier = false;
         const executor = new StreamingToolExecutor({
+          initialContext: sourceToolUseContext,
           getTool: name => tools.get(name),
           signal,
           // Original executor handles unknown tools before runToolUse dispatch.
@@ -401,6 +407,11 @@ export async function query({
         if (toolResults.length !== toolUses.length) {
           throw new ModelProtocolError('Legacy scheduler returned a mismatched number of tool results.');
         }
+        // Original query.ts consumes update.newContext after tool execution,
+        // not at the start of the next model stream. Do this only after the
+        // entire authenticated tool batch is complete; aborted or discarded
+        // rounds cannot commit a partial tool-owned context transition.
+        sourceToolUseContext = executor.getUpdatedContext();
         // 2.1.88 query.ts: after toolUpdates have all finished, normalize
         // Hook attachments for API and merge with the tool-result user turn.
         // Never interleave user messages with a partially collected batch.
