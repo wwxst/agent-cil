@@ -180,10 +180,21 @@ test('source prefix/wildcard Bash deny and ask rules are restrictive, not broad 
     'nice -n 5 node --version',
     'nohup FOO=bar timeout 5 node --version',
     'TZ=UTC nohup FOO=bar timeout 5 node --version',
-    'xargs node --version',
   ]) {
     assert.equal(bashToolCheckExactMatchPermission({ command },ctx).behavior,'deny',command);
   }
+  // Original Bash wildcard "node *" does not special-case xargs.
+  // In contrast the original legacy prefix "node:*" explicitly supports
+  // xargs node: compare the two without loosening production matching.
+  assert.equal(bashToolCheckExactMatchPermission({
+    command:'xargs node --version',
+  },ctx).behavior,'ask');
+  const prefixContext = createCliPermissionContext({
+    permissionRules:{allow:[],deny:[{toolName:'Bash',ruleContent:'node:*'}],ask:[]},
+  });
+  assert.equal(bashToolCheckExactMatchPermission({
+    command:'xargs node --version',
+  },prefixContext).behavior,'deny');
   for (const command of [
     'NODE_OPTIONS=$(echo injected) node --version',
     'timeout -k$(id) 5 node --version',
