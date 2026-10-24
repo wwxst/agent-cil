@@ -341,7 +341,7 @@ test('session storage refuses a replacement lock owner, does not append, and nev
     // lock between this process's two completed tool turns.
     await writeFile(lock,JSON.stringify({
       pid:process.pid,startedAt:Date.now(),token:nextOwnerToken,
-    })+'\\n');
+    })+'\n');
     const finished=[...transcript,{
       role:'assistant',content:[{type:'text',text:'should not be committed'}],
     }];
