@@ -84,6 +84,7 @@ export class AgentLoop extends EventEmitter {
   #postToolUseHooks;
   #postToolUseFailureHooks;
   #hookMessages = [];
+  #toolAttachments = [];
   #hookStopReason;
   #hookWorkspace;
   #toolResultStorage;
@@ -148,6 +149,7 @@ export class AgentLoop extends EventEmitter {
     if (this.#active) throw new Error('This AgentLoop already has an active run.');
     this.#active = true;
     this.#hookMessages = [];
+    this.#toolAttachments = [];
     this.#hookStopReason = undefined;
     try {
       const result = await query({
@@ -167,6 +169,7 @@ export class AgentLoop extends EventEmitter {
         emit: (eventName, event) => this.emit(eventName, event),
       });
       if (this.#hookMessages.length) result.hookMessages = structuredClone(this.#hookMessages);
+      if (this.#toolAttachments.length) result.toolAttachments = structuredClone(this.#toolAttachments);
       return result;
     } finally {
       this.#active = false;
@@ -590,6 +593,14 @@ export class AgentLoop extends EventEmitter {
         onProgress: onToolProgress,
         toolResultStorage: this.#toolResultStorage,
         userModified: userModified || decision?.userModified === true,
+        onToolAttachment: async attachment => {
+          // Original toolExecution.ts emits structured_output as a distinct
+          // attachment; it is not an API user message or a tool_result.
+          const event = { turn, toolUseId: toolUse.id, toolName: tool.name,
+            attachment: structuredClone(attachment) };
+          this.#toolAttachments.push(event);
+          this.emit('toolAttachment', event);
+        },
         // Original 2.1.88 toolExecution.ts processes/memoizes the result
         // BEFORE invoking PostToolUse. Preserve the exact raw tool data.
         onToolResult: async ({ toolOutput }) => {
