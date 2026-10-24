@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
+import { permissionRuleValueFromString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
@@ -36,6 +37,9 @@ export const HELP = [
   '      --compact-threshold <n>  Auto-compact above approximate input tokens (0 disables)',
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
   '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
+  '      --allowedTools <name>     Original CLI whole-tool allow rule; repeat per tool',
+  '      --disallowedTools <name>  Original CLI whole-tool deny rule; repeat per tool',
+  '      --askTools <name>         Original CLI whole-tool ask rule; repeat per tool',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
   '',
@@ -84,6 +88,7 @@ export function parseArgs(argv) {
     compactThreshold: undefined,
     maxRetries: 2,
     allowEdits: false,
+    permissionRules: { allow: [], deny: [], ask: [] },
     system: undefined,
     cwd: process.cwd(),
     positional: [],
@@ -107,6 +112,18 @@ export function parseArgs(argv) {
       options.print = true;
     } else if (arg === '--allow-edits') {
       options.allowEdits = true;
+    } else if (['--allowedTools', '--disallowedTools', '--askTools'].some(flag => arg === flag || arg.startsWith(flag + '='))) {
+      const [flag, ...inlineValue] = arg.split('=');
+      const behavior = flag === '--allowedTools' ? 'allow' : flag === '--disallowedTools' ? 'deny' : 'ask';
+      const raw = inlineValue.length > 0 ? inlineValue.join('=') : takeValue(flag, i++);
+      // Content-specific rules require the original Bash subcommand matcher;
+      // rejecting them until it is ported is safer than silently ignoring.
+      const parsed = permissionRuleValueFromString(raw);
+      if (!['Read','Write','Edit','Grep','Glob','Bash'].includes(parsed.toolName) ||
+          parsed.ruleContent !== undefined || raw.length < 1 || raw !== parsed.toolName) {
+        throw new CliArgumentError(flag + ' currently accepts only one exact built-in tool name (Read, Write, Edit, Grep, Glob, Bash). Content-specific and MCP rules need the original tool.checkPermissions port.');
+      }
+      options.permissionRules[behavior].push(parsed);
     } else if (arg === '--provider' || arg.startsWith('--provider=')) {
       const provider = arg === '--provider' ? takeValue(arg, i++) : arg.slice('--provider='.length);
       if (!['anthropic', 'deepseek', 'openai'].includes(provider)) {
@@ -224,14 +241,19 @@ async function assertPathWithinWorkspace(workspace, target) {
  * Additional rule persistence stays disabled until the original dependency
  * closure is runnable and independently verified.
  */
-export function createCliPermissionContext({ allowEdits = false } = {}) {
+export function createCliPermissionContext({ allowEdits = false, permissionRules = {} } = {}) {
+  const updates = allowEdits ? [{ type: 'setMode', destination: 'cliArg', mode: 'acceptEdits' }] : [];
+  for (const behavior of ['allow', 'deny', 'ask']) {
+    const rules = permissionRules[behavior] || [];
+    if (rules.length) updates.push({ type: 'addRules', destination: 'cliArg', behavior, rules });
+  }
   return applyPermissionUpdates({
     mode: 'default',
     alwaysAllowRules: {},
     alwaysDenyRules: {},
     alwaysAskRules: {},
     additionalWorkingDirectories: new Map(),
-  }, allowEdits ? [{ type: 'setMode', destination: 'cliArg', mode: 'acceptEdits' }] : []);
+  }, updates);
 }
 
 export function createCliPermissionPolicy({
@@ -967,7 +989,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     compactContext: context => autoCompact.compact(context),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
-      permissionContext: createCliPermissionContext({ allowEdits: options.allowEdits }),
+      permissionContext: createCliPermissionContext({ allowEdits: options.allowEdits, permissionRules: options.permissionRules }),
     }),
     maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
