@@ -1,4 +1,9 @@
-/** Mechanical Node.js JS transplant from CLI 2.1.88 utils/permissions/shellRuleMatching.ts.\n * Only TypeScript import, type declaration and signature annotations removed.\n * Original source retained unchanged in ../legacy-original/shellRuleMatching.ts. */\n/**
+/**
+ * Mechanical Node.js transplant of original CLI 2.1.88
+ * utils/permissions/shellRuleMatching.ts. Only types removed.
+ * Unchanged source: ../legacy-original/shellRuleMatching.ts.
+ */
+/**
  * Shared permission rule matching utilities for shell tools.
  *
  * Extracts common logic for:
