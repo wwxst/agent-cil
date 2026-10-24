@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { ToolRegistry } from './tool-registry.js';
 import { defaultDenyPermission } from './permissions.js';
 import { invokeToolCallAndMapResult } from './legacy-tools/tool-execution.js';
+import { prepareObservableToolInput, restoreToolCallInput } from './legacy-tools/tool-call-input.js';
 import { runPreToolUseHooks, resolveHookPermissionDecision } from './legacy-tools/pretooluse-core.js';
 import { runPostToolUseHooks, runPostToolUseFailureHooks } from './legacy-tools/posttooluse-core.js';
 import { query } from './legacy-query/query.js';
@@ -288,7 +289,11 @@ export class AgentLoop extends EventEmitter {
       return { result };
     };
 
-    let executionInput = structuredClone(toolUse.input);
+    // Original 2.1.88 checkPermissionsAndCallTool() keeps two inputs:
+    // observable backfill for Hooks/permission and untouched callInput for
+    // the final tool.call(), unless a Hook or user intentionally rewrote it.
+    let { processedInput: executionInput, callInput, backfilledClone } =
+      prepareObservableToolInput(tool, structuredClone(toolUse.input));
     let inputRewriteCount = 0;
     const applyUpdatedInput = async (value, source) => {
       const normalized = normalizePermissionInput(value);
@@ -553,7 +558,10 @@ export class AgentLoop extends EventEmitter {
     this.emit('toolCallStarted', { turn, toolUseId: toolUse.id, toolName: tool.name });
     try {
       // The final input was validated and authorized before this call.
-      const result = await invokeToolCallAndMapResult(tool, executionInput, {
+      const exactCallInput = restoreToolCallInput(
+        executionInput, callInput, backfilledClone,
+      );
+      const result = await invokeToolCallAndMapResult(tool, exactCallInput, {
         toolUseId: toolUse.id, signal, messages: history, assistantMessage,
         onProgress: onToolProgress,
         toolResultStorage: this.#toolResultStorage,
