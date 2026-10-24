@@ -132,7 +132,7 @@ test('source contextModifier is applied in tool order across multiple serial too
   assert.equal(requests,2);
 });
 
-test('invalid source contextModifier never gets applied or executes a deferred sibling tool',async()=>{
+test('invalid source contextModifier yields tool error and independent sibling still executes under normal permission',async()=>{
   const tools=new ToolRegistry();
   let skipped=0;
   tools.register({
@@ -169,8 +169,9 @@ test('invalid source contextModifier never gets applied or executes a deferred s
   });
   const result=await loop.run({input:'invalid modifier'});
   assert.equal(result.stopReason,'end_turn');
-  // An invalid modifier is an error tool result; original scheduler may
-  // continue an independent sibling, but must never execute *as a modifier*.
-  assert.ok(skipped===0 || skipped===1);
+  // Source StreamingToolExecutor only cascades sibling cancellation for
+  // Bash tool errors. A non-Bash error cannot silently disable an unrelated
+  // authorized sibling; invalid modifier never modifies its context.
+  assert.equal(skipped,1);
   assert.equal(rounds,2);
 });
