@@ -15,6 +15,7 @@ import { Stream } from './stream.js';
 import { validateJsonSchema } from '../validation.js';
 import { validateToolInputValues } from '../tool-registry.js';
 import { processPreMappedToolResultBlock } from './tool-result-storage.js';
+import { normalizeOriginalToolNewMessagesForAPI } from './original-tool-new-messages.js';
 
 function createUserMessage(block) {
   return { role: 'user', content: Array.isArray(block) ? block : [block] };
@@ -219,7 +220,8 @@ async function checkPermissionsAndCallTool(
  */
 export async function invokeToolCallAndMapResult(tool, input, {
   toolUseId, signal, messages = [], assistantMessage, onProgress,
-  toolResultStorage, onToolResult, onToolAttachment, userModified = false,
+  toolResultStorage, onToolResult, onToolAttachment, onToolNewMessages,
+  userModified = false,
 } = {}) {
   if (typeof toolUseId !== 'string' || !toolUseId) {
     throw new TypeError('An authenticated toolUseId is required.');
@@ -230,6 +232,8 @@ export async function invokeToolCallAndMapResult(tool, input, {
   let toolOutput;
   let structuredOutput;
   let hasStructuredOutput = false;
+  let extraNativeMessages;
+  let normalizedNativeMessageBlocks;
   if (typeof tool.call === 'function') {
     if (typeof tool.mapToolResultToToolResultBlockParam !== 'function') {
       throw new TypeError('Legacy tool is missing its result mapper.');
@@ -255,10 +259,17 @@ export async function invokeToolCallAndMapResult(tool, input, {
       Array.isArray(toolResult) || !Object.hasOwn(toolResult, 'data')) {
       throw new TypeError('Legacy tool.call() must return { data }.');
     }
-    if ((Array.isArray(toolResult.newMessages) && toolResult.newMessages.length > 0) ||
-      toolResult.contextModifier !== undefined ||
+    if (toolResult.contextModifier !== undefined ||
       toolResult.mcpMeta !== undefined) {
-      throw new Error('Legacy tool returned unsupported messages or context metadata.');
+      throw new Error('Legacy tool returned unsupported context modifier or MCP metadata.');
+    }
+    // Old toolExecution.ts pushes result.newMessages after PostToolUse and
+    // tool_result. Source user messages flow through normalizeMessagesForAPI.
+    // Validate before committing any output so invalid messages are explicit.
+    if (toolResult.newMessages !== undefined) {
+      normalizedNativeMessageBlocks =
+        normalizeOriginalToolNewMessagesForAPI(toolResult.newMessages);
+      extraNativeMessages = structuredClone(toolResult.newMessages);
     }
     // Original 2.1.88 checkPermissionsAndCallTool() ~1272: when a
     // native Tool.call() supplies structured_output, emit it as a separate
@@ -306,6 +317,16 @@ export async function invokeToolCallAndMapResult(tool, input, {
     // Never attach it as a second tool_result or a model-visible user block.
     if (onToolAttachment) await onToolAttachment({
       type: 'structured_output', data: structuredOutput,
+    });
+  }
+  if (signal?.aborted) throw cancelledToolCall(signal);
+  // Original toolExecution.ts emits native newMessages AFTER PostToolUse
+  // and structured-output attachments; the Query batches model-visible
+  // text/images after the authenticated tool_result(s).
+  if (onToolNewMessages && normalizedNativeMessageBlocks?.length) {
+    await onToolNewMessages({
+      sourceMessages: extraNativeMessages,
+      blocks: normalizedNativeMessageBlocks,
     });
   }
   if (signal?.aborted) throw cancelledToolCall(signal);
