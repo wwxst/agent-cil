@@ -53,6 +53,7 @@ export async function query({
   messages = [], input, signal, model, tools, maxTurns,
   executeTool, emit, canStartToolDuringStream, compactContext, getPostToolStop,
   getToolHookContext, getToolNativeMessages,
+  initialToolUseContext, onCommittedToolUseContext,
 } = {}) {
   if (!Array.isArray(messages)) throw new TypeError('messages must be an array.');
   if (messages.some(message => !isRecord(message))) {
@@ -85,6 +86,10 @@ export async function query({
   if (getPostToolStop !== undefined && typeof getPostToolStop !== 'function') {
     throw new TypeError('getPostToolStop must be a function.');
   }
+  if (onCommittedToolUseContext !== undefined &&
+      typeof onCommittedToolUseContext !== 'function') {
+    throw new TypeError('onCommittedToolUseContext must be a function.');
+  }
   if (!Number.isSafeInteger(maxTurns) || maxTurns < 1) {
     throw new RangeError('maxTurns must be a positive safe integer.');
   }
@@ -104,7 +109,7 @@ export async function query({
       // next query iteration. The source tool scheduler already owns the
       // modifier; retain its resulting state across model rounds rather than
       // reinitializing an empty ToolUseContext for every assistant turn.
-      let sourceToolUseContext;
+      let sourceToolUseContext = initialToolUseContext;
       while (true) {
         let { messages: history, turnCount: turn } = state;
         abortIfNeeded(signal);
@@ -448,6 +453,14 @@ export async function query({
         emit('turnFinished', {
           turn, stopReason, toolResultCount: toolResults.length,
           committedMessages: structuredClone(history),
+        });
+        // The original REPL owns ToolUseContext across calls to query().
+        // This callback belongs to the same completed tool transaction;
+        // never transfer state from a partial/failed tool batch.
+        onCommittedToolUseContext?.({
+          messages: history,
+          toolUseContext: sourceToolUseContext,
+          turn,
         });
 
         // The original PostToolUse generator emits hook_stopped_continuation
