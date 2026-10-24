@@ -216,7 +216,7 @@ test('packed CLI Bash permission chain: exact allow, deny, ask, whole ask, unmat
   try {
     const allowed=await scenario(['--allowedTools','Bash(node --version)'],'node --version');
     assert.notEqual(allowed.is_error,true);
-    assert.match(JSON.stringify(allowed.content),/v\\d+/);
+    assert.match(JSON.stringify(allowed.content),/v\d+/);
     for(const [flags, command] of [
       [['--disallowedTools','Bash(node --version)','--allowedTools','Bash(node --version)'], 'node --version'],
       [['--askTools','Bash(node --version)','--allowedTools','Bash(node --version)'], 'node --version'],
