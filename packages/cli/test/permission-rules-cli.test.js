@@ -218,11 +218,11 @@ test('direct old Bash filter preserves exact-before-prefix permission priority a
   const exact = matchingRulesForInput({command:'node --version'},ctx,'exact');
   assert.equal(exact.matchingDenyRules.length,0,
     'original exact mode must not match node:* against node --version');
-  assert.equal(exact.matchingAskRules[0].ruleContent,'node --version');
+  assert.equal(exact.matchingAskRules[0].ruleValue.ruleContent,'node --version');
   const prefix = matchingRulesForInput({command:'node --version'},ctx,'prefix',{
     skipCompoundCheck:true,
   });
-  assert.equal(prefix.matchingDenyRules[0].ruleContent,'node:*');
+  assert.equal(prefix.matchingDenyRules[0].ruleValue.ruleContent,'node:*');
   assert.equal(bashToolCheckExactMatchPermission({command:'node --version'},ctx).behavior,'ask',
     'original Bash check evaluates literal exact ask before broader prefix deny');
 
@@ -233,7 +233,7 @@ test('direct old Bash filter preserves exact-before-prefix permission priority a
   const restrictive = matchingRulesForInput(wrapped,justDeny,'prefix',{
     skipCompoundCheck:true,
   });
-  assert.equal(restrictive.matchingDenyRules[0].ruleContent,'node:*');
+  assert.equal(restrictive.matchingDenyRules[0].ruleValue.ruleContent,'node:*');
   assert.equal(bashToolCheckExactMatchPermission(wrapped,justDeny).behavior,'deny');
   const direct = filterRulesByContentsMatchingInput(
     wrapped,
