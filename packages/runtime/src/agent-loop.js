@@ -594,10 +594,31 @@ export class AgentLoop extends EventEmitter {
       });
       return result;
     } catch (error) {
-      if (signal?.aborted) abortIfNeeded(signal);
+      // Original 2.1.88 checkPermissionsAndCallTool() catches AbortError
+      // and dispatches PostToolUseFailure with isInterrupt=true BEFORE
+      // returning its tool_result. The current Node Query propagates
+      // cancellation to its caller, but must still execute the original
+      // failure-Hook lifecycle and terminal tool status first.
+      if (signal?.aborted) {
+        try {
+          if (this.#postToolUseFailureHooks.length) {
+            await this.#emitPostToolUseFailureHooks({
+              tool, toolUse, turn, signal, executionInput,
+              error: errorText(error), isInterrupt: true,
+            });
+          }
+        } finally {
+          this.emit('toolCallFinished', {
+            turn, toolUseId: toolUse.id, toolName: tool.name,
+            isError: true, interrupted: true,
+          });
+          abortIfNeeded(signal);
+        }
+      }
       if (this.#postToolUseFailureHooks.length) {
         await this.#emitPostToolUseFailureHooks({
-          tool, toolUse, turn, signal, executionInput, error: errorText(error),
+          tool, toolUse, turn, signal, executionInput,
+          error: errorText(error), isInterrupt: false,
         });
       }
       const result = toolError(toolUse, 'Tool execution failed: ' + errorText(error));
@@ -647,12 +668,12 @@ export class AgentLoop extends EventEmitter {
     }
   }
 
-  async #emitPostToolUseFailureHooks({ tool, toolUse, turn, signal, executionInput, error }) {
+  async #emitPostToolUseFailureHooks({ tool, toolUse, turn, signal, executionInput, error, isInterrupt = false }) {
     // PostToolUseFailure is only called after actual tool execution fails,
     // not after a policy denial. Hook feedback never replaces the error result.
     for await (const update of runPostToolUseFailureHooks(
       this.#createPostHookContext(signal), tool, toolUse.id, toolUse.id,
-      structuredClone(executionInput), error, false, undefined, undefined, undefined,
+      structuredClone(executionInput), error, isInterrupt, undefined, undefined, undefined,
     )) {
       this.#recordPostHookMessage({ toolUse, tool, turn, message: update.message });
     }
