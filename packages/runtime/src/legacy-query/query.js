@@ -360,6 +360,20 @@ export async function query({
         history.push(assistantMessage);
         emit('assistantMessage', { turn, message: structuredClone(assistantMessage) });
 
+        if (needsFollowUp) {
+          // Original 2.1.88 Query yields its complete assistant tool_use
+          // message before tool_result; insertMessageChain persists that
+          // assistant UUID independently. Do this before admitting deferred
+          // side-effecting tools so a crash cannot silently replay them.
+          try {
+            await onSessionCheckpoint?.({
+              messages:structuredClone(history),kind:'tool_pending',
+            });
+          } catch(error) {
+            executor.discard();
+            throw error;
+          }
+        }
         if (!needsFollowUp) {
           const result = {
             messages: history, turns: turn,
