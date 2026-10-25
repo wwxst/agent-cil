@@ -303,9 +303,11 @@ test('real CLI SIGKILL after Write side effect retains assistant tool_use and re
     // the post-hook is in flight, not during an untrusted partial SSE.
     await writeFile(join(root,'delayed-posthook.cjs'),
       "process.stdin.resume();process.stdin.on('end',()=>{"+
-      "require('node:fs').writeFileSync('hook-entered.txt','entered');"+
-      "const parent=process.ppid;const timer=setInterval(()=>{"+
-      "try{process.kill(parent,0);}catch{clearInterval(timer);process.exit(0);}},60);"+
+      "const fs=require('node:fs');"+
+      "fs.writeFileSync('hook-entered.txt','entered');"+
+      "process.on('exit',()=>fs.writeFileSync('hook-exited.txt','exited'));"+
+      "const timer=setInterval(()=>{if(fs.existsSync('release-hook.txt')){"+
+      "clearInterval(timer);process.exit(0);}},40);"+
       "setTimeout(()=>process.exit(0),6500);});");
     await writeFile(join(root,'hooks.json'),JSON.stringify({hooks:{
       PostToolUse:[{matcher:'Write',hooks:[{
@@ -340,6 +342,18 @@ test('real CLI SIGKILL after Write side effect retains assistant tool_use and re
     child.kill('SIGKILL');
     await closed;
     clearTimeout(guard);
+    // On Windows the PostToolUse child may keep its working directory
+    // opened after the CLI is killed. Release it explicitly before cleanup.
+    await writeFile(join(root,'release-hook.txt'),'release');
+    let hookExited=false;
+    for(let attempt=0;attempt<250;attempt++){
+      try{
+        hookExited=(await readFile(join(root,'hook-exited.txt'),'utf8'))==='exited';
+        if(hookExited)break;
+      }catch(error){if(error.code!=='ENOENT')throw error;}
+      await new Promise(resolve=>setTimeout(resolve,40));
+    }
+    assert.equal(hookExited,true,'post-hook child must release its cwd on Windows');
     const journal=(await readFile(join(root,'.agent-cil','sessions',id,'transcript.jsonl'),'utf8'))
       .trim().split('\n').map(JSON.parse);
     assert.deepEqual(journal.map(x=>x.kind),['input','tool_pending'],
@@ -358,9 +372,17 @@ test('real CLI SIGKILL after Write side effect retains assistant tool_use and re
   }finally{
     if(guard)clearTimeout(guard);
     if(child&&child.exitCode===null&&!child.killed)child.kill('SIGKILL');
+    // Also release the hook after an assertion failure.
+    await writeFile(join(root,'release-hook.txt'),'release').catch(()=>{});
+    for(let attempt=0;attempt<170;attempt++){
+      try{
+        if((await readFile(join(root,'hook-exited.txt'),'utf8'))==='exited')break;
+      }catch(error){if(error.code!=='ENOENT')break;}
+      await new Promise(resolve=>setTimeout(resolve,40));
+    }
     server.closeAllConnections?.();
     if(server.listening)await new Promise(resolve=>server.close(resolve));
-    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:150});
+    await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:200});
   }
 });
 
