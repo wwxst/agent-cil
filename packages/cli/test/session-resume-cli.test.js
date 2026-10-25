@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtemp, rm, readFile, writeFile, rename } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, rename, appendFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../src/index.js';
+import { openSessionJournal } from '../../runtime/src/legacy-session/session-storage.js';
 
 const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js',import.meta.url));
@@ -383,6 +384,78 @@ test('real CLI SIGKILL after Write side effect retains assistant tool_use and re
     server.closeAllConnections?.();
     if(server.listening)await new Promise(resolve=>server.close(resolve));
     await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:200});
+  }
+});
+
+
+test('real CLI --resume sends both recovered source sibling tool results to the next provider request', {
+  timeout:55000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-sibling-resume-'));
+  const id=randomUUID();
+  const incoming=[];
+  const server=createServer(async(req,res)=>{
+    const chunks=[];for await(const chunk of req)chunks.push(chunk);
+    incoming.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.end(finalStream());
+  });
+  try{
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Read both independent files'}];
+    const pending=[...input,{role:'assistant',id:'parallel-source-message',content:[
+      {type:'tool_use',id:'source-read-1',name:'Read',input:{file_path:'one.txt'}},
+      {type:'tool_use',id:'source-read-2',name:'Read',input:{file_path:'two.txt'}},
+    ]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    const file=journal.path;
+    await journal.close();
+    const existing=(await readFile(file,'utf8')).trim().split('\n').map(JSON.parse);
+    const prior=existing.at(-1);
+    const sourceUUID=prior.leafUuid;
+    const entry=(idValue,name)=>({
+      type:'user',uuid:randomUUID(),parentUuid:sourceUUID,
+      sourceToolAssistantUUID:sourceUUID,sessionId:id,
+      message:{role:'user',content:[{
+        type:'tool_result',tool_use_id:idValue,content:name,
+      }]},
+    });
+    const first=entry('source-read-1','result one');
+    const second=entry('source-read-2','result two');
+    const payload={
+      type:'session_commit',version:2,sessionId:id,
+      workspace:await realpath(root),kind:'tool',
+      sequence:prior.sequence+1,previousHash:prior.hash,
+      root:false,leafUuid:second.uuid,entries:[first,second],
+    };
+    const hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    await appendFile(file,JSON.stringify({...payload,hash})+'\n');
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    const flags=['--print','--provider','deepseek','--cwd',root,
+      '--max-retries','0','--max-turns','3','--compact-threshold','0',
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic'];
+    const cliRun=await childProcess([...flags,'--resume',id],
+      {DEEPSEEK_API_KEY:'mock-parallel-session-token'});
+    assert.equal(cliRun.code,0,cliRun.stdout+cliRun.stderr);
+    assert.equal(incoming.length,1,'original completed tool uses must not be re-executed');
+    const resultIDs=incoming[0].messages
+      .filter(m=>m.role==='user')
+      .flatMap(m=>Array.isArray(m.content)?m.content:[])
+      .filter(b=>b.type==='tool_result')
+      .map(b=>b.tool_use_id);
+    assert.deepEqual(resultIDs,['source-read-1','source-read-2'],
+      'both source DAG siblings must reach the real provider transport');
+    const committed=(await readFile(file,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(committed.at(-1).kind,'finished');
+    assert.equal(committed.at(-1).entries[0].parentUuid,second.uuid);
+    assert.match(cliRun.stdout,/Resumed without another Write/);
+  }finally{
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:150});
   }
 });
 
