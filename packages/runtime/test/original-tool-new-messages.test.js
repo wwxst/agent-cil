@@ -74,11 +74,12 @@ test('real original Tool.call newMessages appears after full successful tool_res
   const result=await loop.run({input:'run two original tools'});
   assert.equal(requests,2);
   assert.equal(calls.length,2);
-  assert.equal(result.messages.length,4);
+  assert.equal(result.messages.length,5,
+    'source keeps both completed tool_result messages in the durable chain');
   assert.equal(result.messages.at(-1).content[0].text,'done');
   assert.equal(result.toolNativeMessages.length,2);
   assert.equal(seen.length,2);
-  assert.deepEqual(saved[0],result.messages.slice(0,3),
+  assert.deepEqual(saved[0],result.messages.slice(0,4),
     'native newMessages retained in complete tool checkpoint');
   assert.deepEqual(result.toolNativeMessages.map(x=>x.sourceMessages[0].uuid),
     ['source-tool-new-message','source-tool-new-message']);
