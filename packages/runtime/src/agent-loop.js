@@ -92,6 +92,7 @@ export class AgentLoop extends EventEmitter {
   #toolResultStorage;
   #onSessionCheckpoint;
   #onMappedToolResult;
+  #mappedWitnessFailure;
   #requireCanUseTool;
   // Original REPL passes updatedToolUseContext and committed history into
   // each next query() invocation of the same interactive session.
@@ -190,6 +191,7 @@ export class AgentLoop extends EventEmitter {
     this.#toolAttachments = [];
     this.#toolNativeMessages = [];
     this.#hookStopReason = undefined;
+    this.#mappedWitnessFailure = undefined;
     try {
       const result = await query({
         messages, input, signal,
@@ -296,6 +298,11 @@ export class AgentLoop extends EventEmitter {
   }
 
   async #executeTool(toolUse, { history, turn, signal, validatedTool, validatorContext, assistantMessage, onToolProgress, sourceToolUseContext, speculative = false }) {
+    // A prior side-effecting tool may have completed while its mapped
+    // recovery witness failed. Original serial executor must not start a
+    // later queued tool merely because that earlier failure was converted
+    // into a model-visible error result by runToolUse().
+    if(this.#mappedWitnessFailure)throw this.#mappedWitnessFailure;
     const tool = this.#tools.get(toolUse.name);
     if (!tool) {
       const result = toolError(toolUse, 'Unknown tool: ' + toolUse.name);
@@ -725,9 +732,14 @@ export class AgentLoop extends EventEmitter {
           // A command hook can outlive the CLI process; fsync a recovery
           // witness before spawning it without fabricating a model turn.
           if(this.#postToolUseHooks.length && this.#onMappedToolResult) {
-            await this.#onMappedToolResult({
-              toolUseId:toolUse.id, mappedResult:structuredClone(mappedResult),
-            });
+            try {
+              await this.#onMappedToolResult({
+                toolUseId:toolUse.id, mappedResult:structuredClone(mappedResult),
+              });
+            } catch(error) {
+              this.#mappedWitnessFailure=error;
+              throw error;
+            }
           }
           if (!this.#postToolUseHooks.length) return;
           await this.#emitPostToolUseHooks({
