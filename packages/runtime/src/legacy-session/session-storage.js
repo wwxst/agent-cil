@@ -304,6 +304,17 @@ export class SessionJournal {
         await handle.sync();
       }finally{await handle.close();}
     }
+    // Install the same file identity that produced the verified ancestry.
+    // Re-statting an unrelated replacement after parse could otherwise
+    // authorize the wrong on-disk file for the next model/tool checkpoint.
+    const loaded=await lstat(this.#path);
+    const expectedSize=Buffer.byteLength(complete);
+    if(!loaded.isFile() || loaded.isSymbolicLink() ||
+       loaded.dev!==readIdentity.dev || loaded.ino!==readIdentity.ino ||
+       loaded.size!==expectedSize) {
+      throw new Error('Session transcript changed before recovered history was adopted.');
+    }
+    this.#fileState={dev:loaded.dev,ino:loaded.ino,size:loaded.size};
     return this.messages;
   }
   async append({messages,kind}) {
@@ -423,8 +434,8 @@ export async function openSessionJournal({workspace,sessionId=randomUUID(),resum
       const handle=await open(path,constants.O_CREAT|constants.O_EXCL|
         constants.O_WRONLY|NOFOLLOW,0o600);
       await handle.close();
+      await journal.attachFile();
     }
-    await journal.attachFile();
     return journal;
   }catch(error){await journal.close();throw error;}
 }
