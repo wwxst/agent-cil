@@ -280,6 +280,90 @@ test('real CLI fences replaced transcript after Write and does not issue a follo
   }
 });
 
+
+test('real CLI SIGKILL after Write side effect retains assistant tool_use and refuses unsafe replay', {
+  timeout:65000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-pending-crash-'));
+  const id=randomUUID();
+  let requests=0;
+  const server=createServer(async(req,res)=>{
+    const chunks=[];for await(const c of req)chunks.push(c);
+    requests++;
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.end(writeToolStream());
+  });
+  let child,guard;
+  try{
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    // A genuine original PostToolUse command hook delays tool_result
+    // completion after Write has created the file. Kill the main CLI while
+    // the post-hook is in flight, not during an untrusted partial SSE.
+    await writeFile(join(root,'delayed-posthook.cjs'),
+      "process.stdin.resume();process.stdin.on('end',()=>{"+
+      "require('node:fs').writeFileSync('hook-entered.txt','entered');"+
+      "const parent=process.ppid;const timer=setInterval(()=>{"+
+      "try{process.kill(parent,0);}catch{clearInterval(timer);process.exit(0);}},60);"+
+      "setTimeout(()=>process.exit(0),6500);});");
+    await writeFile(join(root,'hooks.json'),JSON.stringify({hooks:{
+      PostToolUse:[{matcher:'Write',hooks:[{
+        type:'command',command:'node delayed-posthook.cjs',timeout:12,
+      }]}],
+    }}));
+    const flags=['--print','--provider','deepseek','--cwd',root,
+      '--max-retries','0','--compact-threshold','0','--max-turns','3',
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic'];
+    const env={...process.env,DEEPSEEK_API_KEY:'mock-pending-token'};
+    child=spawn(process.execPath,[cli,...flags,'--hooks-file',
+      join(root,'hooks.json'),'--allow-edits','--session-id',id,
+      'Write saved.txt once.'],{env,stdio:['ignore','pipe','pipe']});
+    const stderr=[];
+    child.stderr.on('data',x=>stderr.push(x));
+    child.stdout.on('data',()=>{});
+    const closed=new Promise((resolve,reject)=>{
+      child.once('error',reject);
+      child.once('close',(code,signal)=>resolve({code,signal}));
+    });
+    guard=setTimeout(()=>child.kill('SIGKILL'),16000);
+    let hookEntered=false;
+    for(let attempt=0;attempt<250;attempt++){
+      try{
+        hookEntered=(await readFile(join(root,'hook-entered.txt'),'utf8'))==='entered';
+        if(hookEntered)break;
+      }catch(error){if(error.code!=='ENOENT')throw error;}
+      await new Promise(resolve=>setTimeout(resolve,40));
+    }
+    assert.equal(hookEntered,true,Buffer.concat(stderr).toString('utf8'));
+    assert.equal(await readFile(join(root,'saved.txt'),'utf8'),'must persist exactly once');
+    child.kill('SIGKILL');
+    await closed;
+    clearTimeout(guard);
+    const journal=(await readFile(join(root,'.agent-cil','sessions',id,'transcript.jsonl'),'utf8'))
+      .trim().split('\n').map(JSON.parse);
+    assert.deepEqual(journal.map(x=>x.kind),['input','tool_pending'],
+      'complete assistant tool_use must survive interruption before tool_result');
+    assert.equal(journal[1].entries[0].parentUuid,journal[0].leafUuid);
+    assert.equal(journal[1].entries[0].message.content[0].id,'session-write-once');
+    const before=requests;
+    const empty=await childProcess([...flags,'--resume',id],env);
+    assert.equal(empty.code,2,empty.stdout+empty.stderr);
+    assert.match(empty.stderr,/unfinished tool batch|automatic replay is unsafe/i);
+    const withPrompt=await childProcess([...flags,'--resume',id,'try again'],env);
+    assert.equal(withPrompt.code,2,withPrompt.stdout+withPrompt.stderr);
+    assert.match(withPrompt.stderr,/unfinished tool batch/i);
+    assert.equal(requests,before,'a resumed process must never regenerate the tool_use');
+    assert.equal(await readFile(join(root,'saved.txt'),'utf8'),'must persist exactly once');
+  }finally{
+    if(guard)clearTimeout(guard);
+    if(child&&child.exitCode===null&&!child.killed)child.kill('SIGKILL');
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:150});
+  }
+});
+
 test('CLI validates session arguments without network access',()=>{
   const id=randomUUID();
   assert.equal(parseArgs(['--session-id',id,'run']).sessionId,id);
