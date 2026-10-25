@@ -214,6 +214,9 @@ export class SessionJournal {
         throw new Error('Invalid or modified session checkpoint chain.');
       }
       if (payload.type === 'session_checkpoint' && payload.version === 1) {
+        // v1 had no input kind; reject synthetic input records masquerading
+        // as a legacy snapshot, even with a recomputed checksum.
+        if(payload.kind === 'input')throw new Error('Legacy input checkpoint was never supported.');
         // Read-only migration of already shipped v1 whole-transcript records.
         // New writes always use source-style UUID/parentUuid message chains.
         if(this.#nodes.size)throw new Error('Cannot revert a session to legacy snapshots.');
@@ -234,6 +237,11 @@ export class SessionJournal {
           sessionId:this.#id,allowRoot:payload.root,previousLeaf:this.#leafUuid,
         });
         validateCommittedTranscript(restored.messages);
+        if(payload.kind === 'input' &&
+          (!hasPendingUserInput(restored.messages) || payload.entries.length !== 1 ||
+            payload.entries[0].type !== 'user')) {
+          throw new Error('Invalid persisted first-user checkpoint.');
+        }
         this.#nodes=restored.map;
         this.#leafUuid=payload.leafUuid;
         this.#messages=restored.messages;
