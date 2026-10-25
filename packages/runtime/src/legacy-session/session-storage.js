@@ -290,6 +290,9 @@ export class SessionJournal {
         hash!==digest(payload)) {
         throw new Error('Invalid or modified session checkpoint chain.');
       }
+      if(this.#lastKind==='tool_uncertain') {
+        throw new Error('Session has an unresolved post-tool context failure; continuation is fenced.');
+      }
       if (payload.type === 'session_checkpoint' && payload.version === 1) {
         // v1 had no input kind; reject synthetic input records masquerading
         // as a legacy snapshot, even with a recomputed checksum.
@@ -396,6 +399,9 @@ export class SessionJournal {
     if(this.#poisoned)throw new Error('Session journal is not writable.');
     await assertLockOwner(this.#lock,this.#lockToken);
     if(!CHECKPOINT_TYPES.has(kind))throw new TypeError('Invalid session checkpoint kind.');
+    if(this.#lastKind==='tool_uncertain') {
+      throw new Error('Session has an unresolved post-tool context failure; continuation is fenced.');
+    }
     validateCommittedTranscript(messages,{
       allowPendingTools:kind==='tool_pending',
       allowPartialTools:kind==='tool_partial',
