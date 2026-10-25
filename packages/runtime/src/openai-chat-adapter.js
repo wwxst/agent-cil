@@ -8,6 +8,7 @@
  */
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseSseStream } from './anthropic-messages-adapter.js';
+import { normalizeMessagesForAPI } from './legacy-query/normalize-messages-for-api.js';
 import {
   getBoundedRetryDelay,
   isRetryablePreStreamConnectionError,
@@ -46,7 +47,7 @@ function formatContent(content) {
 export function mapChatMessages(messages, system) {
   const output = [];
   if (system !== undefined) output.push({ role: 'system', content: system });
-  for (const message of messages) {
+  for (const message of normalizeMessagesForAPI(messages)) {
     if (!isRecord(message)) throw new TypeError('Invalid model history message.');
     if (message.role === 'assistant') {
       const content = typeof message.content === 'string'
