@@ -733,6 +733,65 @@ test('mapped-result witness validation or fsync failure permanently fences a sid
   }
 });
 
+
+test('real serial AgentLoop does not execute a later Write if the first pre-Hook durable witness fails',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Run two Writes'}];
+    await journal.append({messages:input,kind:'input'});
+    const tools=new ToolRegistry();
+    const writes=[];
+    tools.register({
+      name:'Write',description:'Source serial Write',
+      call:async ({name})=>{
+        writes.push(name);
+        await writeFile(join(root,name+'.txt'),name);
+        return {data:'written '+name};
+      },
+      mapToolResultToToolResultBlockParam:(data,id)=>({
+        type:'tool_result',tool_use_id:id,content:data,
+      }),
+    });
+    let requests=0;
+    const loop=new AgentLoop({
+      tools,maxTurns:3,permissionPolicy:async()=>({behavior:'allow'}),
+      hookWorkspace:root,postToolUseHooks:[{
+        type:'command',command:'node -e "process.exit(0)"',
+        timeout:5,matcher:'Write',
+      }],
+      onSessionCheckpoint:x=>journal.append(x),
+      onMappedToolResult:({mappedResult})=>
+        journal.appendMappedToolResult({
+          mappedResult:{...mappedResult,tool_use_id:'forged-result'},
+        }),
+      model:{async *stream(){
+        requests++;
+        yield {type:'tool_use',id:'first-tool',name:'Write',
+          input:{name:'first'}};
+        yield {type:'tool_use',id:'second-tool',name:'Write',
+          input:{name:'second'}};
+        yield {type:'message_end',stopReason:'tool_use'};
+      }},
+    });
+    await assert.rejects(loop.run({input:input[0].content}),
+      /not writable|does not belong/);
+    assert.deepEqual(writes,['first'],
+      'serial original executor must refuse second side effect after journaling failure');
+    assert.equal(requests,1,'no subsequent provider round');
+    assert.equal(await readFile(join(root,'first.txt'),'utf8'),'first');
+    await assert.rejects(readFile(join(root,'second.txt'),'utf8'),{code:'ENOENT'});
+    assert.equal(journal.needsToolReconciliation,true);
+    assert.deepEqual(journal.messages.slice(0,1),input);
+    await assert.rejects(journal.append({messages:[...journal.messages,{
+      role:'user',content:[{
+        type:'tool_result',tool_use_id:'first-tool',content:'forged',
+      }],
+    }],kind:'tool'}),/not writable/);
+    await journal.close();
+  });
+});
+
 test('source strictOrderedResults refuses a future sibling as the first durable partial result',async()=>{
   await workspace(async root=>{
     const journal=await openSessionJournal({workspace:root,sessionId:randomUUID()});
