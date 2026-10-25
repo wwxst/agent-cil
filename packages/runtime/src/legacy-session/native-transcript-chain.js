@@ -207,8 +207,31 @@ export function applyMessageChain({existing = new Map(),entries,leafUuid,session
        next.has(entry.uuid))throw new Error('Invalid or duplicate session chain entry.');
     if (i===0 && allowRoot && entry.parentUuid!==null)
       throw new Error('Session compact/migration boundary must start a root.');
-    if (entry.parentUuid!==expectedParent)
-      throw new Error('Session parentUuid chain is broken.');
+    if (entry.parentUuid!==expectedParent) {
+      // Original insertMessageChain() uses sourceToolAssistantUUID as the
+      // actual parent for sibling tool_results, even when a different result
+      // was just appended. Accept only results from the same authenticated
+      // assistant turn; unrelated forks remain invalid.
+      const previous=next.get(expectedParent);
+      const previousAssistant=previous?.sourceToolAssistantUUID
+        ? next.get(previous.sourceToolAssistantUUID) : undefined;
+      const source=entry.sourceToolAssistantUUID
+        ? next.get(entry.sourceToolAssistantUUID) : undefined;
+      const previousTurn=previousAssistant?.message?.id;
+      const sourceTurn=source?.message?.id;
+      const sameAssistant=previous?.sourceToolAssistantUUID===
+        entry.sourceToolAssistantUUID;
+      const sameTurn=typeof previousTurn==='string' && previousTurn.length>0 &&
+        previousTurn===sourceTurn &&
+        source?.sessionId===previousAssistant?.sessionId;
+      if(entry.type!=='user' || previous?.type!=='user' ||
+         !toolResults(previous.message).length ||
+         !entry.sourceToolAssistantUUID ||
+         !source || source.type!=='assistant' ||
+         (!sameAssistant && !sameTurn)) {
+        throw new Error('Session parentUuid chain is broken.');
+      }
+    }
     if(entry.sourceToolAssistantUUID!==undefined){
       const source=next.get(entry.sourceToolAssistantUUID);
       const ids=toolResults(entry.message);
