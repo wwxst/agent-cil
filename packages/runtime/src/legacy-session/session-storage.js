@@ -356,6 +356,8 @@ export class SessionJournal {
         this.#messages=structuredClone(payload.messages);
         this.#leafUuid=null;
       } else if(payload.type === 'session_commit' && payload.version === 2) {
+        if(payload.kind==='tool_mapped')
+          throw new Error('Mapped result witnesses must not masquerade as transcript entries.');
         if(this.#messages.length && !this.#leafUuid && !payload.migration)
           throw new Error('Legacy session migration boundary is missing.');
         if(payload.migration && (this.#leafUuid!==null || !this.#messages.length))
@@ -442,9 +444,14 @@ export class SessionJournal {
   }
   async appendMappedToolResult({mappedResult}={}) {
     if(this.#closed || this.#poisoned)throw new Error('Session journal is not writable.');
-    const copy=structuredClone(mappedResult);
+    let copy;
+    try {copy=structuredClone(mappedResult);}
+    catch(error){this.#poisoned=true;throw error;}
     const pending=this.#writeQueue.then(()=>this.#appendMappedResult(copy));
-    this.#writeQueue=pending.catch(()=>{});
+    // This callback only runs after a real side-effecting tool returned.
+    // A rejected witness must fence ALL subsequent session/model commits,
+    // not be downgraded to an ordinary model-visible tool error.
+    this.#writeQueue=pending.catch(()=>{this.#poisoned=true;});
     return pending;
   }
   async #appendMappedResult(mappedResult) {
@@ -452,6 +459,8 @@ export class SessionJournal {
     await assertLockOwner(this.#lock,this.#lockToken);
     const assistantUuid=this.#currentToolAssistantUuid();
     this.#validateMappedToolResult(mappedResult,assistantUuid);
+    if(Buffer.byteLength(JSON.stringify(mappedResult))>MAX_CHECKPOINT_BYTES)
+      throw new RangeError('Mapped tool result exceeds the 8 MiB recovery limit.');
     const payload={
       type:'session_mapped_result',version:2,
       sessionId:this.#id,workspace:this.#workspace,
@@ -482,6 +491,8 @@ export class SessionJournal {
     if(this.#poisoned)throw new Error('Session journal is not writable.');
     await assertLockOwner(this.#lock,this.#lockToken);
     if(!CHECKPOINT_TYPES.has(kind))throw new TypeError('Invalid session checkpoint kind.');
+    if(kind==='tool_mapped')
+      throw new TypeError('Mapped results must use appendMappedToolResult().');
     if(this.#lastKind==='tool_uncertain') {
       throw new Error('Session has an unresolved post-tool context failure; continuation is fenced.');
     }
@@ -514,6 +525,20 @@ export class SessionJournal {
         messages.length !== this.#messages.length + 1 ||
         JSON.stringify(messages.slice(0,-1)) !== JSON.stringify(this.#messages))) {
       throw new Error('A pending user checkpoint must append exactly one new user prompt.');
+    }
+    // Mapped non-MCP results are immutable across PostToolUse in original
+    // 2.1.88 toolExecution.ts. Hooks may contribute separate attachments,
+    // but cannot silently rewrite a previously fsynced result.
+    for(const message of messages.slice(this.#messages.length)) {
+      if(message.role!=='user' || !Array.isArray(message.content))continue;
+      for(const block of message.content) {
+        const mapped=this.#mappedResults.get(block?.tool_use_id);
+        if(block?.type==='tool_result' && mapped &&
+           JSON.stringify(mapped.mappedResult)!==JSON.stringify(block)) {
+          this.#poisoned=true;
+          throw new Error('PostToolUse altered a durably mapped tool result; session writes fenced.');
+        }
+      }
     }
     const encoded=JSON.stringify(messages);
     if(Buffer.byteLength(encoded)>MAX_CHECKPOINT_BYTES)
