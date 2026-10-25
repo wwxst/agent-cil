@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -222,6 +222,54 @@ test('real CLI resumes an unanswered persisted user prompt after first provider 
     const repeated=await childProcess([...flags,'--resume',id],env);
     assert.equal(repeated.code,2,repeated.stdout+repeated.stderr);
     assert.equal(requests.length,2,'final answer cannot be silently regenerated');
+  }finally{
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  }
+});
+
+
+test('real CLI fences replaced transcript after Write and does not issue a follow-up model request', {
+  timeout:55000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-transcript-fence-'));
+  const id=randomUUID();
+  const log=join(root,'.agent-cil','sessions',id,'transcript.jsonl');
+  let requests=0;
+  const server=createServer(async(req,res)=>{
+    const chunks=[];for await(const c of req)chunks.push(c);
+    requests++;
+    // The CLI has already fsynced its first user input. Replace its live
+    // transcript with a distinct inode of the same length while preserving
+    // the owner lock, then make the model request a side-effecting Write.
+    // Without a store fence, its later tool-result commit silently extends
+    // a foreign file and a second model request can run on corrupted state.
+    const original=await readFile(log,'utf8');
+    await rename(log,log+'.displaced');
+    await writeFile(log,original);
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.end(writeToolStream());
+  });
+  try{
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    const flags=['--print','--provider','deepseek','--cwd',root,
+      '--max-turns','3','--max-retries','0','--compact-threshold','0',
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic'];
+    const env={DEEPSEEK_API_KEY:'mock-fence-token'};
+    const result=await childProcess([
+      ...flags,'--session-id',id,'--allow-edits','Write saved.txt once.',
+    ],env);
+    assert.equal(result.code,1,result.stdout+result.stderr);
+    assert.match(result.stderr,/transcript was externally replaced or modified; writes fenced/);
+    assert.equal(requests,1,'a failed tool-result commit must not reach the second model request');
+    assert.equal(await readFile(join(root,'saved.txt'),'utf8'),
+      'must persist exactly once','tool can have acted before a rejected durable checkpoint');
+    const records=(await readFile(log,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.map(x=>x.kind),['input'],
+      'the substituted transcript must not acquire an untrusted tool_result');
   }finally{
     server.closeAllConnections?.();
     if(server.listening)await new Promise(resolve=>server.close(resolve));
