@@ -164,8 +164,10 @@ test('failed durable checkpoint blocks the second provider round even though the
   });
   const loop=new AgentLoop({
     tools,permissionPolicy:async()=>({behavior:'allow'}),
-    onSessionCheckpoint:async()=>{
-      throw new Error('ENOSPC: journal fsync unavailable');
+    onSessionCheckpoint:async({kind})=>{
+      // The assistant tool_use precheckpoint must succeed; only the later
+      // tool_result fsync fails after the side-effecting tool ran.
+      if(kind==='tool')throw new Error('ENOSPC: journal fsync unavailable');
     },
     model:{async *stream(){
       requests++;
