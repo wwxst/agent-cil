@@ -91,6 +91,7 @@ export class AgentLoop extends EventEmitter {
   #hookWorkspace;
   #toolResultStorage;
   #onSessionCheckpoint;
+  #onMappedToolResult;
   #requireCanUseTool;
   // Original REPL passes updatedToolUseContext and committed history into
   // each next query() invocation of the same interactive session.
@@ -111,6 +112,7 @@ export class AgentLoop extends EventEmitter {
     hookWorkspace,
     toolResultStorage,
     onSessionCheckpoint,
+    onMappedToolResult,
     requireCanUseTool = false,
   } = {}) {
     super();
@@ -151,6 +153,10 @@ export class AgentLoop extends EventEmitter {
       throw new TypeError('onSessionCheckpoint must be a function.');
     }
     this.#onSessionCheckpoint = onSessionCheckpoint;
+    if(onMappedToolResult!==undefined && typeof onMappedToolResult!=='function') {
+      throw new TypeError('onMappedToolResult must be a function.');
+    }
+    this.#onMappedToolResult = onMappedToolResult;
     // Original toolHooks.ts consumes the fork/query requireCanUseTool
     // capability flag. It defaults false for the standalone parent CLI;
     // true is explicitly supplied only by contexts requiring final review.
@@ -713,7 +719,16 @@ export class AgentLoop extends EventEmitter {
         },
         // Original 2.1.88 toolExecution.ts processes/memoizes the result
         // BEFORE invoking PostToolUse. Preserve the exact raw tool data.
-        onToolResult: async ({ toolOutput }) => {
+        onToolResult: async ({ toolOutput, mappedResult }) => {
+          // Pinned 2.1.88 toolExecution.ts addToolResult() constructs a
+          // mapped non-MCP result BEFORE yielding runPostToolUseHooks().
+          // A command hook can outlive the CLI process; fsync a recovery
+          // witness before spawning it without fabricating a model turn.
+          if(this.#postToolUseHooks.length && this.#onMappedToolResult) {
+            await this.#onMappedToolResult({
+              toolUseId:toolUse.id, mappedResult:structuredClone(mappedResult),
+            });
+          }
           if (!this.#postToolUseHooks.length) return;
           await this.#emitPostToolUseHooks({
             tool, toolUse, turn, signal, executionInput, toolOutput,
