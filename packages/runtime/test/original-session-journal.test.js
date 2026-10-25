@@ -290,6 +290,71 @@ test('input checkpoint refuses fabricated result blocks and preexisting transcri
   });
 });
 
+
+test('original assistant tool_use commits before results and blocks unsafe promptless replay after restart',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'write the requested file'}];
+    const pending=[...input,{role:'assistant',content:[{
+      type:'tool_use',id:'pending-on-crash',name:'Write',
+      input:{file_path:'checked.txt',content:'side effect may have occurred'},
+    }]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    assert.equal(journal.needsToolReconciliation,true);
+    assert.equal(journal.canContinueWithoutPrompt,false);
+    const raw=(await readFile(journal.path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(raw.map(x=>x.kind),['input','tool_pending']);
+    assert.equal(raw[1].entries[0].parentUuid,raw[0].leafUuid);
+    await journal.close();
+    const reopened=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(reopened.needsToolReconciliation,true);
+    assert.deepEqual(reopened.messages,pending);
+    const completed=[...pending,{role:'user',content:[{
+      type:'tool_result',tool_use_id:'pending-on-crash',content:'write succeeded',
+    }]}];
+    await reopened.append({messages:completed,kind:'tool'});
+    assert.equal(reopened.needsToolReconciliation,false);
+    assert.equal(reopened.canContinueWithoutPrompt,true);
+    await reopened.close();
+    const again=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(again.messages,completed);
+    const records=(await readFile(again.path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(records[2].entries.length,1);
+    assert.equal(records[2].entries[0].sourceToolAssistantUUID,records[1].leafUuid);
+    assert.equal(records[2].entries[0].parentUuid,records[1].leafUuid);
+    await again.close();
+  });
+});
+
+test('pending tool source checkpoint rejects non-tool assistant, rewrites, and forged tool associations',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'run'}];
+    await journal.append({messages:input,kind:'input'});
+    await assert.rejects(journal.append({messages:[...input,
+      {role:'assistant',content:[{type:'text',text:'not a tool'}]}],
+      kind:'tool_pending'}),/requires one complete assistant tool_use batch/);
+    await assert.rejects(journal.append({messages:[
+      {role:'user',content:'rewritten'},
+      {role:'assistant',content:[{type:'tool_use',id:'other',name:'Write',input:{}}]},
+    ],kind:'tool_pending'}),/must append exactly one assistant tool_use/);
+    await journal.append({messages:[...input,
+      {role:'assistant',content:[{type:'tool_use',id:'original',name:'Write',input:{}}]}],
+      kind:'tool_pending'});
+    await assert.rejects(journal.append({messages:[...input,
+      {role:'assistant',content:[{type:'tool_use',id:'original',name:'Write',input:{}}]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:'forged',content:'bad'}]}],
+      kind:'tool'}),/no matching unfinished tool_use/);
+    await journal.close();
+    const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(resumed.needsToolReconciliation,true);
+    await resumed.close();
+  });
+});
+
 test('source Query promptless resume is restricted to a fully paired terminal tool batch', async()=>{
   assert.equal(hasPendingToolResponse(transcript),true);
   assert.equal(hasPendingToolResponse(transcript.slice(0,2)),false);
