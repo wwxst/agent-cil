@@ -18,7 +18,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MAX_JOURNAL_BYTES = 64 * 1024 * 1024;
 const MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024;
 const ZERO = '0'.repeat(64);
-const CHECKPOINT_TYPES = new Set(['tool', 'finished', 'compact']);
+const CHECKPOINT_TYPES = new Set(['input', 'tool', 'finished', 'compact']);
 const NOFOLLOW = constants.O_NOFOLLOW || 0;
 function digest(payload) { return createHash('sha256').update(JSON.stringify(payload)).digest('hex'); }
 function validMessage(message) {
@@ -52,6 +52,14 @@ export function hasPendingToolResponse(messages) {
     new Set(ids).size === ids.length &&
     results.length === new Set(results).size &&
     ids.every(id => results.includes(id));
+}
+// Source 2.1.88 insertMessageChain() materializes the first user message
+// before a provider responds. A persisted, unanswered user prompt is safe to
+// retry; a tool_result is not an ordinary new prompt.
+export function hasPendingUserInput(messages) {
+  const last = Array.isArray(messages) ? messages.at(-1) : undefined;
+  return last?.role === 'user' && typeof last.content === 'string' &&
+    last.content.trim().length > 0;
 }
 export function validateCommittedTranscript(messages) {
   if (!Array.isArray(messages) || messages.length === 0 ||
@@ -180,8 +188,9 @@ export class SessionJournal {
   get messages(){return structuredClone(this.#messages);}
   get path(){return this.#path;}
   get canContinueWithoutPrompt(){
-    return (this.#lastKind === 'tool' || this.#lastKind === 'compact') &&
-      hasPendingToolResponse(this.#messages);
+    return ((this.#lastKind === 'tool' || this.#lastKind === 'compact') &&
+      hasPendingToolResponse(this.#messages)) ||
+      (this.#lastKind === 'input' && hasPendingUserInput(this.#messages));
   }
   async load() {
     await assertLockOwner(this.#lock,this.#lockToken);
@@ -262,6 +271,11 @@ export class SessionJournal {
     await assertLockOwner(this.#lock,this.#lockToken);
     if(!CHECKPOINT_TYPES.has(kind))throw new TypeError('Invalid session checkpoint kind.');
     validateCommittedTranscript(messages);
+    if(kind === 'input' && (!hasPendingUserInput(messages) ||
+        messages.length !== this.#messages.length + 1 ||
+        JSON.stringify(messages.slice(0,-1)) !== JSON.stringify(this.#messages))) {
+      throw new Error('A pending user checkpoint must append exactly one new user prompt.');
+    }
     const encoded=JSON.stringify(messages);
     if(Buffer.byteLength(encoded)>MAX_CHECKPOINT_BYTES)
       throw new RangeError('Session checkpoint exceeds 8 MiB.');
