@@ -531,9 +531,9 @@ test('real AgentLoop invokes original PostToolUse after Write, and a corrupted H
       tools,maxTurns:3,
       permissionPolicy:async()=>({behavior:'allow'}),
       hookWorkspace:root,
-      postToolUseHooks:[{matcher:'Write',hooks:[{
-        type:'command',command:'node posthook.cjs',timeout:7,
-      }]}],
+      postToolUseHooks:[{
+        type:'command',command:'node posthook.cjs',timeout:7,matcher:'Write',
+      }],
       onSessionCheckpoint:checkpoint=>journal.append(checkpoint),
       model:{async *stream(){
         rounds++;
