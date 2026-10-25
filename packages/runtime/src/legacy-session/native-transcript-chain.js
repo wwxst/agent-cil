@@ -38,7 +38,7 @@ function toolResults(message) {
  */
 export function insertMessageChain({
   messages, previousMessages = [], previousLeaf = null,
-  sessionId, kind, isMigration = false,
+  sessionId, kind, isMigration = false, previousToolAssistantUuid = null,
 } = {}) {
   if (!Array.isArray(messages) || !Array.isArray(previousMessages) ||
       !isUUID(sessionId)) throw new TypeError('Invalid source message-chain inputs.');
@@ -66,8 +66,10 @@ export function insertMessageChain({
     if (resultingIDs.length) {
       const prior = entries.at(-1);
       const source = prior?.type === 'assistant' ? prior
-        : (!root && entries.length===0 && previousMessages.at(-1)?.role==='assistant'
-          ? null : undefined);
+        : (!root && entries.length===0 && previousToolAssistantUuid &&
+           previousMessages.at(-1)?.role==='assistant'
+          ? {type:'assistant',uuid:previousToolAssistantUuid,
+             message:previousMessages.at(-1)} : undefined);
       // In a completed source tool batch, the result's logical parent is
       // the assistant tool_use message, never an arbitrary user prompt.
       if (source && resultingIDs.every(id => toolUses(source.message).includes(id))) {
