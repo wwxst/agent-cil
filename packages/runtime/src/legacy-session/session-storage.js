@@ -180,6 +180,29 @@ export class SessionJournal {
   #lastKind;
   #nodes = new Map();
   #leafUuid = null;
+  // 2.1.304 fences transcript writes after storage failures. Record the
+  // actual on-disk file identity and committed length as a Node fd adapter;
+  // a session lock alone does not protect against external replacement.
+  #fileState;
+  async attachFile() {
+    const info=await lstat(this.#path);
+    if(!info.isFile() || info.isSymbolicLink() || info.size>MAX_JOURNAL_BYTES)
+      throw new Error('Session transcript is not a valid regular file.');
+    this.#fileState={dev:info.dev,ino:info.ino,size:info.size};
+  }
+  async #assertTranscriptFile(handle,expectedSize) {
+    const info=await handle.stat();
+    const atPath=await lstat(this.#path);
+    const expected=this.#fileState;
+    if(!expected || !info.isFile() || !atPath.isFile() ||
+       atPath.isSymbolicLink() || info.size!==expectedSize ||
+       info.dev!==expected.dev || info.ino!==expected.ino ||
+       atPath.dev!==expected.dev || atPath.ino!==expected.ino ||
+       atPath.size!==expectedSize) {
+      throw new Error('Session transcript was externally replaced or modified; writes fenced.');
+    }
+    return info;
+  }
   constructor({path,lock,lockToken,id,workspace}){
     this.#path=path;this.#lock=lock;this.#lockToken=lockToken;
     this.#id=id;this.#workspace=workspace;
@@ -196,8 +219,17 @@ export class SessionJournal {
     await assertLockOwner(this.#lock,this.#lockToken);
     await safeExistingFile(this.#path);
     const file=await open(this.#path,constants.O_RDONLY|NOFOLLOW);
-    let data;
-    try{data=await file.readFile('utf8');}finally{await file.close();}
+    let data,readIdentity;
+    try{
+      const before=await file.stat();
+      data=await file.readFile('utf8');
+      const after=await file.stat();
+      if(before.dev!==after.dev || before.ino!==after.ino ||
+         before.size!==after.size || Buffer.byteLength(data)!==after.size) {
+        throw new Error('Session transcript changed while being loaded.');
+      }
+      readIdentity=after;
+    }finally{await file.close();}
     if(!data.includes('\n'))throw new Error('Session has no complete checkpoint.');
     const lastLine=data.lastIndexOf('\n');
     const complete=data.slice(0,lastLine+1);
@@ -259,8 +291,18 @@ export class SessionJournal {
     if(lastLine+1 < data.length){
       await assertLockOwner(this.#lock,this.#lockToken);
       const handle=await open(this.#path,constants.O_WRONLY|NOFOLLOW);
-      try{await handle.truncate(Buffer.byteLength(complete));await handle.sync();}
-      finally{await handle.close();}
+      try{
+        const before=await handle.stat();
+        const atPath=await lstat(this.#path);
+        if(before.dev!==readIdentity.dev || before.ino!==readIdentity.ino ||
+           before.size!==readIdentity.size ||
+           atPath.dev!==readIdentity.dev || atPath.ino!==readIdentity.ino ||
+           atPath.size!==readIdentity.size) {
+          throw new Error('Session transcript changed before torn-tail recovery.');
+        }
+        await handle.truncate(Buffer.byteLength(complete));
+        await handle.sync();
+      }finally{await handle.close();}
     }
     return this.messages;
   }
@@ -315,19 +357,26 @@ export class SessionJournal {
     const hash=digest(payload);
     const line=JSON.stringify({...payload,hash})+'\n';
     await assertLockOwner(this.#lock,this.#lockToken);
-    const handle=await open(this.#path,constants.O_WRONLY|constants.O_APPEND|NOFOLLOW);
+    let handle;
+    let committedFile;
     try {
-      const before=(await handle.stat()).size;
-      if(before+Buffer.byteLength(line)>MAX_JOURNAL_BYTES){
+      handle=await open(this.#path,constants.O_WRONLY|constants.O_APPEND|NOFOLLOW);
+      const before=this.#fileState?.size;
+      await this.#assertTranscriptFile(handle,before);
+      const nextSize=before+Buffer.byteLength(line);
+      if(nextSize>MAX_JOURNAL_BYTES){
         throw new RangeError('Session journal exceeds 64 MiB.');
       }
       await handle.writeFile(line);
       await handle.sync();
-      // If another owner stole the lock while a write was in flight, fail
-      // closed before publishing this checkpoint as committed to Query.
+      // The path must still name this exact append-only transcript after
+      // fsync. A rename/recreate race is not authorization to publish a
+      // checkpoint to Query or to issue another model request.
       await assertLockOwner(this.#lock,this.#lockToken);
+      committedFile=await this.#assertTranscriptFile(handle,nextSize);
     }catch(error){this.#poisoned=true;throw error;}
-    finally{await handle.close();}
+    finally{await handle?.close();}
+    this.#fileState={dev:committedFile.dev,ino:committedFile.ino,size:committedFile.size};
     this.#nodes=validated.map;
     this.#leafUuid=chain.leafUuid;
     this.#messages=validated.messages;
@@ -375,6 +424,7 @@ export async function openSessionJournal({workspace,sessionId=randomUUID(),resum
         constants.O_WRONLY|NOFOLLOW,0o600);
       await handle.close();
     }
+    await journal.attachFile();
     return journal;
   }catch(error){await journal.close();throw error;}
 }
