@@ -1070,6 +1070,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   process.stderr.write('[session] ' + journal.id + (options.resume ? ' resumed' : ' created') + '\n');
   if(journal.needsToolReconciliation) {
+    if(journal.mappedToolResults.length) {
+      process.stderr.write('[session] ' + journal.mappedToolResults.length +
+        ' mapped tool result(s) saved before PostToolUse; Hook completion still requires reconciliation.\n');
+    }
     // Original Session retains an assistant tool_use even when the process
     // dies before its matching tool_result. Never replay that assistant
     // request through the model: Write/Bash may already have taken effect.
@@ -1103,6 +1107,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // portable Node journal implements only completed checkpoint records.
     // Await it in Query before any subsequent provider request.
     onSessionCheckpoint: checkpoint => journal.append(checkpoint),
+    // The source non-MCP mapped result exists before PostToolUse. Preserve
+    // it in the same fsynced, locked journal while the command Hook runs.
+    onMappedToolResult: result => journal.appendMappedToolResult(result),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
       permissionContext,
