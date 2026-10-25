@@ -9,6 +9,7 @@ import { AgentLoop } from '../src/agent-loop.js';
 import { ToolRegistry } from '../src/tool-registry.js';
 import {
   openSessionJournal, validateCommittedTranscript, hasPendingToolResponse,
+  hasPendingUserInput,
 } from '../src/legacy-session/session-storage.js';
 
 const transcript=[
@@ -227,6 +228,65 @@ test('close drains a pending original-style write before releasing the session o
     assert.deepEqual(resumed.messages,transcript);
     assert.equal(resumed.canContinueWithoutPrompt,true);
     await resumed.close();
+  });
+});
+
+
+test('original first user message persists before SSE, survives restart, and cannot masquerade as a tool batch',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const prompt='Preserved before an unsuccessful first model request';
+    const input=[{role:'user',content:prompt}];
+    assert.equal(hasPendingUserInput(input),true);
+    assert.equal(hasPendingUserInput(transcript),false,
+      'tool_result arrays must never count as an unanswered new prompt');
+    await journal.append({messages:input,kind:'input'});
+    assert.equal(journal.canContinueWithoutPrompt,true);
+    const file=journal.path;
+    await journal.close();
+    const first=JSON.parse((await readFile(file,'utf8')).trim());
+    assert.equal(first.kind,'input');
+    assert.equal(first.entries.length,1);
+    assert.equal(first.entries[0].parentUuid,null);
+    const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(resumed.messages,input);
+    assert.equal(resumed.canContinueWithoutPrompt,true);
+    const finished=[...input,{role:'assistant',content:[{type:'text',text:'continued'}]}];
+    await resumed.append({messages:finished,kind:'finished'});
+    assert.equal(resumed.canContinueWithoutPrompt,false);
+    await resumed.close();
+    const again=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(again.messages,finished);
+    assert.equal(again.canContinueWithoutPrompt,false);
+    await again.close();
+    const records=(await readFile(file,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.map(x=>x.kind),['input','finished']);
+    assert.equal(records[1].entries[0].parentUuid,records[0].leafUuid);
+  });
+});
+
+test('input checkpoint refuses fabricated result blocks and preexisting transcript rewrites',async()=>{
+  await workspace(async root=>{
+    const journal=await openSessionJournal({workspace:root,sessionId:randomUUID()});
+    try {
+      await assert.rejects(journal.append({
+        messages:transcript,kind:'input',
+      }),/exactly one new user prompt/);
+      await journal.append({messages:[{role:'user',content:'first'}],kind:'input'});
+      await assert.rejects(journal.append({messages:[
+        {role:'user',content:'rewritten'},
+        {role:'user',content:'second'},
+      ],kind:'input'}),/exactly one new user prompt/);
+      await assert.rejects(journal.append({
+        messages:[{role:'user',content:'first'},
+          {role:'user',content:[{type:'tool_result',tool_use_id:'orphan',content:'x'}]}],
+        kind:'input',
+      }),/no matching unfinished tool_use/);
+      const lines=(await readFile(journal.path,'utf8')).trim().split('\n');
+      assert.equal(lines.length,1,'failed checks must not write checkpoints');
+      assert.deepEqual(journal.messages,[{role:'user',content:'first'}]);
+    }finally{await journal.close();}
   });
 });
 
