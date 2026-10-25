@@ -1073,7 +1073,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // Original Session retains an assistant tool_use even when the process
     // dies before its matching tool_result. Never replay that assistant
     // request through the model: Write/Bash may already have taken effect.
-    printError('Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
+    printError(journal.needsToolContextReview
+      ? 'Session contains completed tool results but failed Hook/native context normalization. Inspect the preserved results and Hook side effects before continuing; automatic replay is unsafe.'
+      : 'Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
     await journal.close();
     return 2;
   }
@@ -1147,7 +1149,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   const runPrompt = async (text, { plain = false } = {}) => {
     if(journal.needsToolReconciliation) {
-      printError('Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
+      printError(journal.needsToolContextReview
+      ? 'Session contains completed tool results but failed Hook/native context normalization. Inspect the preserved results and Hook side effects before continuing; automatic replay is unsafe.'
+      : 'Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
       return 2;
     }
     activeController = new AbortController();
@@ -1196,7 +1200,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return 0;
     } catch (error) {
       process.stdout.write('\n');
-      if (committedHistory) {
+      if(journal.needsToolContextReview) {
+        // Tool mapping completed, but Hook/native context normalization
+        // failed. Preserve the confirmed final tool result without pretending
+        // that the failed post-tool context can be safely replayed.
+        history=journal.messages;
+        if(interactiveInput) {
+          process.stderr.write('[recovery] Completed tool results were saved, but post-tool context needs manual review. Automatic replay is blocked.\n');
+        }
+      } else if (committedHistory) {
         // The erroring model response is NOT committed. Only the preceding
         // completed tool rounds (including the original user request) survive.
         history = committedHistory;
