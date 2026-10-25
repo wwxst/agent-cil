@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { randomUUID, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm, readFile, appendFile, symlink, mkdir, writeFile, stat, realpath } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, appendFile, symlink, mkdir, writeFile, stat, realpath, rename, truncate } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentLoop } from '../src/agent-loop.js';
@@ -434,6 +434,53 @@ test('a non-compact append cannot silently replace earlier committed transcript 
     await assert.rejects(journal.append({messages:rewritten,kind:'tool'}),
       /Non-compact session transition rewrites already committed messages/);
     assert.deepEqual(journal.messages,transcript);
+    await journal.close();
+  });
+});
+
+
+test('2.1.304 write fence rejects same-sized external transcript replacement and keeps result ancestry intact',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    await journal.append({messages:transcript,kind:'tool'});
+    const before=await readFile(journal.path,'utf8');
+    const displaced=journal.path+'.displaced';
+    await rename(journal.path,displaced);
+    await writeFile(journal.path,before);
+    const completed=[...transcript,
+      {role:'assistant',content:[{type:'text',text:'must not append'}]}];
+    await assert.rejects(journal.append({messages:completed,kind:'finished'}),
+      /writes fenced/);
+    assert.equal(await readFile(journal.path,'utf8'),before,
+      'replacement inode must not receive unauthorized same-sized continuation');
+    await assert.rejects(journal.append({messages:completed,kind:'finished'}),
+      /not writable/,'once integrity was lost, the process must remain fenced');
+    assert.deepEqual(journal.messages,transcript,
+      'model-visible history must not claim an uncommitted tool completion');
+    await journal.close();
+    await rm(journal.path);
+    await rename(displaced,journal.path);
+    const recovered=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(recovered.messages,transcript);
+    assert.equal(recovered.canContinueWithoutPrompt,true);
+    await recovered.close();
+  });
+});
+
+test('2.1.304 write fence refuses an externally truncated live session journal',async()=>{
+  await workspace(async root=>{
+    const journal=await openSessionJournal({workspace:root,sessionId:randomUUID()});
+    await journal.append({messages:transcript,kind:'tool'});
+    const before=await readFile(journal.path,'utf8');
+    await truncate(journal.path,Buffer.byteLength(before)-1);
+    const completed=[...transcript,
+      {role:'assistant',content:[{type:'text',text:'should not commit'}]}];
+    await assert.rejects(journal.append({messages:completed,kind:'finished'}),
+      /writes fenced/);
+    assert.equal((await readFile(journal.path,'utf8')).length,before.length-1);
+    await assert.rejects(journal.append({messages:completed,kind:'finished'}),
+      /not writable/);
     await journal.close();
   });
 });
