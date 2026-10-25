@@ -11,6 +11,7 @@ import {
   openSessionJournal, validateCommittedTranscript, hasPendingToolResponse,
   hasPendingUserInput,
 } from '../src/legacy-session/session-storage.js';
+import { buildConversationChain } from '../src/legacy-session/native-transcript-chain.js';
 
 const transcript=[
   {role:'user',content:'create a file'},
@@ -292,6 +293,91 @@ test('input checkpoint refuses fabricated result blocks and preexisting transcri
   });
 });
 
+
+
+test('source recoverOrphanedParallelToolResults preserves both off-chain sibling results and assistant content blocks',()=>{
+  const sessionId=randomUUID(),userId=randomUUID(),aId=randomUUID(),bId=randomUUID();
+  const resultAId=randomUUID(),resultBId=randomUUID();
+  const base={type:'user',uuid:userId,parentUuid:null,sessionId,
+    message:{role:'user',content:'Run both tools'}};
+  const a={type:'assistant',uuid:aId,parentUuid:userId,sessionId,
+    message:{role:'assistant',id:'same-streamed-message',content:[{
+      type:'tool_use',id:'one',name:'Read',input:{file_path:'one.txt'},
+    }]}};
+  const b={type:'assistant',uuid:bId,parentUuid:aId,sessionId,
+    message:{role:'assistant',id:'same-streamed-message',content:[{
+      type:'tool_use',id:'two',name:'Read',input:{file_path:'two.txt'},
+    }]}};
+  const ra={type:'user',uuid:resultAId,parentUuid:aId,
+    sourceToolAssistantUUID:aId,sessionId,
+    message:{role:'user',content:[{
+      type:'tool_result',tool_use_id:'one',content:'one completed',
+    }]}};
+  const rb={type:'user',uuid:resultBId,parentUuid:bId,
+    sourceToolAssistantUUID:bId,sessionId,
+    message:{role:'user',content:[{
+      type:'tool_result',tool_use_id:'two',content:'two completed',
+    }]}};
+  const nodes=new Map([base,a,b,ra,rb].map(node=>[node.uuid,node]));
+  const rebuilt=buildConversationChain(nodes,resultBId);
+  assert.deepEqual(rebuilt.map(m=>m.role),['user','assistant','assistant','user','user']);
+  assert.deepEqual(rebuilt.filter(m=>m.role==='user')
+    .flatMap(m=>Array.isArray(m.content)?m.content:[])
+    .filter(b=>b.type==='tool_result').map(b=>b.tool_use_id),['one','two']);
+  assert.doesNotThrow(()=>validateCommittedTranscript(rebuilt));
+  // The old post-pass does not accidentally attach a sibling from a
+  // different session, even when it has the same provider message ID.
+  const forged={...b,uuid:randomUUID(),sessionId:randomUUID()};
+  nodes.set(forged.uuid,forged);
+  assert.deepEqual(buildConversationChain(nodes,resultBId),rebuilt);
+});
+
+test('active SessionJournal reload recovers sibling results from old-source parentUUID fork and can continue without replay',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Read both files'}];
+    const pending=[...input,{role:'assistant',id:'parallel-turn',content:[
+      {type:'tool_use',id:'read-one',name:'Read',input:{file_path:'one'}},
+      {type:'tool_use',id:'read-two',name:'Read',input:{file_path:'two'}},
+    ]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    const file=journal.path;
+    await journal.close();
+    const source=(await readFile(file,'utf8')).trim().split('\n').map(JSON.parse);
+    const prior=source.at(-1),assistantUuid=prior.leafUuid;
+    const makeResult=(uuid,toolUseId)=>({
+      type:'user',uuid,parentUuid:assistantUuid,
+      sourceToolAssistantUUID:assistantUuid,sessionId:id,
+      message:{role:'user',content:[{
+        type:'tool_result',tool_use_id:toolUseId,content:'result:'+toolUseId,
+      }]},
+    });
+    const one=makeResult(randomUUID(),'read-one');
+    const two=makeResult(randomUUID(),'read-two');
+    const payload={type:'session_commit',version:2,sessionId:id,
+      workspace:await realpath(root),kind:'tool',
+      sequence:prior.sequence+1,previousHash:prior.hash,
+      root:false,leafUuid:two.uuid,entries:[one,two],
+    };
+    const hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    await appendFile(file,JSON.stringify({...payload,hash})+'\n');
+    const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(resumed.needsToolReconciliation,false);
+    assert.equal(resumed.canContinueWithoutPrompt,true);
+    assert.deepEqual(resumed.messages.slice(2).map(m=>m.content[0].tool_use_id),
+      ['read-one','read-two'],'do not drop first completed result on resume');
+    const finished=[...resumed.messages,
+      {role:'assistant',content:[{type:'text',text:'Both read results are visible'}]}];
+    await resumed.append({messages:finished,kind:'finished'});
+    await resumed.close();
+    const again=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(again.messages,finished);
+    assert.equal(again.canContinueWithoutPrompt,false);
+    await again.close();
+  });
+});
 
 test('original assistant tool_use commits before results and blocks unsafe promptless replay after restart',async()=>{
   await workspace(async root=>{
