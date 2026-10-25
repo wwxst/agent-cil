@@ -584,6 +584,65 @@ test('real CLI SIGKILL after first of two Writes keeps first individual tool_res
   }
 });
 
+
+test('real CLI refuses checksum-valid out-of-order partial results before any model request', {
+  timeout:55000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-partial-order-'));
+  const id=randomUUID();
+  let requests=0;
+  const server=createServer(async(req,res)=>{
+    for await(const chunk of req)void chunk;
+    requests++;
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.end(finalStream());
+  });
+  try{
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Run two Writes'}];
+    const pending=[...input,{role:'assistant',content:[
+      {type:'tool_use',id:'first',name:'Write',
+        input:{file_path:'one',content:'first'}},
+      {type:'tool_use',id:'second',name:'Write',
+        input:{file_path:'two',content:'second'}},
+    ]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    const file=journal.path;
+    await journal.close();
+    const existing=(await readFile(file,'utf8')).trim().split('\n').map(JSON.parse);
+    const previous=existing.at(-1),source=previous.leafUuid;
+    const result={type:'user',uuid:randomUUID(),parentUuid:source,
+      sourceToolAssistantUUID:source,sessionId:id,
+      message:{role:'user',content:[{
+        type:'tool_result',tool_use_id:'second',content:'unauthorized skipped predecessor',
+      }]}};
+    const payload={type:'session_commit',version:2,sessionId:id,
+      workspace:await realpath(root),kind:'tool_partial',
+      sequence:previous.sequence+1,previousHash:previous.hash,
+      root:false,leafUuid:result.uuid,entries:[result]};
+    const hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    await appendFile(file,JSON.stringify({...payload,hash})+'\n');
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    const flags=['--print','--provider','deepseek','--cwd',root,
+      '--max-retries','0','--compact-threshold','0',
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic'];
+    const env={DEEPSEEK_API_KEY:'mock-ordered-result-token'};
+    const run=await childProcess([...flags,'--resume',id],env);
+    assert.equal(run.code,2,run.stdout+run.stderr);
+    assert.match(run.stderr,/ordered prefix/);
+    assert.equal(requests,0,'invalid source result ancestry must fail before SSE');
+    assert.equal((await readFile(file,'utf8')).trim().split('\n').length,3,
+      'rejected journal must be left intact for repair');
+  }finally{
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:150});
+  }
+});
+
 test('CLI validates session arguments without network access',()=>{
   const id=randomUUID();
   assert.equal(parseArgs(['--session-id',id,'run']).sessionId,id);
