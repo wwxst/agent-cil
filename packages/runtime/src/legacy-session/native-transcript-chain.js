@@ -103,8 +103,72 @@ export function insertMessageChain({
   return {entries, leafUuid:parentUuid, root};
 }
 
-/** Reconstruct the source parentUuid chain from the last committed leaf,
- * instead of treating an arbitrary snapshot or uncommitted leaf as history.
+/**
+ * Direct dependency closure of 2.1.88 sessionStorage.ts
+ * recoverOrphanedParallelToolResults() after buildConversationChain().
+ * Parent UUIDs of tool_results intentionally point to their source assistant,
+ * so parallel sibling results form a DAG, not one simple linked list.
+ * Recover only source-validated siblings from the same session and turn.
+ * Do not import unrelated off-chain messages into the provider context.
+ */
+function recoverOrphanedParallelToolResults(messageMap, chain, visited) {
+  const chainAssistants=chain.filter(node=>node.type==='assistant');
+  if(!chainAssistants.length)return chain;
+  const groupKey=node=>node.message?.id && typeof node.message.id==='string'
+    ? node.sessionId+'\\0'+node.message.id : node.uuid;
+  const assistantsByGroup=new Map();
+  const resultsByAssistant=new Map();
+  for(const node of messageMap.values()){
+    if(node.type==='assistant'){
+      const key=groupKey(node);
+      const group=assistantsByGroup.get(key)??[];
+      group.push(node);
+      assistantsByGroup.set(key,group);
+    } else if(node.type==='user' && node.parentUuid &&
+              node.sourceToolAssistantUUID===node.parentUuid &&
+              toolResults(node.message).length){
+      const source=messageMap.get(node.parentUuid);
+      const resultIds=toolResults(node.message);
+      if(source?.type!=='assistant' || source.sessionId!==node.sessionId ||
+         !resultIds.every(id=>toolUses(source.message).includes(id)))continue;
+      const group=resultsByAssistant.get(source.uuid)??[];
+      group.push(node);
+      resultsByAssistant.set(source.uuid,group);
+    }
+  }
+  const insertions=new Map(), processed=new Set();
+  for(const assistant of chainAssistants){
+    const key=groupKey(assistant);
+    if(processed.has(key))continue;
+    processed.add(key);
+    const siblings=assistantsByGroup.get(key)??[assistant];
+    const onChainGroup=chainAssistants.filter(node=>groupKey(node)===key);
+    const anchor=onChainGroup.at(-1);
+    const orphanedSiblings=siblings.filter(node=>!visited.has(node.uuid));
+    const orphanedResults=[];
+    for(const member of siblings){
+      for(const result of resultsByAssistant.get(member.uuid)??[]){
+        if(!visited.has(result.uuid))orphanedResults.push(result);
+      }
+    }
+    if(!orphanedSiblings.length && !orphanedResults.length)continue;
+    // Original stable timestamp ordering; for Node records without a source
+    // timestamp, Map/JSONL insertion order is already the stable order.
+    const ordered=nodes=>nodes.map((node,index)=>({node,index})).sort((a,b)=>{
+      const at=typeof a.node.timestamp==='string'?a.node.timestamp:'';
+      const bt=typeof b.node.timestamp==='string'?b.node.timestamp:'';
+      return at&&bt?at.localeCompare(bt)||a.index-b.index:a.index-b.index;
+    }).map(entry=>entry.node);
+    const recovered=[...ordered(orphanedSiblings),...ordered(orphanedResults)];
+    recovered.forEach(node=>visited.add(node.uuid));
+    insertions.set(anchor.uuid,recovered);
+  }
+  if(!insertions.size)return chain;
+  return chain.flatMap(node=>[node,...(insertions.get(node.uuid)??[])]);
+}
+
+/** Source buildConversationChain() with the original parallel tool result
+ * recovery post-pass, rather than just the parentUuid leaf walk.
  */
 export function buildConversationChain(messageMap, leafUuid) {
   if (!(messageMap instanceof Map) || !isUUID(leafUuid))
@@ -116,10 +180,12 @@ export function buildConversationChain(messageMap, leafUuid) {
     visited.add(currentUuid);
     const node=messageMap.get(currentUuid);
     if (!node)throw new Error('Missing session parentUuid: '+currentUuid);
-    chain.push(structuredClone(node.message));
+    chain.push(node);
     currentUuid=node.parentUuid;
   }
-  return chain.reverse();
+  chain.reverse();
+  return recoverOrphanedParallelToolResults(messageMap,chain,visited)
+    .map(node=>structuredClone(node.message));
 }
 
 /** Validate the entire *committed* chain delta before installing it.
