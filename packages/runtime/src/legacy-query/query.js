@@ -464,30 +464,44 @@ export async function query({
         // Never interleave user messages with a partially collected batch.
         // The source-normalized transport merges adjacent tool_result user
         // messages and moves results before ancillary text/image blocks.
-        const hookContext = getToolHookContext
-          ? await getToolHookContext({ toolUses, turn, signal })
-          : [];
-        abortIfNeeded(signal);
-        if (!Array.isArray(hookContext) ||
-            hookContext.some(block =>
-              !block || block.type !== 'text' || typeof block.text !== 'string')) {
-          throw new ModelProtocolError('Original Hook normalization returned invalid API blocks.');
-        }
-        // Old 2.1.88 checkPermissionsAndCallTool() line 1565 returns
-        // result.newMessages after mapped tool_result and PostToolUse.
-        // normalizeMessagesForAPI() merges consecutive UserMessages. The
-        // headless path preserves its text/image blocks only after the full
-        // tool batch and the post-Hook context, with stable tool_use order.
-        const nativeNewBlocks = getToolNativeMessages
-          ? await getToolNativeMessages({ toolUses, turn, signal }) : [];
-        abortIfNeeded(signal);
-        if (!Array.isArray(nativeNewBlocks) || nativeNewBlocks.some(b =>
-          !b || !(b.type === 'text' && typeof b.text === 'string') &&
-          !(b.type === 'image' && b.source?.type === 'base64'))) {
-          throw new ModelProtocolError('Original tool newMessages normalization returned invalid API blocks.');
-        }
         if(!finalToolBlocks) {
           throw new ModelProtocolError('Legacy scheduler omitted its final tool result.');
+        }
+        let hookContext, nativeNewBlocks;
+        try {
+          hookContext = getToolHookContext
+            ? await getToolHookContext({ toolUses, turn, signal })
+            : [];
+          abortIfNeeded(signal);
+          if (!Array.isArray(hookContext) ||
+              hookContext.some(block =>
+                !block || block.type !== 'text' || typeof block.text !== 'string')) {
+            throw new ModelProtocolError('Original Hook normalization returned invalid API blocks.');
+          }
+          // Old 2.1.88 checkPermissionsAndCallTool() emits tool_result before
+          // the following Hook / native newMessages. The normal success path
+          // retains the original API projection and attachment order.
+          nativeNewBlocks = getToolNativeMessages
+            ? await getToolNativeMessages({ toolUses, turn, signal }) : [];
+          abortIfNeeded(signal);
+          if (!Array.isArray(nativeNewBlocks) || nativeNewBlocks.some(b =>
+            !b || !(b.type === 'text' && typeof b.text === 'string') &&
+            !(b.type === 'image' && b.source?.type === 'base64'))) {
+            throw new ModelProtocolError('Original tool newMessages normalization returned invalid API blocks.');
+          }
+        } catch(error) {
+          // Result mapping and original PostToolUse execution have already
+          // completed at this point. A failed AFTER-TOOL attachment
+          // normalization must not erase the final result of a Write/Bash.
+          // Preserve the fully paired result using the ordinary incremental
+          // source UUID chain. The tool_uncertain fence deliberately blocks
+          // automatic resume: failed Hook/native context must be reviewed,
+          // not silently dropped from a live model continuation.
+          history.push({role:'user',content:structuredClone(finalToolBlocks)});
+          await onSessionCheckpoint?.({
+            messages:structuredClone(history),kind:'tool_uncertain',
+          });
+          throw error;
         }
         history.push({role:'user',content:[
           ...finalToolBlocks,...hookContext,...nativeNewBlocks,
