@@ -459,6 +459,131 @@ test('real CLI --resume sends both recovered source sibling tool results to the 
   }
 });
 
+
+function twoWriteToolStream() {
+  let output=frame('message_start',{message:{usage:{input_tokens:42}}});
+  for(const [index,id,file] of [
+    [0,'parallel-write-one','first.txt'],
+    [1,'parallel-write-two','second.txt'],
+  ]) {
+    output+=frame('content_block_start',{index,content_block:{
+      type:'tool_use',id,name:'Write',input:{},
+    }});
+    output+=frame('content_block_delta',{index,delta:{
+      type:'input_json_delta',partial_json:JSON.stringify({
+        file_path:file,content:'content '+id,
+      }),
+    }});
+    output+=frame('content_block_stop',{index});
+  }
+  return output+
+    frame('message_delta',{delta:{stop_reason:'tool_use'},usage:{output_tokens:30}})+
+    frame('message_stop');
+}
+
+test('real CLI SIGKILL after first of two Writes keeps first individual tool_result and blocks duplicate resume', {
+  timeout:70000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-partial-siblings-'));
+  const id=randomUUID();
+  let providerRequests=0;
+  const server=createServer(async(req,res)=>{
+    const parts=[];for await(const chunk of req)parts.push(chunk);
+    providerRequests++;
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.end(twoWriteToolStream());
+  });
+  let child,watchdog;
+  try{
+    await writeFile(join(root,'second-posthook.cjs'),
+      "const fs=require('node:fs');let body='';"+
+      "process.stdin.on('data',x=>body+=x);process.stdin.on('end',()=>{"+
+      "const data=JSON.parse(body);"+
+      "if(data.tool_use_id!=='parallel-write-two')process.exit(0);"+
+      "fs.writeFileSync('second-hook-entered.txt','entered');"+
+      "process.on('exit',()=>fs.writeFileSync('second-hook-exited.txt','exited'));"+
+      "const t=setInterval(()=>{if(fs.existsSync('release-second-hook.txt')){"+
+      "clearInterval(t);process.exit(0);}},35);"+
+      "setTimeout(()=>process.exit(0),6500);});");
+    await writeFile(join(root,'hooks.json'),JSON.stringify({hooks:{
+      PostToolUse:[{matcher:'Write',hooks:[{
+        type:'command',command:'node second-posthook.cjs',timeout:12,
+      }]}],
+    }}));
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    const flags=['--print','--provider','deepseek','--cwd',root,
+      '--max-retries','0','--compact-threshold','0','--max-turns','3',
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic'];
+    const env={...process.env,DEEPSEEK_API_KEY:'mock-partial-token'};
+    child=spawn(process.execPath,[cli,...flags,'--hooks-file',
+      join(root,'hooks.json'),'--allow-edits','--session-id',id,
+      'Write both files in model order.'],{env,stdio:['ignore','pipe','pipe']});
+    const errs=[];child.stderr.on('data',x=>errs.push(x));
+    child.stdout.on('data',()=>{});
+    const closed=new Promise((resolve,reject)=>{
+      child.once('error',reject);
+      child.once('close',(code,signal)=>resolve([code,signal]));
+    });
+    watchdog=setTimeout(()=>child.kill('SIGKILL'),18000);
+    let entered=false;
+    for(let i=0;i<290;i++){
+      try {
+        entered=(await readFile(join(root,'second-hook-entered.txt'),'utf8'))==='entered';
+        if(entered)break;
+      }catch(error){if(error.code!=='ENOENT')throw error;}
+      await new Promise(resolve=>setTimeout(resolve,35));
+    }
+    assert.equal(entered,true,Buffer.concat(errs).toString('utf8'));
+    assert.equal(await readFile(join(root,'first.txt'),'utf8'),
+      'content parallel-write-one');
+    assert.equal(await readFile(join(root,'second.txt'),'utf8'),
+      'content parallel-write-two');
+    child.kill('SIGKILL');
+    await closed;
+    clearTimeout(watchdog);
+    await writeFile(join(root,'release-second-hook.txt'),'yes');
+    let exited=false;
+    for(let i=0;i<290;i++){
+      try {
+        exited=(await readFile(join(root,'second-hook-exited.txt'),'utf8'))==='exited';
+        if(exited)break;
+      }catch(error){if(error.code!=='ENOENT')throw error;}
+      await new Promise(resolve=>setTimeout(resolve,35));
+    }
+    assert.equal(exited,true,'hook subprocess must release Windows cwd');
+    const file=join(root,'.agent-cil','sessions',id,'transcript.jsonl');
+    const records=(await readFile(file,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.map(x=>x.kind),['input','tool_pending','tool_partial']);
+    assert.equal(records[2].entries.length,1);
+    assert.equal(records[2].entries[0].parentUuid,records[1].leafUuid);
+    assert.equal(records[2].entries[0].sourceToolAssistantUUID,records[1].leafUuid);
+    assert.equal(records[2].entries[0].message.content[0].tool_use_id,'parallel-write-one');
+    const before=providerRequests;
+    const noPrompt=await childProcess([...flags,'--resume',id],env);
+    const withPrompt=await childProcess([...flags,'--resume',id,'retry'],env);
+    assert.equal(noPrompt.code,2,noPrompt.stdout+noPrompt.stderr);
+    assert.equal(withPrompt.code,2,withPrompt.stdout+withPrompt.stderr);
+    assert.match(noPrompt.stderr,/unfinished tool batch|automatic replay is unsafe/i);
+    assert.equal(providerRequests,before,'must not regenerate or replay either Write');
+    assert.equal(await readFile(join(root,'first.txt'),'utf8'),'content parallel-write-one');
+  }finally{
+    if(watchdog)clearTimeout(watchdog);
+    if(child&&child.exitCode===null&&!child.killed)child.kill('SIGKILL');
+    await writeFile(join(root,'release-second-hook.txt'),'yes').catch(()=>{});
+    for(let i=0;i<190;i++){
+      try{
+        if((await readFile(join(root,'second-hook-exited.txt'),'utf8'))==='exited')break;
+      }catch(error){if(error.code!=='ENOENT')break;}
+      await new Promise(resolve=>setTimeout(resolve,35));
+    }
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:200});
+  }
+});
+
 test('CLI validates session arguments without network access',()=>{
   const id=randomUUID();
   assert.equal(parseArgs(['--session-id',id,'run']).sessionId,id);
