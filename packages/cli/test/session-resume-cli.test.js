@@ -105,15 +105,18 @@ test('real installed CLI: --resume with no new prompt continues pending tool res
     assert.equal(records[0].version,2);
     assert.equal(records[0].entries.length,1);
     assert.equal(records[0].entries[0].parentUuid,null);
+    const pendingRecord=records.find(record=>record.kind==='tool_pending');
+    assert.ok(pendingRecord,'original assistant tool_use is committed before execution');
+    assert.equal(pendingRecord.entries.length,1);
+    assert.equal(pendingRecord.entries[0].parentUuid,records[0].leafUuid);
+    assert.equal(pendingRecord.entries[0].message.content[0].id,'session-write-once');
     const toolRecord=records.find(record=>record.kind==='tool');
     assert.ok(toolRecord,'completed tool batch still gets its own fsynced checkpoint');
-    assert.equal(toolRecord.entries.length,2);
-    assert.equal(toolRecord.entries[0].parentUuid,records[0].leafUuid);
-    assert.equal(toolRecord.entries[1].sourceToolAssistantUUID,toolRecord.entries[0].uuid);
-    assert.equal(toolRecord.entries[1].parentUuid,toolRecord.entries[0].uuid);
-    assert.equal(toolRecord.entries[0].message.content[0].id,'session-write-once');
-    assert.equal(toolRecord.entries[1].message.content[0].tool_use_id,'session-write-once');
-    assert.equal(toolRecord.entries[1].message.content[0].is_error,undefined);
+    assert.equal(toolRecord.entries.length,1);
+    assert.equal(toolRecord.entries[0].sourceToolAssistantUUID,pendingRecord.leafUuid);
+    assert.equal(toolRecord.entries[0].parentUuid,pendingRecord.leafUuid);
+    assert.equal(toolRecord.entries[0].message.content[0].tool_use_id,'session-write-once');
+    assert.equal(toolRecord.entries[0].message.content[0].is_error,undefined);
 
     mode='resume';
     const second=await childProcess([
