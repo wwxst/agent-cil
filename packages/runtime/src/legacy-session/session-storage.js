@@ -112,13 +112,21 @@ export function validateCommittedTranscript(messages, {allowPendingTools=false,a
     const assistant=messages[assistantIndex];
     const ids=assistant?.content.filter(b=>b?.type==='tool_use').map(b=>b.id)??[];
     const results=messages.slice(assistantIndex+1);
+    // Original StreamingToolExecutor.getCompletedResults() yields an
+    // authenticated prefix of the model's tool_use order, even when safe
+    // siblings finish out of order. Do not accept a checksum-valid journal
+    // whose first result belongs to a later tool or whose earlier result
+    // was silently omitted. Unfinished tails remain unsafe to replay.
+    const completed=results.map(m=>m?.role==='user' && Array.isArray(m.content)
+      ? m.content.filter(b=>b?.type==='tool_result')
+      : []);
     if(assistantIndex<0 || !pending.size || pending.size>=ids.length ||
-       !results.length || results.some(m=>m.role!=='user' ||
-         !Array.isArray(m.content) ||
-         m.content.filter(b=>b?.type==='tool_result').length!==1) ||
-       !ids.every(id=>pending.has(id) ||
-         results.some(m=>m.content.some(b=>b?.type==='tool_result' && b.tool_use_id===id)))) {
-      throw new Error('Partial tool checkpoint must contain ordered completed sibling results and pending tool uses.');
+       !completed.length ||
+       completed.some((blocks,index)=>blocks.length!==1 ||
+         blocks[0].tool_use_id!==ids[index]) ||
+       !ids.slice(completed.length).every(id=>pending.has(id)) ||
+       ids.slice(0,completed.length).some(id=>pending.has(id))) {
+      throw new Error('Partial tool checkpoint must contain an ordered prefix of completed tool results with a pending suffix.');
     }
   } else if (pending.size) {
     throw new Error('Incomplete tool batch cannot be persisted: ' + [...pending].join(', '));
