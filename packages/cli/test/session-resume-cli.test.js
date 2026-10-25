@@ -233,7 +233,7 @@ test('real CLI resumes an unanswered persisted user prompt after first provider 
 });
 
 
-test('real CLI fences replaced transcript after Write and does not issue a follow-up model request', {
+test('real CLI fences replaced transcript before executing Write and blocks the follow-up model request', {
   timeout:55000,
 },async()=>{
   const root=await mkdtemp(join(tmpdir(),'agent-cil-transcript-fence-'));
@@ -268,8 +268,8 @@ test('real CLI fences replaced transcript after Write and does not issue a follo
     assert.equal(result.code,1,result.stdout+result.stderr);
     assert.match(result.stderr,/transcript was externally replaced or modified; writes fenced/);
     assert.equal(requests,1,'a failed tool-result commit must not reach the second model request');
-    assert.equal(await readFile(join(root,'saved.txt'),'utf8'),
-      'must persist exactly once','tool can have acted before a rejected durable checkpoint');
+    await assert.rejects(readFile(join(root,'saved.txt'),'utf8'),{code:'ENOENT'},
+      'pending tool_use must be durably recorded before a Write side effect');
     const records=(await readFile(log,'utf8')).trim().split('\n').map(JSON.parse);
     assert.deepEqual(records.map(x=>x.kind),['input'],
       'the substituted transcript must not acquire an untrusted tool_result');
