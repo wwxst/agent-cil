@@ -259,6 +259,32 @@ export class AnthropicMessagesAdapter {
       return { role: message.role, content: structuredClone(message.content) };
     });
 
+    // Original normalizeMessagesForAPI(): source Session stores each
+    // tool_result as a separate user message; Anthropic expects a single
+    // contiguous tool-result turn. Merge only adjacent result-bearing user
+    // records at the transport boundary, leaving UUID-linked Session history
+    // untouched. Preserve tool_results before permission/Hook text/images.
+    const mergedMessages=[];
+    for(const message of requestMessages){
+      const prior=mergedMessages.at(-1);
+      if(prior?.role==='user' && message.role==='user' &&
+         Array.isArray(prior.content) && Array.isArray(message.content) &&
+         (prior.content.some(block=>block?.type==='tool_result') ||
+          message.content.some(block=>block?.type==='tool_result'))) {
+        prior.content.push(...message.content);
+        continue;
+      }
+      mergedMessages.push(message);
+    }
+    for(const message of mergedMessages){
+      if(message.role==='user' && Array.isArray(message.content) &&
+         message.content.some(block=>block?.type==='tool_result')) {
+        const results=message.content.filter(block=>block?.type==='tool_result');
+        const other=message.content.filter(block=>block?.type!=='tool_result');
+        message.content=[...results,...other];
+      }
+    }
+
     const requestTools = tools.map((tool, index) => {
       if (!isRecord(tool) || typeof tool.name !== 'string' || typeof tool.description !== 'string'
         || !isRecord(tool.input_schema)) {
@@ -274,7 +300,7 @@ export class AnthropicMessagesAdapter {
     const body = {
       model: this.#model,
       max_tokens: this.#maxTokens,
-      messages: requestMessages,
+      messages: mergedMessages,
       stream: true,
     };
     if (this.#system !== undefined) body.system = this.#system;
