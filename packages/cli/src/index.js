@@ -1069,6 +1069,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 2;
   }
   process.stderr.write('[session] ' + journal.id + (options.resume ? ' resumed' : ' created') + '\n');
+  if(journal.needsToolReconciliation) {
+    // Original Session retains an assistant tool_use even when the process
+    // dies before its matching tool_result. Never replay that assistant
+    // request through the model: Write/Bash may already have taken effect.
+    printError('Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
+    await journal.close();
+    return 2;
+  }
   if (!interactiveInput && prompt.length === 0 && !journal.canContinueWithoutPrompt) {
     // Source insertMessageChain() saves initial user messages before the
     // provider responds. Resume either an unanswered prompt or a fully
@@ -1138,6 +1146,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   });
 
   const runPrompt = async (text, { plain = false } = {}) => {
+    if(journal.needsToolReconciliation) {
+      printError('Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
+      return 2;
+    }
     activeController = new AbortController();
     if (!plain) process.stdout.write('assistant> ');
     const onTextDelta = ({ text: delta }) => process.stdout.write(delta);
