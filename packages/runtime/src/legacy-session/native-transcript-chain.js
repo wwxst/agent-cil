@@ -66,10 +66,10 @@ export function insertMessageChain({
     if (resultingIDs.length) {
       const prior = entries.at(-1);
       const source = prior?.type === 'assistant' ? prior
-        : (!root && entries.length===0 && previousToolAssistantUuid &&
-           previousMessages.at(-1)?.role==='assistant'
+        : (!root && entries.length===0 && previousToolAssistantUuid
           ? {type:'assistant',uuid:previousToolAssistantUuid,
-             message:previousMessages.at(-1)} : undefined);
+             message:[...previousMessages].reverse().find(m=>
+               m.role==='assistant' && toolUses(m).length)} : undefined);
       // In a completed source tool batch, the result's logical parent is
       // the assistant tool_use message, never an arbitrary user prompt.
       if (source && resultingIDs.every(id => toolUses(source.message).includes(id))) {
