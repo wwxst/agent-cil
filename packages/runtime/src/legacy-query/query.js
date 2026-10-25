@@ -395,7 +395,7 @@ export async function query({
           executor.addTool(toolUse);
         }
         const toolResults = [];
-        const permissionExtraBlocks = [];
+        let finalToolBlocks;
         try {
           for await (const update of executor.getRemainingResults()) {
             abortIfNeeded(signal);
@@ -408,23 +408,40 @@ export async function query({
               // Keep tool IDs authenticated and keep all result blocks
               // together before ancillary user content for Anthropic/OpenAI.
               let sawToolResult = false;
+              const completeBlocks = [];
               for (const block of blocks) {
                 if (block?.type === 'tool_result') {
                   if (sawToolResult) throw new ModelProtocolError(
                     'Tool execution emitted multiple results for one tool_use.');
                   sawToolResult = true;
+                  const expected=toolUses[toolResults.length];
+                  if(!expected || block.tool_use_id!==expected.id) {
+                    throw new ModelProtocolError('Tool result does not match the ordered assistant tool_use.');
+                  }
                   toolResults.push(block);
-                } else if (block?.type === 'text' && typeof block.text === 'string') {
+                } else if ((block?.type === 'text' && typeof block.text === 'string') ||
+                           (block?.type === 'image' && block.source?.type === 'base64')) {
                   if (!sawToolResult) throw new ModelProtocolError(
                     'Permission content must follow its tool_result.');
-                  permissionExtraBlocks.push(block);
-                } else if (block?.type === 'image' && block.source?.type === 'base64') {
-                  if (!sawToolResult) throw new ModelProtocolError(
-                    'Permission content must follow its tool_result.');
-                  permissionExtraBlocks.push(block);
                 } else {
                   throw new ModelProtocolError('Legacy scheduler emitted an unexpected message.');
                 }
+                completeBlocks.push(block);
+              }
+              if(!sawToolResult)throw new ModelProtocolError('Tool update has no tool_result.');
+              if(toolResults.length<toolUses.length) {
+                // Original 2.1.88 Query yields each complete tool_result;
+                // sessionStorage.insertMessageChain() enqueues it before
+                // waiting for the next sibling. Never lose a successful
+                // Write/Bash result because a later tool hangs or aborts.
+                history.push({role:'user',content:structuredClone(completeBlocks)});
+                await onSessionCheckpoint?.({
+                  messages:structuredClone(history),kind:'tool_partial',
+                });
+              } else {
+                // Wait until original Hook/native attachment normalization
+                // finishes before closing the last tool user message.
+                finalToolBlocks=completeBlocks;
               }
             }
           }
@@ -444,7 +461,8 @@ export async function query({
         // 2.1.88 query.ts: after toolUpdates have all finished, normalize
         // Hook attachments for API and merge with the tool-result user turn.
         // Never interleave user messages with a partially collected batch.
-        // The first N blocks are *always* the exact ordered tool_results.
+        // The source-normalized transport merges adjacent tool_result user
+        // messages and moves results before ancillary text/image blocks.
         const hookContext = getToolHookContext
           ? await getToolHookContext({ toolUses, turn, signal })
           : [];
@@ -467,9 +485,12 @@ export async function query({
           !(b.type === 'image' && b.source?.type === 'base64'))) {
           throw new ModelProtocolError('Original tool newMessages normalization returned invalid API blocks.');
         }
-        history.push({ role: 'user', content: [
-          ...toolResults, ...permissionExtraBlocks, ...hookContext, ...nativeNewBlocks,
-        ] });
+        if(!finalToolBlocks) {
+          throw new ModelProtocolError('Legacy scheduler omitted its final tool result.');
+        }
+        history.push({role:'user',content:[
+          ...finalToolBlocks,...hookContext,...nativeNewBlocks,
+        ]});
         // A complete assistant tool call and all matching tool_result blocks
         // form a resumable checkpoint. This is the headless CLI equivalent of
         // the 2.1.88 query.ts stream exposing committed messages before a
