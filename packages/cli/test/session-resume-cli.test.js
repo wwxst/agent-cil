@@ -100,16 +100,20 @@ test('real installed CLI: --resume with no new prompt continues pending tool res
     const journal=await readFile(join(root,'.agent-cil','sessions',id,'transcript.jsonl'),'utf8');
     const records=journal.trim().split('\n').map(line=>JSON.parse(line));
     assert.ok(records.length>=1);
-    assert.equal(records[0].kind,'tool');
+    assert.equal(records[0].kind,'input','the source persists the first user message before model streaming');
     assert.equal(records[0].type,'session_commit');
     assert.equal(records[0].version,2);
+    assert.equal(records[0].entries.length,1);
     assert.equal(records[0].entries[0].parentUuid,null);
-    assert.equal(records[0].entries[1].parentUuid,records[0].entries[0].uuid);
-    assert.equal(records[0].entries[2].sourceToolAssistantUUID,records[0].entries[1].uuid);
-    assert.equal(records[0].entries[2].parentUuid,records[0].entries[1].uuid);
-    assert.equal(records[0].entries[1].message.content[0].id,'session-write-once');
-    assert.equal(records[0].entries[2].message.content[0].tool_use_id,'session-write-once');
-    assert.equal(records[0].entries[2].message.content[0].is_error,undefined);
+    const toolRecord=records.find(record=>record.kind==='tool');
+    assert.ok(toolRecord,'completed tool batch still gets its own fsynced checkpoint');
+    assert.equal(toolRecord.entries.length,2);
+    assert.equal(toolRecord.entries[0].parentUuid,records[0].leafUuid);
+    assert.equal(toolRecord.entries[1].sourceToolAssistantUUID,toolRecord.entries[0].uuid);
+    assert.equal(toolRecord.entries[1].parentUuid,toolRecord.entries[0].uuid);
+    assert.equal(toolRecord.entries[0].message.content[0].id,'session-write-once');
+    assert.equal(toolRecord.entries[1].message.content[0].tool_use_id,'session-write-once');
+    assert.equal(toolRecord.entries[1].message.content[0].is_error,undefined);
 
     mode='resume';
     const second=await childProcess([
@@ -139,14 +143,14 @@ test('real installed CLI: --resume with no new prompt continues pending tool res
       .trim().split('\n').map(JSON.parse).at(-1);
     assert.equal(latest.kind,'finished');
     assert.equal(latest.entries.length,1,'final result appends one UUID-linked message');
-    assert.equal(latest.entries[0].parentUuid,records[0].leafUuid);
+    assert.equal(latest.entries[0].parentUuid,toolRecord.leafUuid);
     assert.match(latest.entries.at(-1).message.content[0].text,/Resumed without another Write/);
     // A final assistant answer is already committed. Trying another
     // promptless resume must fail without even issuing an API request.
     const requestsBefore= requests.length;
     const third=await childProcess([...flags,'--resume',id],env);
     assert.equal(third.code,2,third.stderr);
-    assert.match(third.stderr,/no committed pending tool result/i);
+    assert.match(third.stderr,/no committed pending user prompt or tool result/i);
     assert.equal(requests.length,requestsBefore);
     // A finished session must still accept an explicit new user prompt from
     // stdin. Omitting a positional prompt is NOT equivalent to empty stdin.
@@ -167,6 +171,64 @@ test('real installed CLI: --resume with no new prompt continues pending tool res
     await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
   }
 });
+
+test('real CLI resumes an unanswered persisted user prompt after first provider request fails', {
+  timeout:55000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-unanswered-'));
+  const id=randomUUID();
+  let mode='unavailable';
+  const requests=[];
+  const server=createServer(async(req,res)=>{
+    const chunks=[];for await(const c of req)chunks.push(c);
+    requests.push({mode,body:JSON.parse(Buffer.concat(chunks).toString('utf8'))});
+    if(mode==='unavailable'){
+      res.writeHead(503,{'content-type':'application/json'});
+      res.end(JSON.stringify({error:{message:'provider unavailable before SSE'}}));
+    }else{
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.end(finalStream());
+    }
+  });
+  try {
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    const flags=['--print','--provider','deepseek','--cwd',root,
+      '--max-retries','0','--compact-threshold','0',
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic'];
+    const env={DEEPSEEK_API_KEY:'mock-unanswered-token'};
+    const prompt='Preserve this exact initial user input even on HTTP 503';
+    const first=await childProcess([...flags,'--session-id',id,prompt],env);
+    assert.equal(first.code,1,first.stdout+first.stderr);
+    assert.equal(requests.length,1);
+    const file=join(root,'.agent-cil','sessions',id,'transcript.jsonl');
+    const entries=(await readFile(file,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(entries.length,1,'no fabricated assistant completion or lost user prompt');
+    assert.equal(entries[0].kind,'input');
+    assert.equal(entries[0].entries.length,1);
+    assert.deepEqual(entries[0].entries[0].message,{role:'user',content:prompt});
+    assert.equal(entries[0].entries[0].parentUuid,null);
+    mode='available';
+    const resumed=await childProcess([...flags,'--resume',id],env);
+    assert.equal(resumed.code,0,resumed.stdout+resumed.stderr);
+    assert.match(resumed.stdout,/Resumed without another Write/);
+    assert.equal(requests.length,2);
+    assert.deepEqual(requests[1].body.messages,[{role:'user',content:prompt}],
+      'resumed request uses the saved input without a synthetic duplicate');
+    const history=(await readFile(file,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(history.map(x=>x.kind),['input','finished']);
+    assert.equal(history[1].entries[0].parentUuid,history[0].leafUuid);
+    const repeated=await childProcess([...flags,'--resume',id],env);
+    assert.equal(repeated.code,2,repeated.stdout+repeated.stderr);
+    assert.equal(requests.length,2,'final answer cannot be silently regenerated');
+  }finally{
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  }
+});
+
 test('CLI validates session arguments without network access',()=>{
   const id=randomUUID();
   assert.equal(parseArgs(['--session-id',id,'run']).sessionId,id);
