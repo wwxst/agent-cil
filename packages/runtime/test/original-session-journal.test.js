@@ -618,6 +618,96 @@ test('tool_uncertain cannot be forged from a pending incomplete tool or followed
   });
 });
 
+
+test('2.1.88 pre-PostToolUse mapped result evidence is durable but never fabricates a provider message',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Run Write'}];
+    const pending=[...input,{role:'assistant',content:[{
+      type:'tool_use',id:'mapped-write',name:'Write',
+      input:{file_path:'saved.txt',content:'saved'},
+    }]}];
+    const mapped={type:'tool_result',tool_use_id:'mapped-write',
+      content:'the real mapped tool output'};
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    await journal.appendMappedToolResult({mappedResult:mapped});
+    assert.deepEqual(journal.messages,pending,
+      'pre-Hook mapped witness must not become a fabricated tool_result message');
+    assert.equal(journal.canContinueWithoutPrompt,false);
+    assert.equal(journal.needsToolReconciliation,true);
+    assert.deepEqual(journal.mappedToolResults.map(x=>x.mappedResult),[mapped]);
+    await assert.rejects(journal.appendMappedToolResult({mappedResult:mapped}),
+      /already durably staged/);
+    const path=journal.path;
+    await journal.close();
+    const lines=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(lines.map(x=>x.kind),['input','tool_pending','tool_mapped']);
+    assert.equal(lines[2].type,'session_mapped_result');
+    assert.equal(lines[2].assistantUuid,lines[1].leafUuid);
+    assert.equal(lines[2].leafUuid,lines[1].leafUuid);
+    assert.equal(lines[2].sequence,3);
+    assert.equal(lines[2].previousHash,lines[1].hash);
+    assert.equal(lines[2].mappedResult.content,mapped.content);
+    const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(resumed.messages,pending);
+    assert.deepEqual(resumed.mappedToolResults.map(x=>x.mappedResult),[mapped]);
+    const completed=[...pending,{role:'user',content:[mapped]}];
+    await resumed.append({messages:completed,kind:'tool'});
+    assert.deepEqual(resumed.mappedToolResults,[]);
+    assert.equal(resumed.canContinueWithoutPrompt,true);
+    await resumed.close();
+    const latest=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(latest.messages,completed);
+    assert.deepEqual(latest.mappedToolResults,[]);
+    assert.equal(latest.canContinueWithoutPrompt,true);
+    await latest.close();
+  });
+});
+
+test('mapped result must belong to pending assistant and tampered checksum-valid evidence is rejected on load',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Write'}];
+    const pending=[...input,{role:'assistant',content:[{
+      type:'tool_use',id:'source-tool',name:'Write',input:{},
+    }]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    await assert.rejects(journal.appendMappedToolResult({mappedResult:{
+      type:'tool_result',tool_use_id:'forged-tool',content:'fake',
+    }}),/does not belong/);
+    await assert.rejects(journal.appendMappedToolResult({mappedResult:{
+      type:'tool_result',tool_use_id:'source-tool',content:{unsupported:true},
+    }}),/complete authenticated result/);
+    assert.equal(journal.mappedToolResults.length,0);
+    const mapped={type:'tool_result',tool_use_id:'source-tool',content:'saved'};
+    await journal.appendMappedToolResult({mappedResult:mapped});
+    const path=journal.path;
+    await journal.close();
+    const records=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    const rewrite=async fn=>{
+      const altered=structuredClone(records);
+      fn(altered.at(-1));
+      const last=altered.at(-1);
+      const {hash:oldHash,...payload}=last;
+      last.hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+      await writeFile(path,altered.map(x=>JSON.stringify(x)).join('\n')+'\n');
+      await assert.rejects(openSessionJournal({
+        workspace:root,sessionId:id,resume:true,
+      }),/Invalid mapped tool result|does not belong/);
+    };
+    await rewrite(last=>{last.assistantUuid=randomUUID();});
+    await rewrite(last=>{last.mappedResult.tool_use_id='forged-tool';});
+    await writeFile(path,records.map(x=>JSON.stringify(x)).join('\n')+'\n');
+    const valid=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(valid.mappedToolResults.length,1);
+    await valid.close();
+  });
+});
+
 test('source strictOrderedResults refuses a future sibling as the first durable partial result',async()=>{
   await workspace(async root=>{
     const journal=await openSessionJournal({workspace:root,sessionId:randomUUID()});
