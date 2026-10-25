@@ -18,7 +18,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MAX_JOURNAL_BYTES = 64 * 1024 * 1024;
 const MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024;
 const ZERO = '0'.repeat(64);
-const CHECKPOINT_TYPES = new Set(['input', 'tool_pending', 'tool_partial', 'tool_uncertain', 'tool', 'finished', 'compact']);
+const CHECKPOINT_TYPES = new Set(['input', 'tool_pending', 'tool_partial', 'tool_uncertain', 'tool_mapped', 'tool', 'finished', 'compact']);
 const NOFOLLOW = constants.O_NOFOLLOW || 0;
 function digest(payload) { return createHash('sha256').update(JSON.stringify(payload)).digest('hex'); }
 function validMessage(message) {
@@ -221,6 +221,11 @@ export class SessionJournal {
   #lastKind;
   #nodes = new Map();
   #leafUuid = null;
+  // Source 2.1.88 creates a mapped non-MCP tool_result before awaiting
+  // PostToolUse. The source session writer only later receives the completed
+  // generator. Keep a separately hash-chained, non-model-visible record of
+  // that mapped result while a command Hook can still be interrupted.
+  #mappedResults = new Map();
   // 2.1.304 fences transcript writes after storage failures. Record the
   // actual on-disk file identity and committed length as a Node fd adapter;
   // a session lock alone does not protect against external replacement.
@@ -251,6 +256,41 @@ export class SessionJournal {
   get id(){return this.#id;}
   get messages(){return structuredClone(this.#messages);}
   get path(){return this.#path;}
+  get mappedToolResults(){return structuredClone([...this.#mappedResults.values()]);}
+  #validateMappedToolResult(result, assistantUuid) {
+    if(!['tool_pending','tool_partial'].includes(this.#lastKind))
+      throw new Error('Mapped tool result requires an unfinished source tool batch.');
+    if(!result || result.type!=='tool_result' ||
+       typeof result.tool_use_id!=='string' || !result.tool_use_id ||
+       !(typeof result.content==='string' || Array.isArray(result.content)) ||
+       (result.is_error!==undefined && typeof result.is_error!=='boolean'))
+      throw new Error('Mapped tool result must contain one complete authenticated result.');
+    const assistant=[...this.#nodes.values()].find(node=>node.uuid===assistantUuid);
+    if(!assistant || assistant.type!=='assistant' ||
+       assistant.sessionId!==this.#id ||
+       !Array.isArray(assistant.message.content) ||
+       !assistant.message.content.some(block=>
+         block?.type==='tool_use' && block.id===result.tool_use_id))
+      throw new Error('Mapped tool result does not belong to the committed source assistant.');
+    // Only the most recent assistant tool turn can be staged.
+    const current=[...this.#messages].reverse().find(message=>
+      message.role==='assistant' && Array.isArray(message.content) &&
+      message.content.some(block=>block?.type==='tool_use'));
+    if(!current || JSON.stringify(current)!==JSON.stringify(assistant.message) ||
+       this.#messages.some(message=>message.role==='user' &&
+         Array.isArray(message.content) &&
+         message.content.some(block=>block?.type==='tool_result' &&
+           block.tool_use_id===result.tool_use_id)))
+      throw new Error('Mapped tool result was already completed or belongs to another tool turn.');
+    if(this.#mappedResults.has(result.tool_use_id))
+      throw new Error('Mapped tool result is already durably staged.');
+  }
+  #currentToolAssistantUuid(){
+    const leaf=this.#nodes.get(this.#leafUuid);
+    const uuid=leaf?.type==='assistant'?leaf.uuid:leaf?.sourceToolAssistantUUID;
+    if(!uuid)throw new Error('No committed assistant UUID for mapped tool result.');
+    return uuid;
+  }
   get needsToolReconciliation(){
     return ['tool_pending','tool_partial','tool_uncertain'].includes(this.#lastKind);
   }
@@ -293,7 +333,17 @@ export class SessionJournal {
       if(this.#lastKind==='tool_uncertain') {
         throw new Error('Session has an unresolved post-tool context failure; continuation is fenced.');
       }
-      if (payload.type === 'session_checkpoint' && payload.version === 1) {
+      if(payload.type==='session_mapped_result' && payload.version===2 &&
+         payload.kind==='tool_mapped') {
+        if(payload.leafUuid!==this.#leafUuid || payload.root!==false ||
+           payload.assistantUuid!==this.#currentToolAssistantUuid())
+          throw new Error('Invalid mapped tool result ancestry.');
+        this.#validateMappedToolResult(payload.mappedResult,payload.assistantUuid);
+        this.#mappedResults.set(payload.mappedResult.tool_use_id,{
+          assistantUuid:payload.assistantUuid,
+          mappedResult:structuredClone(payload.mappedResult),
+        });
+      } else if (payload.type === 'session_checkpoint' && payload.version === 1) {
         // v1 had no input kind; reject synthetic input records masquerading
         // as a legacy snapshot, even with a recomputed checksum.
         if(payload.kind === 'input' || payload.kind === 'tool_partial' ||
@@ -345,13 +395,18 @@ export class SessionJournal {
         this.#nodes=restored.map;
         this.#leafUuid=payload.leafUuid;
         this.#messages=restored.messages;
+        for(const message of this.#messages){
+          if(message.role==='user' && Array.isArray(message.content))
+            for(const block of message.content)
+              if(block?.type==='tool_result')this.#mappedResults.delete(block.tool_use_id);
+        }
       } else {
         throw new Error('Unsupported session transcript record version.');
       }
       this.#sequence=payload.sequence;
       this.#previousHash=hash;
       this.#lastEncoded=JSON.stringify(this.#messages);
-      this.#lastKind=payload.kind;
+      if(payload.kind!=='tool_mapped')this.#lastKind=payload.kind;
     }
     if(!this.#sequence)throw new Error('Session has no committed messages to resume.');
     // A crash can truncate the last JSONL line. Never use that partial entry;
@@ -384,6 +439,34 @@ export class SessionJournal {
     }
     this.#fileState={dev:loaded.dev,ino:loaded.ino,size:loaded.size};
     return this.messages;
+  }
+  async appendMappedToolResult({mappedResult}={}) {
+    if(this.#closed || this.#poisoned)throw new Error('Session journal is not writable.');
+    const copy=structuredClone(mappedResult);
+    const pending=this.#writeQueue.then(()=>this.#appendMappedResult(copy));
+    this.#writeQueue=pending.catch(()=>{});
+    return pending;
+  }
+  async #appendMappedResult(mappedResult) {
+    if(this.#poisoned)throw new Error('Session journal is not writable.');
+    await assertLockOwner(this.#lock,this.#lockToken);
+    const assistantUuid=this.#currentToolAssistantUuid();
+    this.#validateMappedToolResult(mappedResult,assistantUuid);
+    const payload={
+      type:'session_mapped_result',version:2,
+      sessionId:this.#id,workspace:this.#workspace,
+      kind:'tool_mapped',sequence:this.#sequence+1,
+      previousHash:this.#previousHash,root:false,
+      leafUuid:this.#leafUuid,assistantUuid,mappedResult,
+    };
+    const hash=await this.#writePayload(payload);
+    this.#mappedResults.set(mappedResult.tool_use_id,{
+      assistantUuid,mappedResult:structuredClone(mappedResult),
+    });
+    this.#previousHash=hash;
+    this.#sequence++;
+    // Do not advance #lastKind/#leafUuid/#messages: this is a result
+    // recovery witness, NOT a fabricated provider-visible tool_result.
   }
   async append({messages,kind}) {
     if(this.#closed || this.#poisoned)throw new Error('Session journal is not writable.');
@@ -468,6 +551,21 @@ export class SessionJournal {
       root:chain.root, ...(migration?{migration:true}:{}),
       leafUuid:chain.leafUuid,entries:chain.entries,
     };
+    const hash=await this.#writePayload(payload);
+    this.#nodes=validated.map;
+    this.#leafUuid=chain.leafUuid;
+    this.#messages=validated.messages;
+    for(const message of this.#messages) {
+      if(message.role==='user' && Array.isArray(message.content))
+        for(const block of message.content)
+          if(block?.type==='tool_result')this.#mappedResults.delete(block.tool_use_id);
+    }
+    this.#lastEncoded=encoded;
+    this.#previousHash=hash;
+    this.#lastKind=kind;
+    this.#sequence++;
+  }
+  async #writePayload(payload) {
     const hash=digest(payload);
     const line=JSON.stringify({...payload,hash})+'\n';
     await assertLockOwner(this.#lock,this.#lockToken);
@@ -491,13 +589,8 @@ export class SessionJournal {
     }catch(error){this.#poisoned=true;throw error;}
     finally{await handle?.close();}
     this.#fileState={dev:committedFile.dev,ino:committedFile.ino,size:committedFile.size};
-    this.#nodes=validated.map;
-    this.#leafUuid=chain.leafUuid;
-    this.#messages=validated.messages;
-    this.#lastEncoded=encoded;
-    this.#previousHash=hash;
-    this.#lastKind=kind;
-    this.#sequence++;
+    return hash;
+
   }
   close() {
     if(this.#closeTask)return this.#closeTask;
