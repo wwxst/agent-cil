@@ -16,6 +16,7 @@ import { StreamingToolExecutor } from '../legacy-tools/streaming-tool-executor.j
 import { hasCompleteApiUsage } from '../legacy-compact/legacy-token-adapter.js';
 import { runToolUse } from '../legacy-tools/tool-execution.js';
 import { ModelContextLengthError } from '../anthropic-messages-adapter.js';
+import { normalizeMessagesForAPI } from './normalize-messages-for-api.js';
 
 const STOP_REASONS = new Set(['end_turn', 'tool_use', 'max_tokens']);
 
@@ -204,7 +205,7 @@ export async function query({
 
         try {
           const stream = model.stream({
-            messages: structuredClone(history),
+            messages: normalizeMessagesForAPI(history),
             tools: tools.describe(),
             signal,
             turn,
