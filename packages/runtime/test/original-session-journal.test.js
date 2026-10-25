@@ -379,6 +379,91 @@ test('active SessionJournal reload recovers sibling results from old-source pare
   });
 });
 
+
+test('source enqueueWrite saves first parallel tool_result before next completes and retains it across restart',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Run two Write operations'}];
+    const pending=[...input,{role:'assistant',content:[
+      {type:'tool_use',id:'first-write',name:'Write',input:{file_path:'one',content:'one'}},
+      {type:'tool_use',id:'second-write',name:'Write',input:{file_path:'two',content:'two'}},
+    ]}];
+    const first=[...pending,{role:'user',content:[
+      {type:'tool_result',tool_use_id:'first-write',content:'first side effect succeeded'},
+    ]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    await journal.append({messages:first,kind:'tool_partial'});
+    assert.equal(journal.needsToolReconciliation,true);
+    assert.equal(journal.canContinueWithoutPrompt,false);
+    assert.deepEqual(journal.messages,first);
+    const path=journal.path;
+    await journal.close();
+    const records=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.map(x=>x.kind),['input','tool_pending','tool_partial']);
+    assert.equal(records[2].entries.length,1);
+    assert.equal(records[2].entries[0].sourceToolAssistantUUID,records[1].leafUuid);
+    assert.equal(records[2].entries[0].parentUuid,records[1].leafUuid);
+    const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(resumed.needsToolReconciliation,true);
+    assert.deepEqual(resumed.messages,first);
+    const complete=[...first,{role:'user',content:[
+      {type:'tool_result',tool_use_id:'second-write',content:'second succeeded'},
+    ]}];
+    await resumed.append({messages:complete,kind:'tool'});
+    assert.equal(resumed.needsToolReconciliation,false);
+    assert.equal(resumed.canContinueWithoutPrompt,true);
+    const done=[...complete,{role:'assistant',content:[{type:'text',text:'all done'}]}];
+    await resumed.append({messages:done,kind:'finished'});
+    await resumed.close();
+    const roundTrip=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.deepEqual(roundTrip.messages,done);
+    await roundTrip.close();
+    const final=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(final.map(x=>x.kind),
+      ['input','tool_pending','tool_partial','tool','finished']);
+    assert.equal(final[3].entries[0].sourceToolAssistantUUID,records[1].leafUuid);
+    assert.equal(final[3].entries[0].parentUuid,records[1].leafUuid);
+  });
+});
+
+test('partial tool checkpoint rejects forged, missing, duplicate and complete-batch checkpoint states',async()=>{
+  await workspace(async root=>{
+    const journal=await openSessionJournal({workspace:root,sessionId:randomUUID()});
+    try{
+      const input=[{role:'user',content:'run both'}];
+      const pending=[...input,{role:'assistant',content:[
+        {type:'tool_use',id:'tool-one',name:'Write',input:{}},
+        {type:'tool_use',id:'tool-two',name:'Write',input:{}},
+      ]}];
+      await journal.append({messages:input,kind:'input'});
+      await journal.append({messages:pending,kind:'tool_pending'});
+      const partial=[...pending,{role:'user',content:[
+        {type:'tool_result',tool_use_id:'tool-one',content:'one'},
+      ]}];
+      await journal.append({messages:partial,kind:'tool_partial'});
+      const forged=[...partial,{role:'user',content:[
+        {type:'tool_result',tool_use_id:'not-requested',content:'bad'},
+      ]}];
+      await assert.rejects(journal.append({messages:forged,kind:'tool_partial'}),
+        /no matching unfinished tool_use/);
+      const duplicate=[...partial,{role:'user',content:[
+        {type:'tool_result',tool_use_id:'tool-one',content:'duplicate'},
+      ]}];
+      await assert.rejects(journal.append({messages:duplicate,kind:'tool_partial'}),
+        /no matching unfinished tool_use/);
+      const complete=[...partial,{role:'user',content:[
+        {type:'tool_result',tool_use_id:'tool-two',content:'two'},
+      ]}];
+      await assert.rejects(journal.append({messages:complete,kind:'tool_partial'}),
+        /Partial tool checkpoint/);
+      assert.deepEqual(journal.messages,partial);
+      assert.equal((await readFile(journal.path,'utf8')).trim().split('\n').length,3);
+    }finally{await journal.close();}
+  });
+});
+
 test('original assistant tool_use commits before results and blocks unsafe promptless replay after restart',async()=>{
   await workspace(async root=>{
     const id=randomUUID();
