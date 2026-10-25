@@ -676,13 +676,6 @@ test('mapped result must belong to pending assistant and tampered checksum-valid
     }]}];
     await journal.append({messages:input,kind:'input'});
     await journal.append({messages:pending,kind:'tool_pending'});
-    await assert.rejects(journal.appendMappedToolResult({mappedResult:{
-      type:'tool_result',tool_use_id:'forged-tool',content:'fake',
-    }}),/does not belong/);
-    await assert.rejects(journal.appendMappedToolResult({mappedResult:{
-      type:'tool_result',tool_use_id:'source-tool',content:{unsupported:true},
-    }}),/complete authenticated result/);
-    assert.equal(journal.mappedToolResults.length,0);
     const mapped={type:'tool_result',tool_use_id:'source-tool',content:'saved'};
     await journal.appendMappedToolResult({mappedResult:mapped});
     const path=journal.path;
@@ -706,6 +699,38 @@ test('mapped result must belong to pending assistant and tampered checksum-valid
     assert.equal(valid.mappedToolResults.length,1);
     await valid.close();
   });
+});
+
+
+test('mapped-result witness validation or fsync failure permanently fences a side-effected tool turn',async()=>{
+  for(const bad of [
+    {type:'tool_result',tool_use_id:'wrong',content:'forged'},
+    {type:'tool_result',tool_use_id:'right',content:{not:'serializable content'}},
+  ]) {
+    await workspace(async root=>{
+      const journal=await openSessionJournal({workspace:root,sessionId:randomUUID()});
+      const input=[{role:'user',content:'Write the file'}];
+      const pending=[...input,{role:'assistant',content:[{
+        type:'tool_use',id:'right',name:'Write',input:{},
+      }]}];
+      await journal.append({messages:input,kind:'input'});
+      await journal.append({messages:pending,kind:'tool_pending'});
+      await assert.rejects(journal.appendMappedToolResult({mappedResult:bad}),
+        /does not belong|complete authenticated result/);
+      await assert.rejects(journal.appendMappedToolResult({mappedResult:{
+        type:'tool_result',tool_use_id:'right',content:'actual side effect',
+      }}),/not writable/);
+      const completed=[...pending,{role:'user',content:[{
+        type:'tool_result',tool_use_id:'right',content:'write succeeded',
+      }]}];
+      await assert.rejects(journal.append({messages:completed,kind:'tool'}),
+        /not writable/,'original Query must never continue after staging failure');
+      assert.deepEqual(journal.messages,pending);
+      await journal.close();
+      const records=(await readFile(journal.path,'utf8')).trim().split('\n').map(JSON.parse);
+      assert.deepEqual(records.map(record=>record.kind),['input','tool_pending']);
+    });
+  }
 });
 
 test('source strictOrderedResults refuses a future sibling as the first durable partial result',async()=>{
