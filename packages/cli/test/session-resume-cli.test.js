@@ -643,6 +643,63 @@ test('real CLI refuses checksum-valid out-of-order partial results before any mo
   }
 });
 
+
+test('real CLI refuses replay of fully preserved tool result after uncertain PostToolUse context failure', {
+  timeout:55000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-hook-context-fence-'));
+  const id=randomUUID();
+  let requests=0;
+  const server=createServer(async(req,res)=>{
+    for await(const chunk of req)void chunk;
+    requests++;
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.end(finalStream());
+  });
+  try{
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Write one file'}];
+    const pending=[...input,{role:'assistant',content:[{
+      type:'tool_use',id:'written-but-hook-context-failed',
+      name:'Write',input:{file_path:'saved.txt',content:'original'},
+    }]}];
+    const result=[...pending,{role:'user',content:[{
+      type:'tool_result',tool_use_id:'written-but-hook-context-failed',
+      content:'original Write tool completed',
+    }]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    await journal.append({messages:result,kind:'tool_uncertain'});
+    await journal.close();
+    const path=join(root,'.agent-cil','sessions',id,'transcript.jsonl');
+    const records=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.map(x=>x.kind),
+      ['input','tool_pending','tool_uncertain']);
+    assert.equal(records[2].entries[0].sourceToolAssistantUUID,records[1].leafUuid);
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    const flags=['--print','--provider','deepseek','--cwd',root,
+      '--max-retries','0','--compact-threshold','0',
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic'];
+    const env={DEEPSEEK_API_KEY:'local-review-fixture'};
+    const first=await childProcess([...flags,'--resume',id],env);
+    const second=await childProcess([...flags,'--resume',id,'repeat Write'],env);
+    assert.equal(first.code,2,first.stdout+first.stderr);
+    assert.equal(second.code,2,second.stdout+second.stderr);
+    assert.match(first.stderr,/completed tool results but failed Hook\/native context normalization/);
+    assert.match(second.stderr,/automatic replay is unsafe/);
+    assert.equal(requests,0,'neither mode may request a model replay');
+    assert.deepEqual((await readFile(path,'utf8')).trim().split('\n')
+      .map(JSON.parse).map(x=>x.kind),['input','tool_pending','tool_uncertain'],
+      'a blocked resume must not corrupt or append to the journal');
+  }finally{
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:150});
+  }
+});
+
 test('CLI validates session arguments without network access',()=>{
   const id=randomUUID();
   assert.equal(parseArgs(['--session-id',id,'run']).sessionId,id);
