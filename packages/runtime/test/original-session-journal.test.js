@@ -498,6 +498,82 @@ test('original Query preserves the last completed tool result when Hook or nativ
   }
 });
 
+
+test('real AgentLoop invokes original PostToolUse after Write, and a corrupted Hook attachment preserves result with review fence', {
+  timeout:25000,
+},async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Write the file exactly once'}];
+    await journal.append({messages:input,kind:'input'});
+    await writeFile(join(root,'posthook.cjs'),
+      "let body='';process.stdin.on('data',c=>body+=c);"+
+      "process.stdin.on('end',()=>{"+
+      "const data=JSON.parse(body);"+
+      "require('node:fs').writeFileSync('hook-observed.txt',data.tool_use_id);"+
+      "console.log(JSON.stringify({hookSpecificOutput:{"+
+      "hookEventName:'PostToolUse',additionalContext:'posthook completed'}}));});");
+    const tools=new ToolRegistry();
+    let writes=0,rounds=0,hookUpdates=0;
+    tools.register({
+      name:'Write',description:'Write test file through original tool.call',
+      call:async()=>{
+        writes++;
+        await writeFile(join(root,'saved.txt'),'written once');
+        return {data:'file was written'};
+      },
+      mapToolResultToToolResultBlockParam:(data,id)=>({
+        type:'tool_result',tool_use_id:id,content:data,
+      }),
+    });
+    const loop=new AgentLoop({
+      tools,maxTurns:3,
+      permissionPolicy:async()=>({behavior:'allow'}),
+      hookWorkspace:root,
+      postToolUseHooks:[{matcher:'Write',hooks:[{
+        type:'command',command:'node posthook.cjs',timeout:7,
+      }]}],
+      onSessionCheckpoint:checkpoint=>journal.append(checkpoint),
+      model:{async *stream(){
+        rounds++;
+        yield {type:'tool_use',id:'write-with-hook',name:'Write',
+          input:{file_path:'saved.txt',content:'written once'}};
+        yield {type:'message_end',stopReason:'tool_use'};
+      }},
+    });
+    // Fault injected *after* the authentic original PostToolUse command ran,
+    // at the event-to-provider normalization boundary. No fake tool result
+    // or synthetic skip of permissions/tool.call is involved.
+    loop.on('hookMessage',event=>{
+      if(event.message?.attachment?.type==='hook_additional_context') {
+        hookUpdates++;
+        event.message.attachment.content=[42];
+      }
+    });
+    await assert.rejects(loop.run({input:input[0].content}),
+      /Malformed Hook additional context/);
+    assert.equal(writes,1);
+    assert.equal(rounds,1,'no second model request after context failure');
+    assert.equal(hookUpdates,1);
+    assert.equal(await readFile(join(root,'saved.txt'),'utf8'),'written once');
+    assert.equal(await readFile(join(root,'hook-observed.txt'),'utf8'),
+      'write-with-hook');
+    assert.equal(journal.needsToolContextReview,true);
+    assert.deepEqual(journal.messages.at(-1).content.map(b=>b.tool_use_id),
+      ['write-with-hook']);
+    const log=(await readFile(journal.path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(log.map(x=>x.kind),['input','tool_pending','tool_uncertain']);
+    await journal.close();
+    const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(resumed.needsToolReconciliation,true);
+    assert.deepEqual(resumed.messages.at(-1).content[0],{
+      type:'tool_result',tool_use_id:'write-with-hook',content:'file was written',
+    });
+    await resumed.close();
+  });
+});
+
 test('tool_uncertain cannot be forged from a pending incomplete tool or followed by a forged status transition',async()=>{
   await workspace(async root=>{
     const id=randomUUID();
