@@ -1070,10 +1070,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   process.stderr.write('[session] ' + journal.id + (options.resume ? ' resumed' : ' created') + '\n');
   if (!interactiveInput && prompt.length === 0 && !journal.canContinueWithoutPrompt) {
-    // The source Query can continue *a completed tool transaction* without
-    // a synthetic new user message. It must not ask the model to regenerate
-    // a previously final answer or resume a partial/invalid tool batch.
-    printError('Session has no committed pending tool result. Supply a new prompt to continue.');
+    // Source insertMessageChain() saves initial user messages before the
+    // provider responds. Resume either an unanswered prompt or a fully
+    // committed tool batch, never a previously completed answer.
+    printError('Session has no committed pending user prompt or tool result. Supply a new prompt to continue.');
     await journal.close();
     return 2;
   }
@@ -1157,6 +1157,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     loop.on('turnFinished', onTurnFinished);
     loop.on('contextCompacted', onContextCompacted);
     try {
+      if (text !== undefined) {
+        // The old sessionStorage.ts insertMessageChain() persists a user
+        // message before model streaming, even when the provider later
+        // fails. Commit this exact model input first, without inventing
+        // another message or altering AgentLoop's ToolUseContext handoff.
+        await journal.append({
+          messages: [...history, {role:'user',content:text}], kind:'input',
+        });
+      }
       const result = await loop.run({
         messages: history,
         ...(text === undefined ? {} : { input: text }),
@@ -1182,6 +1191,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         if (interactiveInput) {
           process.stderr.write('[recovery] Completed tool results were retained. ' +
             'Continue the conversation without re-running previous tools.\n');
+        }
+      } else if (journal.messages.length > history.length) {
+        // A provider failure before its first complete response must not
+        // strand a durable user prompt outside the interactive history.
+        history = journal.messages;
+        if (interactiveInput) {
+          process.stderr.write('[recovery] The unanswered prompt was saved. ' +
+            'It can be retried with --resume after restart.\n');
         }
       }
       printError(error instanceof Error ? error.message : String(error));
