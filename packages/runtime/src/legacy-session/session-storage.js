@@ -37,21 +37,32 @@ function validMessage(message) {
  */
 export function hasPendingToolResponse(messages) {
   if (!Array.isArray(messages) || messages.length < 3) return false;
-  const last = messages.at(-1), previous = messages.at(-2);
-  if (last?.role !== 'user' || !Array.isArray(last.content) ||
-      previous?.role !== 'assistant' || !Array.isArray(previous.content)) {
-    return false;
+  // Original Query emits separate user tool_result messages; the original
+  // normalizeMessagesForAPI() merges adjacent user messages for the provider.
+  // Accept either one aggregated tool_result turn or source-native sibling
+  // result messages recovered by recoverOrphanedParallelToolResults().
+  let index=messages.length-1;
+  const results=[];
+  while(index>=0) {
+    const message=messages[index];
+    if(message?.role!=='user' || !Array.isArray(message.content))break;
+    const ids=message.content
+      .filter(block=>block?.type==='tool_result')
+      .map(block=>block.tool_use_id);
+    if(!ids.length)break;
+    results.unshift(...ids);
+    index--;
   }
-  const ids = previous.content
-    .filter(block => block?.type === 'tool_use')
-    .map(block => block.id);
-  const results = last.content
-    .filter(block => block?.type === 'tool_result')
-    .map(block => block.tool_use_id);
-  return ids.length > 0 && ids.length === results.length &&
-    new Set(ids).size === ids.length &&
-    results.length === new Set(results).size &&
-    ids.every(id => results.includes(id));
+  const previous=messages[index];
+  if(previous?.role!=='assistant' || !Array.isArray(previous.content))
+    return false;
+  const ids=previous.content
+    .filter(block=>block?.type==='tool_use')
+    .map(block=>block.id);
+  return ids.length>0 && ids.length===results.length &&
+    new Set(ids).size===ids.length &&
+    new Set(results).size===results.length &&
+    ids.every(id=>results.includes(id));
 }
 // Source 2.1.88 insertMessageChain() materializes the first user message
 // before a provider responds. A persisted, unanswered user prompt is safe to
