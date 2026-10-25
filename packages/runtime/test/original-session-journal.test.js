@@ -6,6 +6,7 @@ import { mkdtemp, rm, readFile, appendFile, symlink, mkdir, writeFile, stat, rea
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentLoop } from '../src/agent-loop.js';
+import { query, ModelProtocolError } from '../src/legacy-query/query.js';
 import { ToolRegistry } from '../src/tool-registry.js';
 import {
   openSessionJournal, validateCommittedTranscript, hasPendingToolResponse,
@@ -428,6 +429,114 @@ test('source enqueueWrite saves first parallel tool_result before next completes
   });
 });
 
+
+
+test('original Query preserves the last completed tool result when Hook or native context normalization fails',async()=>{
+  for(const mode of ['hook','native']){
+    await workspace(async root=>{
+      const id=randomUUID();
+      const journal=await openSessionJournal({workspace:root,sessionId:id});
+      const input=[{role:'user',content:'execute both tools once'}];
+      await journal.append({messages:input,kind:'input'});
+      const tools=new ToolRegistry();
+      tools.register({name:'Write',description:'Test original mapped tool result',
+        execute:async()=>({written:true})});
+      const executed=[];
+      const options={
+        messages:input,
+        model:{async *stream(){
+          yield {type:'tool_use',id:'first',name:'Write',input:{file:'one'}};
+          yield {type:'tool_use',id:'last',name:'Write',input:{file:'two'}};
+          yield {type:'message_end',stopReason:'tool_use'};
+        }},
+        tools,maxTurns:3,emit:()=>{},
+        executeTool:async toolUse=>{
+          executed.push(toolUse.id);
+          return {type:'tool_result',tool_use_id:toolUse.id,
+            content:'mapped output '+toolUse.id};
+        },
+        onSessionCheckpoint:checkpoint=>journal.append(checkpoint),
+        getToolHookContext:mode==='hook'
+          ? ()=>{throw new Error('Intentional Hook normalization failure');}
+          : ()=>[],
+        getToolNativeMessages:mode==='native'
+          ? ()=>[{type:'tool_result',tool_use_id:'forged',content:'unsafe'}]
+          : ()=>[],
+      };
+      const error=mode==='hook'?/Hook normalization failure/
+        :/Original tool newMessages normalization returned invalid API blocks/;
+      await assert.rejects(query(options),error);
+      assert.deepEqual(executed,['first','last']);
+      const records=(await readFile(journal.path,'utf8')).trim()
+        .split('\n').map(JSON.parse);
+      assert.deepEqual(records.map(x=>x.kind),
+        ['input','tool_pending','tool_partial','tool_uncertain']);
+      assert.equal(records[3].entries.length,1);
+      assert.equal(records[3].entries[0].parentUuid,records[1].leafUuid);
+      assert.equal(records[3].entries[0].sourceToolAssistantUUID,records[1].leafUuid);
+      assert.deepEqual(journal.messages.slice(2).map(m=>m.content[0].tool_use_id),
+        ['first','last'],'the final output must survive even when Hook context fails');
+      assert.equal(journal.needsToolContextReview,true);
+      assert.equal(journal.needsToolReconciliation,true);
+      assert.equal(journal.canContinueWithoutPrompt,false);
+      const finished=[...journal.messages,
+        {role:'assistant',content:[{type:'text',text:'untrusted continuation'}]}];
+      await assert.rejects(journal.append({messages:finished,kind:'finished'}),
+        /continuation is fenced/);
+      const file=journal.path;
+      await journal.close();
+      const reopened=await openSessionJournal({
+        workspace:root,sessionId:id,resume:true,
+      });
+      assert.deepEqual(reopened.messages.slice(2).map(m=>m.content[0].tool_use_id),
+        ['first','last']);
+      assert.equal(reopened.needsToolContextReview,true);
+      assert.equal(reopened.canContinueWithoutPrompt,false);
+      await reopened.close();
+      assert.equal((await readFile(file,'utf8')).trim().split('\n').length,4);
+    });
+  }
+});
+
+test('tool_uncertain cannot be forged from a pending incomplete tool or followed by a forged status transition',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'two tools'}];
+    const pending=[...input,{role:'assistant',content:[
+      {type:'tool_use',id:'a',name:'Write',input:{}},
+      {type:'tool_use',id:'b',name:'Write',input:{}},
+    ]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    await assert.rejects(journal.append({messages:pending,kind:'tool_uncertain'}),
+      /fully paired|Incomplete tool batch/);
+    const complete=[...pending,{role:'user',content:[
+      {type:'tool_result',tool_use_id:'a',content:'a'},
+      {type:'tool_result',tool_use_id:'b',content:'b'},
+    ]}];
+    await journal.append({messages:complete,kind:'tool_uncertain'});
+    const path=journal.path;
+    await journal.close();
+    const records=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(records.at(-1).kind,'tool_uncertain');
+    const fake={type:'assistant',uuid:randomUUID(),parentUuid:records.at(-1).leafUuid,
+      sessionId:id,message:{role:'assistant',content:[{type:'text',text:'forged final'}]}};
+    const prior=records.at(-1);
+    const payload={type:'session_commit',version:2,sessionId:id,
+      workspace:await realpath(root),kind:'finished',
+      sequence:prior.sequence+1,previousHash:prior.hash,
+      root:false,leafUuid:fake.uuid,entries:[fake]};
+    const hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    await appendFile(path,JSON.stringify({...payload,hash})+'\n');
+    await assert.rejects(openSessionJournal({workspace:root,sessionId:id,resume:true}),
+      /continuation is fenced/);
+    await writeFile(path,records.map(x=>JSON.stringify(x)).join('\n')+'\n');
+    const reopened=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(reopened.needsToolContextReview,true);
+    await reopened.close();
+  });
+});
 
 test('source strictOrderedResults refuses a future sibling as the first durable partial result',async()=>{
   await workspace(async root=>{
