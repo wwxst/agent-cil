@@ -18,7 +18,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MAX_JOURNAL_BYTES = 64 * 1024 * 1024;
 const MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024;
 const ZERO = '0'.repeat(64);
-const CHECKPOINT_TYPES = new Set(['input', 'tool_pending', 'tool', 'finished', 'compact']);
+const CHECKPOINT_TYPES = new Set(['input', 'tool_pending', 'tool_partial', 'tool', 'finished', 'compact']);
 const NOFOLLOW = constants.O_NOFOLLOW || 0;
 function digest(payload) { return createHash('sha256').update(JSON.stringify(payload)).digest('hex'); }
 function validMessage(message) {
@@ -72,7 +72,7 @@ export function hasPendingUserInput(messages) {
   return last?.role === 'user' && typeof last.content === 'string' &&
     last.content.trim().length > 0;
 }
-export function validateCommittedTranscript(messages, {allowPendingTools=false} = {}) {
+export function validateCommittedTranscript(messages, {allowPendingTools=false,allowPartialTools=false} = {}) {
   if (!Array.isArray(messages) || messages.length === 0 ||
       messages.some(m => !validMessage(m))) {
     throw new TypeError('A session checkpoint needs complete user/assistant messages.');
@@ -105,6 +105,20 @@ export function validateCommittedTranscript(messages, {allowPendingTools=false} 
     if(!ids.length || pending.size!==ids.length ||
        !ids.every(id=>pending.has(id))) {
       throw new Error('Pending tool checkpoint requires one complete assistant tool_use batch.');
+    }
+  } else if(allowPartialTools) {
+    const assistantIndex=messages.findLastIndex(m=>m.role==='assistant' &&
+      Array.isArray(m.content) && m.content.some(b=>b?.type==='tool_use'));
+    const assistant=messages[assistantIndex];
+    const ids=assistant?.content.filter(b=>b?.type==='tool_use').map(b=>b.id)??[];
+    const results=messages.slice(assistantIndex+1);
+    if(assistantIndex<0 || !pending.size || pending.size>=ids.length ||
+       !results.length || results.some(m=>m.role!=='user' ||
+         !Array.isArray(m.content) ||
+         m.content.filter(b=>b?.type==='tool_result').length!==1) ||
+       !ids.every(id=>pending.has(id) ||
+         results.some(m=>m.content.some(b=>b?.type==='tool_result' && b.tool_use_id===id)))) {
+      throw new Error('Partial tool checkpoint must contain ordered completed sibling results and pending tool uses.');
     }
   } else if (pending.size) {
     throw new Error('Incomplete tool batch cannot be persisted: ' + [...pending].join(', '));
@@ -229,7 +243,9 @@ export class SessionJournal {
   get id(){return this.#id;}
   get messages(){return structuredClone(this.#messages);}
   get path(){return this.#path;}
-  get needsToolReconciliation(){return this.#lastKind==='tool_pending';}
+  get needsToolReconciliation(){
+    return this.#lastKind==='tool_pending' || this.#lastKind==='tool_partial';
+  }
   get canContinueWithoutPrompt(){
     return ((this.#lastKind === 'tool' || this.#lastKind === 'compact') &&
       hasPendingToolResponse(this.#messages)) ||
@@ -268,7 +284,8 @@ export class SessionJournal {
       if (payload.type === 'session_checkpoint' && payload.version === 1) {
         // v1 had no input kind; reject synthetic input records masquerading
         // as a legacy snapshot, even with a recomputed checksum.
-        if(payload.kind === 'input')throw new Error('Legacy input checkpoint was never supported.');
+        if(payload.kind === 'input' || payload.kind === 'tool_partial')
+          throw new Error('Legacy checkpoint kind was never supported.');
         // Read-only migration of already shipped v1 whole-transcript records.
         // New writes always use source-style UUID/parentUuid message chains.
         if(this.#nodes.size)throw new Error('Cannot revert a session to legacy snapshots.');
@@ -290,7 +307,13 @@ export class SessionJournal {
         });
         validateCommittedTranscript(restored.messages,{
           allowPendingTools:payload.kind==='tool_pending',
+          allowPartialTools:payload.kind==='tool_partial',
         });
+        if(payload.kind === 'tool_partial' &&
+          (payload.entries.length!==1 || payload.entries[0].type!=='user' ||
+           !['tool_pending','tool_partial'].includes(this.#lastKind))) {
+          throw new Error('Invalid persisted partial tool-result checkpoint.');
+        }
         if(payload.kind === 'tool_pending' &&
           (payload.entries.length!==1 || payload.entries[0].type!=='assistant')) {
           throw new Error('Invalid pending tool checkpoint.');
@@ -357,7 +380,19 @@ export class SessionJournal {
     if(this.#poisoned)throw new Error('Session journal is not writable.');
     await assertLockOwner(this.#lock,this.#lockToken);
     if(!CHECKPOINT_TYPES.has(kind))throw new TypeError('Invalid session checkpoint kind.');
-    validateCommittedTranscript(messages,{allowPendingTools:kind==='tool_pending'});
+    validateCommittedTranscript(messages,{
+      allowPendingTools:kind==='tool_pending',
+      allowPartialTools:kind==='tool_partial',
+    });
+    if(kind === 'tool_partial' &&
+       (!['tool_pending','tool_partial'].includes(this.#lastKind) ||
+        messages.length!==this.#messages.length+1 ||
+        JSON.stringify(messages.slice(0,-1))!==JSON.stringify(this.#messages) ||
+        messages.at(-1)?.role!=='user' ||
+        !Array.isArray(messages.at(-1).content) ||
+        messages.at(-1).content.filter(b=>b?.type==='tool_result').length!==1)) {
+      throw new Error('A partial tool checkpoint must append exactly one verified result.');
+    }
     if(kind === 'tool_pending' &&
        (messages.length!==this.#messages.length+1 ||
         JSON.stringify(messages.slice(0,-1))!==JSON.stringify(this.#messages))) {
@@ -379,8 +414,11 @@ export class SessionJournal {
     const chain=insertMessageChain({
       messages:JSON.parse(encoded),previousMessages:this.#messages,
       previousLeaf:this.#leafUuid,sessionId:this.#id,kind,isMigration:migration,
-      previousToolAssistantUuid:!migration && this.#nodes.get(this.#leafUuid)?.type==='assistant'
-        ? this.#leafUuid : null,
+      previousToolAssistantUuid:!migration &&
+        this.#nodes.get(this.#leafUuid)?.type==='assistant'
+          ? this.#leafUuid
+          : (!migration ? this.#nodes.get(this.#leafUuid)?.sourceToolAssistantUUID ?? null
+            : null),
     });
     if (!chain.entries.length) return;
     const validated=applyMessageChain({
@@ -388,7 +426,10 @@ export class SessionJournal {
       leafUuid:chain.leafUuid,sessionId:this.#id,
       allowRoot:chain.root,previousLeaf:this.#leafUuid,
     });
-    validateCommittedTranscript(validated.messages,{allowPendingTools:kind==='tool_pending'});
+    validateCommittedTranscript(validated.messages,{
+      allowPendingTools:kind==='tool_pending',
+      allowPartialTools:kind==='tool_partial',
+    });
     if (JSON.stringify(validated.messages)!==encoded)
       throw new Error('Source parent chain reconstruction changed committed transcript.');
     const payload={
