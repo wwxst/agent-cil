@@ -86,7 +86,8 @@ test('2.1.88 native contextModifier propagates through source serial StreamingTo
     {name:'Initialize',marker:undefined},
     {name:'Consume',marker:'source-context-v1'},
   ]);
-  assert.deepEqual(checkpoints[0],result.messages.slice(0,3));
+  assert.deepEqual(checkpoints[0],result.messages.slice(0,4),
+    'source checkpoint retains the two individual tool result messages');
 });
 
 test('source contextModifier is applied in tool order across multiple serial tools', {
