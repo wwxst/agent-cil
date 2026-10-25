@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { AgentLoop } from '../src/agent-loop.js';
 import { ToolRegistry } from '../src/tool-registry.js';
+import { normalizeMessagesForAPI } from '../src/legacy-query/normalize-messages-for-api.js';
 import { getOriginalPermissionContentBlocks } from '../src/legacy-tools/original-permission-result-content.js';
 
 const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/yJ8AAAAASUVORK5CYII=';
@@ -106,7 +107,9 @@ test('multiple tool results stay before original permission feedback; one termin
     approval:{approved:true,acceptFeedback:'Permission note'},
   });
   assert.equal(calls,2);assert.equal(approvals,2);
-  const blocks=result.messages[2].content;
+  assert.deepEqual(result.messages.slice(2,4).map(m=>m.content[0].tool_use_id),
+    ['write-1','write-2'],'individual source results retained before normalization');
+  const blocks=normalizeMessagesForAPI(result.messages)[2].content;
   assert.equal(blocks.length,4);
   assert.deepEqual(blocks.slice(0,2).map(x=>x.tool_use_id),['write-1','write-2']);
   assert.deepEqual(blocks.slice(2).map(x=>x.text),['Permission note','Permission note']);
