@@ -428,6 +428,81 @@ test('source enqueueWrite saves first parallel tool_result before next completes
   });
 });
 
+
+test('source strictOrderedResults refuses a future sibling as the first durable partial result',async()=>{
+  await workspace(async root=>{
+    const journal=await openSessionJournal({workspace:root,sessionId:randomUUID()});
+    try{
+      const input=[{role:'user',content:'run 3 calls in model order'}];
+      const pending=[...input,{role:'assistant',content:[
+        {type:'tool_use',id:'one',name:'Write',input:{}},
+        {type:'tool_use',id:'two',name:'Write',input:{}},
+        {type:'tool_use',id:'three',name:'Write',input:{}},
+      ]}];
+      await journal.append({messages:input,kind:'input'});
+      await journal.append({messages:pending,kind:'tool_pending'});
+      const outOfOrder=[...pending,{role:'user',content:[
+        {type:'tool_result',tool_use_id:'two',content:'second finished first'},
+      ]}];
+      await assert.rejects(journal.append({
+        messages:outOfOrder,kind:'tool_partial',
+      }),/ordered prefix/);
+      const first=[...pending,{role:'user',content:[
+        {type:'tool_result',tool_use_id:'one',content:'first'},
+      ]}];
+      await journal.append({messages:first,kind:'tool_partial'});
+      const skipped=[...first,{role:'user',content:[
+        {type:'tool_result',tool_use_id:'three',content:'third'},
+      ]}];
+      await assert.rejects(journal.append({
+        messages:skipped,kind:'tool_partial',
+      }),/ordered prefix/);
+      assert.deepEqual(journal.messages,first);
+      assert.equal(journal.needsToolReconciliation,true);
+      const records=(await readFile(journal.path,'utf8')).trim().split('\n').map(JSON.parse);
+      assert.deepEqual(records.map(x=>x.kind),['input','tool_pending','tool_partial']);
+    }finally{await journal.close();}
+  });
+});
+
+test('checksum-valid tool_partial must respect the executor tool-use order on reload',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'two tools'}];
+    const pending=[...input,{role:'assistant',content:[
+      {type:'tool_use',id:'first',name:'Write',input:{}},
+      {type:'tool_use',id:'second',name:'Write',input:{}},
+    ]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    const path=journal.path;
+    await journal.close();
+    const records=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    const previous=records.at(-1);
+    const wrong={type:'user',uuid:randomUUID(),parentUuid:previous.leafUuid,
+      sourceToolAssistantUUID:previous.leafUuid,sessionId:id,
+      message:{role:'user',content:[
+        {type:'tool_result',tool_use_id:'second',content:'wrong result order'},
+      ]}};
+    const payload={type:'session_commit',version:2,sessionId:id,
+      workspace:await realpath(root),kind:'tool_partial',
+      sequence:previous.sequence+1,previousHash:previous.hash,
+      root:false,leafUuid:wrong.uuid,entries:[wrong]};
+    const hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    await appendFile(path,JSON.stringify({...payload,hash})+'\n');
+    await assert.rejects(openSessionJournal({workspace:root,sessionId:id,resume:true}),
+      /ordered prefix/);
+    // The original valid source leaves are still available if the forged
+    // extra commit is removed; reloading must not silently accept it.
+    await writeFile(path,records.map(x=>JSON.stringify(x)).join('\n')+'\n');
+    const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(resumed.needsToolReconciliation,true);
+    assert.deepEqual(resumed.messages,pending);
+    await resumed.close();
+  });
+});
+
 test('partial tool checkpoint rejects forged, missing, duplicate and complete-batch checkpoint states',async()=>{
   await workspace(async root=>{
     const journal=await openSessionJournal({workspace:root,sessionId:randomUUID()});
