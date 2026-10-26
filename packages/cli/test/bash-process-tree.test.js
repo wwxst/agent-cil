@@ -590,6 +590,134 @@ test('packed-capable CLI delivers source Bash spilled output location to model a
   });
 });
 
+
+function extractCompletedBashOutputPath(value, depth=0) {
+  if(depth>12 || value==null)return undefined;
+  if(typeof value==='string') {
+    try{
+      const parsed=JSON.parse(value);
+      if(parsed!==value) {
+        const found=extractCompletedBashOutputPath(parsed,depth+1);
+        if(found)return found;
+      }
+    }catch{}
+    const match=/Full output saved to: ([^\r\n"]+)/.exec(value);
+    return match?.[1]?.trim();
+  }
+  if(Array.isArray(value)){
+    for(const item of value){
+      const found=extractCompletedBashOutputPath(item,depth+1);
+      if(found)return found;
+    }
+  } else if(typeof value==='object'){
+    if(typeof value.outputFilePath==='string')return value.outputFilePath;
+    for(const item of Object.values(value)){
+      const found=extractCompletedBashOutputPath(item,depth+1);
+      if(found)return found;
+    }
+  }
+  return undefined;
+}
+function sseReadOutput(path) {
+  return sseFrame('message_start',{message:{usage:{input_tokens:50}}})+
+    sseFrame('content_block_start',{index:0,content_block:{
+      type:'tool_use',id:'read-authenticated-bash-output',name:'Read',input:{},
+    }})+
+    sseFrame('content_block_delta',{index:0,delta:{
+      type:'input_json_delta',partial_json:JSON.stringify({
+        file_path:path,offset:19000,limit:3,
+      }),
+    }})+
+    sseFrame('content_block_stop',{index:0})+
+    sseFrame('message_delta',{delta:{stop_reason:'tool_use'},usage:{output_tokens:14}})+
+    sseFrame('message_stop');
+}
+
+test('real packed CLI Bash → trusted external output Read → model roundtrip and durable results', {
+  timeout:39000,
+},async()=>{
+  await workspace(async root=>{
+    const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
+      fileURLToPath(new URL('../src/index.js',import.meta.url));
+    const sessionId=randomUUID(),command='node read-authenticated-output.cjs';
+    const script=join(root,'read-authenticated-output.cjs');
+    const requests=[];
+    let outputPath;
+    const server=createServer(async(req,res)=>{
+      const parts=[];
+      for await(const chunk of req)parts.push(chunk);
+      const request=JSON.parse(Buffer.concat(parts).toString('utf8'));
+      requests.push(request);
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      if(requests.length===1)res.end(sseBashUse(command,18000));
+      else if(requests.length===2){
+        outputPath=extractCompletedBashOutputPath(request.messages);
+        if(!outputPath) {
+          res.end(sseFinal());return;
+        }
+        res.end(sseReadOutput(outputPath));
+      } else res.end(sseFinal());
+    });
+    let child,closed,watchdog;
+    try{
+      await writeFile(script,[
+        'for(let i=0;i<41000;i++)',
+        '  process.stdout.write("ROW_"+String(i).padStart(5,"0")+" source-original-bash-stdout\\n");',
+      ].join('\n'));
+      await new Promise((resolve,reject)=>{
+        server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+      });
+      child=spawn(process.execPath,[cli,'--print','--provider','deepseek',
+        '--cwd',root,'--max-retries','0','--max-turns','5',
+        '--compact-threshold','0','--session-id',sessionId,
+        '--allowedTools','Bash('+command+')',
+        '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic',
+        'Run Bash, then use Read to inspect three original lines near line 19000'],{
+        env:{...process.env,DEEPSEEK_API_KEY:'only-local-bash-read-test'},
+        stdio:['ignore','pipe','pipe'],
+      });
+      const out=[],err=[];
+      child.stdout.on('data',b=>out.push(b));
+      child.stderr.on('data',b=>err.push(b));
+      closed=new Promise((resolve,reject)=>{
+        child.once('error',reject);
+        child.once('close',(code,signal)=>resolve({code,signal}));
+      });
+      watchdog=setTimeout(()=>child.kill('SIGKILL'),28000);
+      const ended=await closed;
+      const stdout=Buffer.concat(out).toString('utf8');
+      const stderr=Buffer.concat(err).toString('utf8');
+      assert.equal(ended.signal,null,stderr);
+      assert.equal(ended.code,0,stderr+stdout);
+      assert.equal(requests.length,3,
+        'model must receive Bash, call trusted Read and receive Read results');
+      assert.ok(outputPath,'model obtained the actual completed output location');
+      assert.ok(!outputPath.startsWith(root),
+        'the real Bash output lives outside the workspace, not through a fake local file');
+      const providerBody=JSON.stringify(requests[2].messages);
+      assert.match(providerBody,/ROW_19000 source-original-bash-stdout/);
+      assert.match(providerBody,/ROW_19001 source-original-bash-stdout/);
+      assert.match(providerBody,/ROW_19002 source-original-bash-stdout/);
+      assert.doesNotMatch(providerBody,/Path escapes the workspace/);
+      const log=await readFile(outputPath,'utf8');
+      assert.ok(Buffer.byteLength(log)>1024*1024,
+        'real output file remains complete on disk');
+      const journal=await readFile(join(root,'.agent-cil','sessions',
+        sessionId,'transcript.jsonl'),'utf8');
+      const entries=journal.trim().split('\n').map(JSON.parse);
+      assert.equal(entries.filter(x=>x.kind==='tool').length,2,
+        'both Bash and authorized internal Read must commit durable results');
+      assert.match(journal,/read-authenticated-bash-output/);
+    }finally{
+      if(watchdog)clearTimeout(watchdog);
+      if(child&&child.exitCode===null)child.kill('SIGKILL');
+      if(closed)await closed.catch(()=>{});
+      server.closeAllConnections?.();
+      if(server.listening)await new Promise(resolve=>server.close(resolve));
+    }
+  });
+});
+
 test('Windows real CLI stops before second model request when taskkill fails after a side-effecting Bash', {
   skip:process.platform!=='win32' &&
     'SystemRoot/System32 taskkill failure is a Windows-only OS cleanup path',
