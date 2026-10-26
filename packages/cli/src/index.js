@@ -834,13 +834,13 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
         stdout: Buffer.concat(stdout).toString('utf8'),
         stderr: Buffer.concat(stderr).toString('utf8'),
       };
-      if(shutdownRequested) {
-        result.exit_code = 1;
-        result.error = 'Command terminated while releasing its owning CLI session.';
-      }
-      else if(spawnError?.name==='ProcessTreeCleanupError') {
+      if(spawnError?.name==='ProcessTreeCleanupError') {
         result.exit_code=1;
         result.error=spawnError.message;
+      }
+      else if(shutdownRequested) {
+        result.exit_code = 1;
+        result.error = 'Command terminated while releasing its owning CLI session.';
       }
       else if (timedOut) result.error = 'Command was killed or timed out.';
       else if (outputLimitHit) result.error = 'Command output exceeded the 1 MiB limit.';
