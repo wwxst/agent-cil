@@ -109,6 +109,7 @@ export class TaskOutput {
   #maxMemory;
   #outputFileSize = 0;
   #outputFileRedundant = false;
+  #outputIdentity = null;
   #onProgress;
 
   constructor(taskId = randomUUID(), onProgress = null, stdoutToFile = false,
@@ -138,7 +139,21 @@ export class TaskOutput {
       ? 'wx'
       : fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL |
         fsConstants.O_APPEND | (fsConstants.O_NOFOLLOW??0);
-    return open(this.path,flags,0o600);
+    const handle=await open(this.path,flags,0o600);
+    try {
+      // Newer 2.1.304 ShellCommand also detects substituted/truncated
+      // stdout files. Remember the actual opened file identity, not
+      // merely its path, before sharing this FD with an untrusted Bash.
+      const identity=await handle.stat({bigint:true});
+      this.#outputIdentity={
+        dev:identity.dev,ino:identity.ino,
+        birthtimeNs:identity.birthtimeNs,
+      };
+      return handle;
+    }catch(error) {
+      await handle.close().catch(()=>{});
+      throw error;
+    }
   }
 
   writeStdout(data) { this.#writeBuffered(data,false); }
@@ -183,9 +198,21 @@ export class TaskOutput {
       // Read only a bounded prefix as in 2.1.88 #readStdoutFromFile(),
       // not the entire command output. Full bytes stay on disk.
       const maxBytes=30000;
-      const fh=await open(this.path,'r');
+      // POSIX: never follow a symlink inserted into the output path.
+      // Windows: use FileHandle.stat() identity instead of trusting the
+      // pathname, because numeric O_NOFOLLOW is not portable via libuv.
+      const flags=process.platform==='win32'
+        ? 'r' : fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW??0);
+      const fh=await open(this.path,flags);
       try {
-        const size=(await fh.stat()).size;
+        const identity=await fh.stat({bigint:true});
+        const expected=this.#outputIdentity;
+        if(!expected || identity.dev!==expected.dev ||
+          identity.ino!==expected.ino ||
+          identity.birthtimeNs!==expected.birthtimeNs) {
+          throw new Error('Bash TaskOutput file was replaced or cannot be verified.');
+        }
+        const size=Number(identity.size);
         this.#outputFileSize=size;
         const buf=Buffer.alloc(Math.min(size,maxBytes));
         let position=0;
