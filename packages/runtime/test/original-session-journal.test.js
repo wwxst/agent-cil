@@ -536,6 +536,7 @@ test('real AgentLoop invokes original PostToolUse after Write, and a corrupted H
       }],
       onSessionCheckpoint:checkpoint=>journal.append(checkpoint),
       onMappedToolResult:result=>journal.appendMappedToolResult(result),
+      onToolExecutionStart:result=>journal.appendToolExecutionStart(result),
       model:{async *stream(){
         rounds++;
         yield {type:'tool_use',id:'write-with-hook',name:'Write',
@@ -565,9 +566,11 @@ test('real AgentLoop invokes original PostToolUse after Write, and a corrupted H
       ['write-with-hook']);
     const log=(await readFile(journal.path,'utf8')).trim().split('\n').map(JSON.parse);
     assert.deepEqual(log.map(x=>x.kind),
-      ['input','tool_pending','tool_mapped','tool_uncertain']);
-    assert.equal(log[2].mappedResult.tool_use_id,'write-with-hook');
-    assert.equal(log[2].assistantUuid,log[1].leafUuid);
+      ['input','tool_pending','tool_started','tool_mapped','tool_uncertain']);
+    assert.equal(log[2].toolUseId,'write-with-hook');
+    assert.equal(log[2].status,'executing');
+    assert.equal(log[3].mappedResult.tool_use_id,'write-with-hook');
+    assert.equal(log[3].assistantUuid,log[1].leafUuid);
     await journal.close();
     const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
     assert.equal(resumed.needsToolReconciliation,true);
