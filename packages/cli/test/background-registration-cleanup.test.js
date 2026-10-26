@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {createBuiltinTools,cleanupLiveShellCommands,
   getShellLifecycleStatus} from '../src/index.js';
 import {createLocalShellTaskManager} from '../src/local-shell-task.js';
-import {TaskOutput} from '../src/legacy-task-output.js';
+import {TaskOutput,isReadableInternalTaskOutputPath} from '../src/legacy-task-output.js';
 
 // 2.1.88 LocalShellTask/killShellTasks.ts and the 2.1.304 process-tree
 // cleanup fence must complete BEFORE a failed background admission
@@ -19,10 +19,12 @@ async function exerciseFailure({afterRegistration=false}) {
   const realManager=createLocalShellTaskManager({sessionId});
   const originalRegister=TaskOutput.prototype.registerRunningOutput;
   let registeredId=null;
+  let failedOutputPath=null;
   let manager=realManager;
   if(afterRegistration) {
     const original=realManager.spawnShellTask.bind(realManager);
     realManager.spawnShellTask=(input)=>{
+      failedOutputPath=input.taskOutput.path;
       registeredId=original(input);
       return registeredId;
     };
@@ -31,7 +33,8 @@ async function exerciseFailure({afterRegistration=false}) {
     };
   }else {
     manager={
-      spawnShellTask() {
+      spawnShellTask({taskOutput}) {
+        failedOutputPath=taskOutput.path;
         throw new Error('simulated background task ownership rejection');
       },
     };
@@ -54,6 +57,9 @@ async function exerciseFailure({afterRegistration=false}) {
     assert.deepEqual(getShellLifecycleStatus(),{
       liveShellCommands:0,pendingKillBackstops:0,
     },'the rejected background tool must not release its result before OS cleanup');
+    assert.ok(failedOutputPath);
+    assert.equal(isReadableInternalTaskOutputPath(root,failedOutputPath,sessionId),false,
+      'a Bash admission error must not authorize an orphaned output path');
     if(afterRegistration) {
       assert.ok(registeredId,'the task had reached source LocalShellTask registration');
       assert.equal(realManager.status(registeredId)?.notified,true,
