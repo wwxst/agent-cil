@@ -37,8 +37,9 @@ export class DiskTaskOutput {
   get path() { return this.#path; }
 
   append(content) {
-    if (this.#failure) throw this.#failure;
-    if (this.#capped) return;
+    // Keep stream 'data' listeners non-throwing; flush() owns the
+    // persistence failure at the authenticated tool completion boundary.
+    if (this.#failure || this.#capped) return;
     const count = Buffer.byteLength(content, 'utf8');
     this.#bytesWritten += count;
     if (this.#bytesWritten > MAX_TASK_OUTPUT_BYTES) {
