@@ -648,15 +648,19 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
 
     const terminate = () => {
       if(terminationTask)return;
-      // A single tree-wide cancellation owns the process until it exits.
-      // Avoid starting competing taskkill processes on Windows.
-      terminationTask=signalProcessTree(child, 'SIGTERM');
-      if(process.platform !== 'win32') {
-        forceKillTimer=setTimeout(() => {
-          void signalProcessTree(child, 'SIGKILL');
-        },250);
-        forceKillTimer.unref?.();
-      }
+      // The shell may close before a detached, SIGTERM-resistant descendant.
+      // Always complete the escalation window BEFORE reporting cleanup.
+      // Original Bash cancellation owns the entire process group, not only
+      // the direct shell child's close event.
+      terminationTask=(async()=>{
+        await signalProcessTree(child,'SIGTERM');
+        if(process.platform !== 'win32') {
+          await new Promise(resolve=>{
+            forceKillTimer=setTimeout(resolve,250);
+          });
+          await signalProcessTree(child,'SIGKILL');
+        }
+      })();
     };
 
     const timeout = setTimeout(() => {
@@ -685,7 +689,8 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     });
     child.once('close', async code => {
       clearTimeout(timeout);
-      clearTimeout(forceKillTimer);
+      // Do NOT cancel the SIGKILL escalation on shell close: background
+      // descendants can be alive after sh/cmd.exe itself has exited.
       signal?.removeEventListener('abort', onAbort);
       // Do not report cancellation as cleaned up while Windows taskkill
       // is still terminating grandchildren of cmd.exe.
