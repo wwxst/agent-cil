@@ -6,9 +6,25 @@ const TERMINAL = new Set(['completed','failed','killed']);
 const MAX_TASKS=128;
 const WAIT_STEP_MS=100;
 const MAX_OUTPUT_CHARS=30000;
+// 2.1.88 LocalShellTask.enqueueShellNotification serializes task state into
+// a tagged, provider-visible notification. Never embed unescaped commands.
+const escapeXml=value=>String(value).replace(/[&<>"']/g, c=>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
+function createShellNotification(task) {
+  const summary='Background command "'+task.description+'" '+
+    (task.status==='completed'?'completed (exit code '+task.exitCode+')':
+      'failed'+(task.exitCode!==null?' with exit code '+task.exitCode:''));
+  return '<task_notification>\n'+
+    '<task_id>'+task.id+'</task_id>\n'+
+    '<output_file>'+escapeXml(task.taskOutput.path)+'</output_file>\n'+
+    '<status>'+task.status+'</status>\n'+
+    '<summary>'+escapeXml(summary)+'</summary>\n'+
+    '</task_notification>';
+}
 
 export class LocalShellTaskManager {
   #tasks = new Map();
+  #notifications = new Map();
   #closed = false;
   constructor({sessionId=null}={}) {this.sessionId=sessionId;}
 
@@ -37,15 +53,45 @@ export class LocalShellTaskManager {
         state.exitCode=result.exit_code;
         state.error=result.error??null;
         state.endTime=Date.now();
+        this.#enqueueShellNotification(state);
       },
       error=>{
         if(state.status==='killed')return;
         state.status='failed';
         state.error=error instanceof Error?error.message:String(error);
         state.endTime=Date.now();
+        this.#enqueueShellNotification(state);
       },
     );
     return taskId;
+  }
+
+  // Ported LocalShellTask.enqueueShellNotification/markTaskNotified:
+  // enqueue once on natural terminal transition, atomically suppress a
+  // redundant message if TaskOutput/TaskStop already acknowledged the task.
+  #enqueueShellNotification(task) {
+    if(task.notified || this.#closed || this.#notifications.has(task.id) ||
+       !TERMINAL.has(task.status) || task.status==='killed')return;
+    this.#notifications.set(task.id,createShellNotification(task));
+  }
+  pendingNotifications() {
+    return [...this.#notifications].map(([taskId,text])=>({taskId,text}));
+  }
+  acknowledgeNotifications(taskIds) {
+    if(!Array.isArray(taskIds))throw new TypeError('Task notification IDs must be an array.');
+    for(const taskId of taskIds) {
+      if(!this.#notifications.has(taskId))continue;
+      this.#notifications.delete(taskId);
+      const task=this.#tasks.get(taskId);
+      if(task)task.notified=true;
+    }
+  }
+  markTaskNotified(taskId) {
+    const task=this.#tasks.get(taskId);
+    if(!task)return false;
+    task.notified=true;
+    this.#notifications.delete(taskId);
+    return true;
   }
 
   has(taskId) {return this.#tasks.has(taskId);}
@@ -97,7 +143,7 @@ export class LocalShellTaskManager {
     const status=task.status;
     const retrieval_status=status==='running'?
       (block?'timeout':'not_ready'):'success';
-    if(TERMINAL.has(status))task.notified=true;
+    if(TERMINAL.has(status))this.markTaskNotified(task.id);
     return {
       retrieval_status,
       task:{
@@ -121,7 +167,7 @@ export class LocalShellTaskManager {
     try{await task.completion;}catch{}
     task.status='killed';
     task.exitCode??=1;
-    task.notified=true;
+    this.markTaskNotified(taskId);
     task.endTime=Date.now();
     return {
       message:'Successfully stopped task: '+taskId+' ('+task.command+')',
@@ -131,6 +177,7 @@ export class LocalShellTaskManager {
 
   async killShellTasksForAgent() {
     this.#closed=true;
+    this.#notifications.clear();
     const active=[...this.#tasks.values()].filter(task=>task.status==='running');
     const results=await Promise.allSettled(active.map(task=>this.stopTask(task.id)));
     const failures=results.filter(r=>r.status==='rejected').map(r=>r.reason);
