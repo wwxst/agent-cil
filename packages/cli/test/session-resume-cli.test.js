@@ -357,16 +357,20 @@ test('real CLI SIGKILL after Write side effect retains assistant tool_use and re
     assert.equal(hookExited,true,'post-hook child must release its cwd on Windows');
     const journal=(await readFile(join(root,'.agent-cil','sessions',id,'transcript.jsonl'),'utf8'))
       .trim().split('\n').map(JSON.parse);
-    assert.deepEqual(journal.map(x=>x.kind),['input','tool_pending','tool_mapped'],
-      'mapped Write result survives interruption while PostToolUse is running');
+    assert.deepEqual(journal.map(x=>x.kind),['input','tool_pending','tool_started','tool_mapped'],
+      'authorized Write start and mapped result survive PostToolUse interruption');
     assert.equal(journal[1].entries[0].parentUuid,journal[0].leafUuid);
     assert.equal(journal[1].entries[0].message.content[0].id,'session-write-once');
     assert.equal(journal[2].assistantUuid,journal[1].leafUuid);
-    assert.equal(journal[2].leafUuid,journal[1].leafUuid,
+    assert.equal(journal[2].status,'executing');
+    assert.equal(journal[2].toolUseId,'session-write-once');
+    assert.equal(journal[2].toolName,'Write');
+    assert.equal(journal[3].assistantUuid,journal[1].leafUuid);
+    assert.equal(journal[3].leafUuid,journal[1].leafUuid,
       'pre-Hook evidence must not advance the assistant/result ancestry');
-    assert.equal(journal[2].mappedResult.tool_use_id,'session-write-once');
-    assert.equal(journal[2].mappedResult.type,'tool_result');
-    assert.equal(journal[2].mappedResult.is_error,undefined);
+    assert.equal(journal[3].mappedResult.tool_use_id,'session-write-once');
+    assert.equal(journal[3].mappedResult.type,'tool_result');
+    assert.equal(journal[3].mappedResult.is_error,undefined);
     const before=requests;
     const empty=await childProcess([...flags,'--resume',id],env);
     assert.equal(empty.code,2,empty.stdout+empty.stderr);
@@ -562,13 +566,16 @@ test('real CLI SIGKILL after first of two Writes keeps first individual tool_res
     const file=join(root,'.agent-cil','sessions',id,'transcript.jsonl');
     const records=(await readFile(file,'utf8')).trim().split('\n').map(JSON.parse);
     assert.deepEqual(records.map(x=>x.kind),
-      ['input','tool_pending','tool_mapped','tool_partial','tool_mapped']);
-    assert.equal(records[2].mappedResult.tool_use_id,'parallel-write-one');
-    assert.equal(records[4].mappedResult.tool_use_id,'parallel-write-two');
-    assert.equal(records[3].entries.length,1);
-    assert.equal(records[3].entries[0].parentUuid,records[1].leafUuid);
-    assert.equal(records[3].entries[0].sourceToolAssistantUUID,records[1].leafUuid);
-    assert.equal(records[3].entries[0].message.content[0].tool_use_id,'parallel-write-one');
+      ['input','tool_pending','tool_started','tool_mapped','tool_partial',
+       'tool_started','tool_mapped']);
+    assert.equal(records[2].toolUseId,'parallel-write-one');
+    assert.equal(records[3].mappedResult.tool_use_id,'parallel-write-one');
+    assert.equal(records[5].toolUseId,'parallel-write-two');
+    assert.equal(records[6].mappedResult.tool_use_id,'parallel-write-two');
+    assert.equal(records[4].entries.length,1);
+    assert.equal(records[4].entries[0].parentUuid,records[1].leafUuid);
+    assert.equal(records[4].entries[0].sourceToolAssistantUUID,records[1].leafUuid);
+    assert.equal(records[4].entries[0].message.content[0].tool_use_id,'parallel-write-one');
     const before=providerRequests;
     const noPrompt=await childProcess([...flags,'--resume',id],env);
     const withPrompt=await childProcess([...flags,'--resume',id,'retry'],env);
