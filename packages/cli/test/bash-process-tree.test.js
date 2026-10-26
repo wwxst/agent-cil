@@ -51,7 +51,10 @@ setInterval(()=>{},1000);
 `);
     const bash=(await createBuiltinTools({workspace:root})).get('Bash');
     assert.ok(bash?.execute,'real CLI Bash implementation is registered');
-    const command=JSON.stringify(process.execPath)+' '+JSON.stringify(script);
+    // cmd.exe does not interpret JSON-escaped Windows backslashes as path
+    // separators. Quote exact trusted test paths without shell interpolation.
+    const command='"'+process.execPath.replaceAll('"','')+'" "'+
+      script.replaceAll('"','')+'"';
     const controller=new AbortController();
     const execution=bash.execute({command,timeout_ms:2000},{
       signal:controller.signal,
