@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile, stat, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, stat, mkdir, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -38,6 +38,27 @@ test('original exclusive file-FD output creation cannot overwrite an existing ta
   await assert.rejects(output.initFileOutput(),{code:'EEXIST'});
   assert.equal(await readFile(path,'utf8'),'KEEP EXISTING OUTPUT');
   await output.deleteOutputFile();
+});
+
+
+test('new CLI output identity check rejects replaced/forged file without trusting its contents',async()=>{
+  const output=new TaskOutput(randomUUID(),null,true);
+  const handle=await output.initFileOutput();
+  const displaced=output.path+'.old';
+  try {
+    await handle.writeFile('ORIGINAL stdout and stderr');
+  }finally {
+    await handle.close();
+  }
+  try {
+    await rename(output.path,displaced);
+    await writeFile(output.path,'ATTACKER_CONTROLLED_TOOL_OUTPUT');
+    await assert.rejects(output.getStdout(),/file was replaced or cannot be verified/,
+      'a moved/replaced output file must never be sent to the model');
+  }finally {
+    await output.deleteOutputFile();
+    await rm(displaced,{force:true});
+  }
 });
 
 test('original DiskTaskOutput writes and flushes multiple output batches without overwriting earlier bytes',async()=>{
