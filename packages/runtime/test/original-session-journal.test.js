@@ -896,6 +896,7 @@ tools.register({
   name:'Write',description:'Simulated side-effecting original Tool.call',
   call:async()=>{
     writeFileSync(root+'/tool-side-effect.txt','side effect already happened');
+    setInterval(()=>{},1000);
     await new Promise(()=>{});
   },
   mapToolResultToToolResultBlockParam:(data,toolUseId)=>({
