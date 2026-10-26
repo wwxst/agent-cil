@@ -93,6 +93,8 @@ export class AgentLoop extends EventEmitter {
   #onSessionCheckpoint;
   #onMappedToolResult;
   #onToolExecutionStart;
+  #getPendingTaskNotifications;
+  #onTaskNotificationsCommitted;
   #mappedWitnessFailure;
   #requireCanUseTool;
   // Original REPL passes updatedToolUseContext and committed history into
@@ -116,6 +118,8 @@ export class AgentLoop extends EventEmitter {
     onSessionCheckpoint,
     onMappedToolResult,
     onToolExecutionStart,
+    getPendingTaskNotifications,
+    onTaskNotificationsCommitted,
     requireCanUseTool = false,
   } = {}) {
     super();
@@ -163,6 +167,14 @@ export class AgentLoop extends EventEmitter {
     if(onToolExecutionStart!==undefined && typeof onToolExecutionStart!=='function')
       throw new TypeError('onToolExecutionStart must be a function.');
     this.#onToolExecutionStart=onToolExecutionStart;
+    if(getPendingTaskNotifications!==undefined &&
+       typeof getPendingTaskNotifications!=='function')
+      throw new TypeError('getPendingTaskNotifications must be a function.');
+    if(onTaskNotificationsCommitted!==undefined &&
+       typeof onTaskNotificationsCommitted!=='function')
+      throw new TypeError('onTaskNotificationsCommitted must be a function.');
+    this.#getPendingTaskNotifications=getPendingTaskNotifications;
+    this.#onTaskNotificationsCommitted=onTaskNotificationsCommitted;
     // Original toolHooks.ts consumes the fork/query requireCanUseTool
     // capability flag. It defaults false for the standalone parent CLI;
     // true is explicitly supplied only by contexts requiring final review.
@@ -217,6 +229,8 @@ export class AgentLoop extends EventEmitter {
           return this.#onSessionCheckpoint?.(checkpoint);
         },
         initialToolUseContext: this.#committedToolUseContext,
+        getPendingTaskNotifications:this.#getPendingTaskNotifications,
+        onTaskNotificationsCommitted:this.#onTaskNotificationsCommitted,
         onCommittedToolUseContext: ({ messages: checkpoint, toolUseContext }) => {
           // Original query.ts consumes newContext only for fully committed
           // tool rounds. Keep the matching history as the session resume key.
