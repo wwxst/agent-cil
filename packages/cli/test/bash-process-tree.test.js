@@ -156,6 +156,52 @@ setTimeout(()=>process.exit(0),200);
 });
 
 
+
+test('2.1.304 leftRunningPgid check reaps Bash background descendant with closed stdio', {
+  skip:process.platform==='win32' &&
+    'POSIX process-group existence check; Windows Job ownership is not yet available',
+  timeout:18000,
+},async()=>{
+  await workspace(async root=>{
+    const script=join(root,'stdio-closed-launcher.cjs');
+    const heartbeat=join(root,'closed-stdio-heartbeat.txt');
+    const childPid=join(root,'closed-stdio-grandchild.pid');
+    await writeFile(script,`
+const fs=require('node:fs');
+const {spawn}=require('node:child_process');
+const leaf=spawn(process.execPath,['-e',
+  "const fs=require('node:fs');"+
+  "setInterval(()=>fs.appendFileSync('closed-stdio-heartbeat.txt','x'),35);"
+],{cwd:process.cwd(),stdio:'ignore'});
+fs.writeFileSync('closed-stdio-grandchild.pid',String(leaf.pid));
+process.stdout.write('foreground output survives\\n');
+setTimeout(()=>process.exit(0),180);
+`);
+    const bash=(await createBuiltinTools({workspace:root})).get('Bash');
+    const command='"'+process.execPath.replaceAll('"','')+'" "'+
+      script.replaceAll('"','')+'"';
+    const execution=bash.execute({command,timeout_ms:8000});
+    try{
+      await waitForFile(childPid);
+      await waitForFile(heartbeat,2);
+      const started=Date.now();
+      const result=await execution;
+      assert.ok(Date.now()-started<3000,
+        'a shell may exit with stdio already closed while grandchildren still run');
+      assert.equal(result.exit_code,1);
+      assert.match(result.error,/unsupported background task was terminated/);
+      assert.match(result.stdout,/foreground output survives/);
+      const after=await readOptional(heartbeat);
+      await new Promise(resolve=>setTimeout(resolve,430));
+      assert.equal(await readOptional(heartbeat),after,
+        'orphaned background task with closed pipes must not keep writing');
+    }finally {
+      await killIfRunning(childPid);
+      await execution.catch(()=>{});
+    }
+  });
+});
+
 function sseFrame(type,data={}) {
   return 'event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n';
 }
