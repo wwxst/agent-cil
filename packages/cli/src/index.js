@@ -607,7 +607,11 @@ function signalProcessTree(child, signalName) {
         resolveKill();
       };
       try{
-        killer=spawn('taskkill',
+        // Never resolve taskkill.exe from the current project directory or
+        // PATH: a repository-local executable could otherwise replace the
+        // trusted Windows process-tree terminator.
+        const systemRoot=process.env.SystemRoot || 'C:\\Windows';
+        killer=spawn(join(systemRoot,'System32','taskkill.exe'),
           ['/PID',String(child.pid),'/T','/F'],
           {windowsHide:true,stdio:'ignore',shell:false});
         killer.once('error',()=>finish(false));
