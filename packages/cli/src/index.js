@@ -3,7 +3,10 @@ import { stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
 import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { killPosixProcessTree } from './kill-process-tree.js';
-import { TaskOutput } from './legacy-task-output.js';
+import {
+  TaskOutput, isReadableInternalTaskOutputPath,
+  openReadableInternalTaskOutput,
+} from './legacy-task-output.js';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -317,6 +320,14 @@ export function createCliPermissionPolicy({
 
     if (['Read', 'Write', 'Edit', 'Grep'].includes(name)) {
       const candidate = name === 'Grep' ? (input?.path ?? '.') : input?.file_path;
+      // Legacy checkReadableInternalPath() can authorize project task
+      // output files. Until session-specific task ownership is ported,
+      // only an exact, completed in-process Bash output is permitted.
+      // Explicit deny/ask tool rules still take precedence.
+      if(name==='Read' && isReadableInternalTaskOutputPath(root,candidate)) {
+        return checkWholeToolPermissionRules(permissionContext,{name}) ||
+          {behavior:'allow',reason:'Verified completed Bash output file.'};
+      }
       try {
         const target = resolveWorkspacePath(root, candidate);
         await assertPathWithinWorkspace(root, target);
@@ -894,6 +905,10 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
         result.outputFilePath=taskOutput.path;
         result.outputFileSize=taskOutput.outputFileSize;
         result.outputTaskId=taskOutput.taskId;
+        // Register only after the native shell is finished, its output
+        // identity has been checked and a real mapped tool result exists.
+        // Read authorization never trusts a string returned by the model.
+        taskOutput.registerCompletedOutput(cwd);
       } else {
         // The full small-file output is already in result.stdout. Original
         // ShellCommandImpl deletes a redundant foreground output file.
@@ -914,11 +929,24 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
   // Tool.call + result mapper contract. No duplicate read implementation.
   const executeRead = async ({ file_path, offset, limit }, { signal } = {}) => {
     if (signal?.aborted) throw abortError(signal);
+    const options=offset===undefined && limit===undefined
+      ? undefined : {offset,limit};
+    if(isReadableInternalTaskOutputPath(root,file_path)) {
+      const fh=await openReadableInternalTaskOutput(root,file_path);
+      try {
+        const text=options===undefined
+          ? await readTextHandle(fh,file_path,signal)
+          : await readTextLinesHandle(fh,file_path,options,signal);
+        if(signal?.aborted)throw abortError(signal);
+        return text;
+      }finally {
+        await fh.close();
+      }
+    }
     const target = resolveWorkspacePath(root, file_path);
     await assertPathWithinWorkspace(root, target);
     if (signal?.aborted) throw abortError(signal);
-    return readTextFile(root, target,
-      offset === undefined && limit === undefined ? undefined : { offset, limit }, signal);
+    return readTextFile(root, target,options,signal);
   };
 
   tools.register({
@@ -928,7 +956,7 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
     // Built-in workspace-only read/search operations may start at tool_use
     // block_stop, before the model has finished streaming.
     canRunDuringStream: true,
-    description: 'Read a UTF-8 text file within the workspace. Use zero-based offset and limit to read sections of large files.',
+    description: 'Read a UTF-8 workspace file or a verified completed Bash output file. Use zero-based offset and limit for large files.',
     inputSchema: {
       type: 'object',
       properties: {
