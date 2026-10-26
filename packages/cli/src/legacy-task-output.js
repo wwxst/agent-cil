@@ -7,15 +7,59 @@
 // command completion, so tool_result readers can inspect the original bytes.
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { mkdir, open, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, stat, lstat, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 export const MAX_TASK_OUTPUT_BYTES = 5 * 1024 * 1024 * 1024;
 const MAX_TASK_OUTPUT_BYTES_DISPLAY = '5GB';
 const OUTPUT_MEMORY_BYTES = 1024 * 1024;
 const MAX_RETURN_TAIL_BYTES = 8192;
 const taskOutputDir = join(tmpdir(), 'agent-cil-task-'+process.pid+'-'+randomUUID());
+// Direct-port of the old checkReadableInternalPath allowlist *boundary*,
+// narrowly restricted until session-scoped project-temp task ownership is
+// ported. Only results this process actually completed may be read by Read;
+// arbitrary /tmp files and fabricated tool_result path strings are forbidden.
+const completedTaskOutputs = new Map();
+const sameIdentity = (left,right) => !!left && !!right &&
+  left.dev===right.dev && left.ino===right.ino &&
+  left.birthtimeNs===right.birthtimeNs;
+const identityOf = info => ({
+  dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs,
+});
+export function isReadableInternalTaskOutputPath(workspace, candidate) {
+  if(typeof candidate !== 'string' || !isAbsolute(candidate))return false;
+  const record=completedTaskOutputs.get(candidate);
+  return !!record && record.workspace===resolve(workspace);
+}
+export async function openReadableInternalTaskOutput(workspace,candidate) {
+  if(!isReadableInternalTaskOutputPath(workspace,candidate))
+    throw new Error('Read target is not an authorized completed Bash task output.');
+  const record=completedTaskOutputs.get(candidate);
+  // Parent directory is private and created by this process. An attacker
+  // may still rename it; never rely solely on its random path or membership.
+  const parent=await lstat(dirname(candidate),{bigint:true});
+  if(parent.isSymbolicLink() || !parent.isDirectory() ||
+      !sameIdentity(identityOf(parent),record.directoryIdentity))
+    throw new Error('Bash output directory was replaced or cannot be verified.');
+  const pathStat=await lstat(candidate,{bigint:true});
+  if(pathStat.isSymbolicLink() || !pathStat.isFile() ||
+      !sameIdentity(identityOf(pathStat),record.fileIdentity))
+    throw new Error('Bash output file was replaced or cannot be verified.');
+  const flags=process.platform==='win32'
+    ? 'r' : fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW??0);
+  const fh=await open(candidate,flags);
+  try {
+    const opened=await fh.stat({bigint:true});
+    if(!opened.isFile() || !sameIdentity(identityOf(opened),record.fileIdentity) ||
+        opened.size!==record.expectedBytes)
+      throw new Error('Bash output file identity or size changed after tool completion.');
+    return fh;
+  }catch(error) {
+    await fh.close().catch(()=>{});
+    throw error;
+  }
+}
 
 export function getTaskOutputPath(taskId) {
   if (typeof taskId !== 'string' || !/^[a-f0-9-]{36}$/i.test(taskId))
@@ -110,6 +154,7 @@ export class TaskOutput {
   #outputFileSize = 0;
   #outputFileRedundant = false;
   #outputIdentity = null;
+  #directoryIdentity = null;
   #onProgress;
 
   constructor(taskId = randomUUID(), onProgress = null, stdoutToFile = false,
@@ -135,6 +180,10 @@ export class TaskOutput {
   async initFileOutput() {
     if(!this.stdoutToFile)throw new Error('Only file-mode TaskOutput owns a shell output fd.');
     await mkdir(taskOutputDir,{recursive:true,mode:0o700});
+    const directory=await lstat(taskOutputDir,{bigint:true});
+    if(directory.isSymbolicLink() || !directory.isDirectory())
+      throw new Error('Bash output directory must be an ordinary private directory.');
+    this.#directoryIdentity=identityOf(directory);
     const flags=process.platform==='win32'
       ? 'wx'
       : fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL |
@@ -145,10 +194,7 @@ export class TaskOutput {
       // stdout files. Remember the actual opened file identity, not
       // merely its path, before sharing this FD with an untrusted Bash.
       const identity=await handle.stat({bigint:true});
-      this.#outputIdentity={
-        dev:identity.dev,ino:identity.ino,
-        birthtimeNs:identity.birthtimeNs,
-      };
+      this.#outputIdentity=identityOf(identity);
       return handle;
     }catch(error) {
       await handle.close().catch(()=>{});
@@ -241,7 +287,20 @@ export class TaskOutput {
     return this.#stdoutBuffer;
   }
   getStderr() { return this.stdoutToFile||this.#disk?'':this.#stderrBuffer; }
+
+  registerCompletedOutput(workspace) {
+    if(!this.stdoutToFile || this.#outputFileRedundant ||
+       !this.#outputIdentity || !this.#directoryIdentity)
+      throw new Error('Only verified, retained Bash file output can be authorized for Read.');
+    completedTaskOutputs.set(this.path,{
+      workspace:resolve(workspace),
+      fileIdentity:this.#outputIdentity,
+      directoryIdentity:this.#directoryIdentity,
+      expectedBytes:BigInt(this.#outputFileSize),
+    });
+  }
   async deleteOutputFile() {
+    completedTaskOutputs.delete(this.path);
     // Original TaskOutput.deleteOutputFile is best-effort: when the entire
     // output is already in result.stdout, failing to delete a redundant
     // file must not strand the close handler or change the tool result.
