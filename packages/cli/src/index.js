@@ -612,6 +612,12 @@ function signalProcessTree(child, signalName) {
         // falls back to the direct child. Node lacks Bun.ant.windowsProcessPin:
         // fallback is NOT proof the entire descendant tree was reaped.
         try{child.kill('SIGKILL');}catch{}
+        // ChildProcess 'close' waits for descendants which inherited these
+        // handles. After OS tree termination FAILED, never await those
+        // unowned descendants indefinitely: close our own pipe handles
+        // so the fatal uncertainty can reach Session/CLI cleanup.
+        child.stdout?.destroy();
+        child.stderr?.destroy();
         const error=new Error('Windows Bash process-tree cleanup could not be confirmed'+
           (reason?': '+reason:'')+'. Unowned descendants may remain.');
         error.name='ProcessTreeCleanupError';
