@@ -931,7 +931,11 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
         // Register only after the native shell is finished, its output
         // identity has been checked and a real mapped tool result exists.
         // Read authorization never trusts a string returned by the model.
-        taskOutput.registerCompletedOutput(cwd);
+        taskOutput.registerCompletedOutput(cwd,{background:runInBackground});
+      } else if(runInBackground) {
+        // The original TaskOutput retains a background task file even
+        // when its entire output fits the foreground inline preview.
+        taskOutput.registerCompletedOutput(cwd,{background:true});
       } else if(!runInBackground) {
         // Source LocalShellTask MUST retain background output even when
         // small: TaskOutput/Read may be called after completion. Only
@@ -947,6 +951,7 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
         const taskId=taskManager.spawnShellTask({
           taskOutput,command,completion,kill:()=>ownedShell.kill(),
         });
+        taskOutput.registerRunningOutput(cwd);
         resolvePromise({
           exit_code:0,stdout:'',stderr:'',
           backgroundTaskId:taskId,
