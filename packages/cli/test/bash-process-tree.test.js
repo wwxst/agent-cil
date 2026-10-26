@@ -523,15 +523,34 @@ setInterval(()=>{},500);
       await new Promise((resolve,reject)=>{
         server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
       });
-      child=spawn(process.execPath,[cli,
+      // Test-only preloader intercepts ONLY the OS taskkill executable
+      // and simulates ENOENT. Do not corrupt SystemRoot: Node's Windows
+      // CSPRNG can fail during initialization with a fake SystemRoot.
+      const taskkillFailurePreload=join(root,'inject-taskkill-failure.cjs');
+      await writeFile(taskkillFailurePreload,[
+        "const cp=require('node:child_process');",
+        "const events=require('node:events');",
+        "const original=cp.spawn;",
+        "cp.spawn=function(binary,args,options){",
+        " if(typeof binary==='string'&&/taskkill[.]exe$/i.test(binary)){",
+        "   const fake=new events.EventEmitter();",
+        "   fake.kill=()=>true;",
+        "   process.nextTick(()=>fake.emit('error',",
+        "     Object.assign(new Error('test-only taskkill failure'),{code:'ENOENT'})));",
+        "   return fake;",
+        " }",
+        " return original.apply(this,arguments);",
+        "};",
+        "require('node:module').syncBuiltinESMExports();",
+      ].join('\\n'));
+      child=spawn(process.execPath,['--require',taskkillFailurePreload,cli,
         '--print','--provider','deepseek','--cwd',root,'--session-id',sessionId,
         '--max-retries','0','--max-turns','3','--compact-threshold','0',
         '--allowedTools','Bash('+command+')',
         '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic',
         'Run Bash once'],{
         env:{...process.env,
-          DEEPSEEK_API_KEY:'only-local-unconfirmed-test',
-          SystemRoot:join(root,'nonexistent-SystemRoot')},
+          DEEPSEEK_API_KEY:'only-local-unconfirmed-test'},
         stdio:['ignore','pipe','pipe'],
       });
       const out=[],err=[];
