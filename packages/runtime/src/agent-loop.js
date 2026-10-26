@@ -204,7 +204,15 @@ export class AgentLoop extends EventEmitter {
         tools: this.#tools,
         maxTurns: this.#maxTurns,
         compactContext: this.#compactContext,
-        onSessionCheckpoint: this.#onSessionCheckpoint,
+        onSessionCheckpoint: async checkpoint => {
+          // A side-effecting Bash may have left an unowned Windows descendant
+          // after taskkill /T failed. The 2.1.88/2.1.304 tool state cannot
+          // treat a failed cleanup as a normal recoverable tool_result.
+          // Keep the prior tool_pending/tool_started journal, and block
+          // model continuation or any new writes until manual reconciliation.
+          if(this.#mappedWitnessFailure)throw this.#mappedWitnessFailure;
+          return this.#onSessionCheckpoint?.(checkpoint);
+        },
         initialToolUseContext: this.#committedToolUseContext,
         onCommittedToolUseContext: ({ messages: checkpoint, toolUseContext }) => {
           // Original query.ts consumes newContext only for fully committed
@@ -812,6 +820,17 @@ export class AgentLoop extends EventEmitter {
           });
           abortIfNeeded(signal);
         }
+      }
+      // Fatal OS subtree cleanup failures cannot be reconciled as a
+      // conventional tool error: descendants may still be writing files.
+      // Setting the existing fatal execution fence prevents subsequent
+      // queued tools, and the checkpoint guard prevents a second model turn.
+      if(error?.name==='ProcessTreeCleanupError') {
+        this.#mappedWitnessFailure=error;
+        this.emit('toolCallFinished',{
+          turn,toolUseId:toolUse.id,toolName:tool.name,isError:true,
+        });
+        throw error;
       }
       if (this.#postToolUseFailureHooks.length) {
         await this.#emitPostToolUseFailureHooks({
