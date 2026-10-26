@@ -54,6 +54,7 @@ export async function query({
   messages = [], input, signal, model, tools, maxTurns,
   executeTool, emit, canStartToolDuringStream, compactContext, getPostToolStop,
   getToolHookContext, getToolNativeMessages,
+  getPendingTaskNotifications, onTaskNotificationsCommitted,
   initialToolUseContext, onCommittedToolUseContext, onSessionCheckpoint,
 } = {}) {
   if (!Array.isArray(messages)) throw new TypeError('messages must be an array.');
@@ -84,6 +85,12 @@ export async function query({
   if (getToolNativeMessages !== undefined && typeof getToolNativeMessages !== 'function') {
     throw new TypeError('getToolNativeMessages must be a function.');
   }
+  if (getPendingTaskNotifications !== undefined &&
+      typeof getPendingTaskNotifications !== 'function')
+    throw new TypeError('getPendingTaskNotifications must be a function.');
+  if (onTaskNotificationsCommitted !== undefined &&
+      typeof onTaskNotificationsCommitted !== 'function')
+    throw new TypeError('onTaskNotificationsCommitted must be a function.');
   if (getPostToolStop !== undefined && typeof getPostToolStop !== 'function') {
     throw new TypeError('getPostToolStop must be a function.');
   }
@@ -117,6 +124,34 @@ export async function query({
       while (true) {
         let { messages: history, turnCount: turn } = state;
         abortIfNeeded(signal);
+        // Original enqueuePendingNotification(mode:'task-notification') is
+        // drained into the NEXT provider request, never injected into an
+        // already-running SSE response. Commit the genuine native message
+        // before telling LocalShellTask it has been delivered: a later
+        // model transport failure must not lose the completed task notice.
+        if (getPendingTaskNotifications) {
+          const pending=await getPendingTaskNotifications();
+          abortIfNeeded(signal);
+          if(!Array.isArray(pending) || pending.some(item=>
+            !item || typeof item.taskId!=='string' ||
+            typeof item.text!=='string' ||
+            !item.text.startsWith('<task_notification>\n'))) {
+            throw new ModelProtocolError('LocalShellTask returned malformed notifications.');
+          }
+          if(pending.length) {
+            const notification={
+              role:'user',content:pending.map(item=>({type:'text',text:item.text})),
+            };
+            const nextHistory=[...history,notification];
+            await onSessionCheckpoint?.({
+              messages:structuredClone(nextHistory),kind:'task_notification',
+            });
+            abortIfNeeded(signal);
+            history=nextHistory;
+            state.messages=history;
+            await onTaskNotificationsCommitted?.(pending.map(item=>item.taskId));
+          }
+        }
         // Original 2.1.88 query.ts performs microcompact/autocompact before
         // each model call. Our Node subset only summarizes fully completed
         // API rounds. No tool starts until this transaction has succeeded.
