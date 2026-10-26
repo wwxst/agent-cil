@@ -596,16 +596,26 @@ function signalProcessTree(child, signalName) {
     // The original Bash lifecycle owns the whole launched process tree.
     // Windows has no POSIX process groups: use the OS tree terminator with
     // argv (never interpolate a tool command or PID into a shell command).
-    return new Promise(resolveKill => {
+    return new Promise((resolveKill,rejectKill) => {
       let killer;
       let settled=false;
-      const finish=ok=>{
+      let watchdog;
+      const finish=(ok,reason)=>{
         if(settled)return;
         settled=true;
-        if(!ok){
-          try{child.kill('SIGKILL');}catch{}
+        clearTimeout(watchdog);
+        if(ok){
+          resolveKill();
+          return;
         }
-        resolveKill();
+        // Original 2.1.304 killProcessTree logs taskkill failures and
+        // falls back to the direct child. Node lacks Bun.ant.windowsProcessPin:
+        // fallback is NOT proof the entire descendant tree was reaped.
+        try{child.kill('SIGKILL');}catch{}
+        const error=new Error('Windows Bash process-tree cleanup could not be confirmed'+
+          (reason?': '+reason:'')+'. Unowned descendants may remain.');
+        error.name='ProcessTreeCleanupError';
+        rejectKill(error);
       };
       try{
         // Never resolve taskkill.exe from the current project directory or
@@ -615,10 +625,17 @@ function signalProcessTree(child, signalName) {
         killer=spawn(join(systemRoot,'System32','taskkill.exe'),
           ['/PID',String(child.pid),'/T','/F'],
           {windowsHide:true,stdio:'ignore',shell:false});
-        killer.once('error',()=>finish(false));
-        killer.once('close',code=>finish(code===0));
-      }catch{
-        finish(false);
+        killer.once('error',error=>finish(false,error.code||error.message));
+        killer.once('close',(code,signal)=>
+          finish(code===0,signal?'taskkill signal '+signal:'taskkill exit '+String(code)));
+        // The 2.1.304 source uses a bounded post-kill backstop; do not let
+        // a stuck OS taskkill worker hold the CLI/session lock forever.
+        watchdog=setTimeout(()=>{
+          try{killer.kill('SIGKILL');}catch{}
+          finish(false,'taskkill exceeded 5s');
+        },5000);
+      }catch(error){
+        finish(false,error instanceof Error?error.message:String(error));
       }
     });
   }
@@ -651,12 +668,20 @@ export async function cleanupLiveShellCommands() {
   // Like 2.1.304's live-shell shutdown + await of pendingKillBackstops:
   // release every currently owned Bash, not just the last active tool.
   const owned = [...shellLifecycle.liveShellCommands];
-  await Promise.allSettled(owned.map(shell => shell.kill()));
+  const outcomes=await Promise.allSettled(owned.map(shell => shell.kill()));
   // A kill task may have already been started by a signal/timeout.
   // Await the snapshot repeatedly in case the tracked set changed while
   // shell 'close' callbacks were still completing.
+  const failures=outcomes.filter(item=>item.status==='rejected').map(item=>item.reason);
   while (shellLifecycle.pendingKillBackstops.size) {
-    await Promise.allSettled([...shellLifecycle.pendingKillBackstops]);
+    const ended=await Promise.allSettled([...shellLifecycle.pendingKillBackstops]);
+    failures.push(...ended.filter(item=>item.status==='rejected').map(item=>item.reason));
+  }
+  if(failures.length) {
+    // Failed taskkill /T is not a successfully cleaned-up shell. Surface
+    // uncertainty to CLI exit and preserve the prior session journal.
+    throw new AggregateError(failures,
+      'One or more Bash process trees could not be confirmed terminated.');
   }
 }
 
@@ -796,7 +821,11 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
       }
 
       if (signal?.aborted) {
-        rejectPromise(abortError(signal));
+        if(spawnError?.name==='ProcessTreeCleanupError') {
+          // Keep the aborted state, but do not disguise an unsuccessful
+          // descendant cleanup as a normal user cancellation.
+          rejectPromise(spawnError);
+        }else rejectPromise(abortError(signal));
         return;
       }
 
@@ -808,6 +837,10 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
       if(shutdownRequested) {
         result.exit_code = 1;
         result.error = 'Command terminated while releasing its owning CLI session.';
+      }
+      else if(spawnError?.name==='ProcessTreeCleanupError') {
+        result.exit_code=1;
+        result.error=spawnError.message;
       }
       else if (timedOut) result.error = 'Command was killed or timed out.';
       else if (outputLimitHit) result.error = 'Command output exceeded the 1 MiB limit.';
