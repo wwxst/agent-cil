@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -121,5 +122,101 @@ test('real installed CLI invokes original PostToolUse after Write and failure Ho
     assert.equal(postAfter.tool_use_id,'hook-result-Write');
   } finally {
     await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:150});
+  }
+});
+
+
+test('real CLI SIGTERM during PostToolUse reaps hook grandchildren and retains pre-Hook Write evidence', {
+  skip:process.platform==='win32' &&
+    'SIGTERM is POSIX-only; Windows real Hook AbortSignal subtree is tested separately',
+  timeout:45000,
+}, async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-posthook-sigterm-'));
+  const sessionId=randomUUID(),heartbeat=join(root,'posthook-heartbeat.txt');
+  const pidFile=join(root,'posthook-grandchild.pid');
+  let requests=0,child,closed,watchdog;
+  const server=createServer(async(req,res)=>{
+    for await(const chunk of req)void chunk;
+    requests++;
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.end(toolStream('Write','posthook-interrupted-write',{
+      file_path:'effect.txt',content:'write finished before Hook',
+    }));
+  });
+  const readIfExists=async path=>{
+    try{return await readFile(path,'utf8');}
+    catch(error){if(error.code==='ENOENT')return '';throw error;}
+  };
+  try{
+    const script=[
+      "const fs=require('node:fs');",
+      "const {spawn}=require('node:child_process');",
+      "const script=\"const fs=require('node:fs');"+
+        "setInterval(()=>fs.appendFileSync('posthook-heartbeat.txt','x'),30);\";",
+      "const leaf=spawn(process.execPath,['-e',script],"+
+        "{stdio:'inherit',cwd:process.cwd(),windowsHide:true});",
+      "fs.writeFileSync('posthook-grandchild.pid',String(leaf.pid));",
+      "setInterval(()=>{},400);",
+    ].join('\n');
+    await writeFile(join(root,'hanging-posthook.cjs'),script);
+    await writeFile(join(root,'hooks.json'),JSON.stringify({hooks:{
+      PostToolUse:[{matcher:'Write',hooks:[{
+        type:'command',command:'node hanging-posthook.cjs',timeout:20,
+      }]}],
+    }}));
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    child=spawn(process.execPath,[cli,'--print','--provider','deepseek',
+      '--cwd',root,'--allow-edits','--max-turns','3','--max-retries','0',
+      '--compact-threshold','0','--session-id',sessionId,
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic',
+      '--hooks-file',join(root,'hooks.json'),'Write effect.txt once.'],
+    {env:{...process.env,DEEPSEEK_API_KEY:'local-posthook-token'},
+      stdio:['ignore','pipe','pipe']});
+    const err=[];
+    child.stderr.on('data',chunk=>err.push(chunk));
+    child.stdout.resume();
+    closed=new Promise((resolve,reject)=>{
+      child.once('error',reject);
+      child.once('close',(code,signal)=>resolve({code,signal}));
+    });
+    watchdog=setTimeout(()=>child.kill('SIGKILL'),19000);
+    let seen=false;
+    for(let i=0;i<300;i++){
+      if((await readIfExists(heartbeat)).length>=3){seen=true;break;}
+      await new Promise(resolve=>setTimeout(resolve,35));
+    }
+    assert.equal(seen,true,Buffer.concat(err).toString('utf8'));
+    assert.equal(await readFile(join(root,'effect.txt'),'utf8'),
+      'write finished before Hook');
+    assert.equal(requests,1);
+    child.kill('SIGTERM');
+    const result=await closed;
+    assert.equal(result.signal,null,Buffer.concat(err).toString('utf8'));
+    assert.equal(result.code,143,Buffer.concat(err).toString('utf8'));
+    const lastHeartbeat=await readIfExists(heartbeat);
+    await new Promise(resolve=>setTimeout(resolve,470));
+    assert.equal(await readIfExists(heartbeat),lastHeartbeat,
+      'PostToolUse grandchild must be dead when interrupted CLI exits');
+    const records=(await readFile(join(root,'.agent-cil','sessions',
+      sessionId,'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.map(record=>record.kind),[
+      'input','tool_pending','tool_started','tool_mapped',
+    ]);
+    assert.equal(records[3].mappedResult.tool_use_id,'posthook-interrupted-write');
+    assert.equal(records[3].assistantUuid,records[1].leafUuid);
+    assert.equal(requests,1,'unreviewed PostToolUse must never request the model again');
+  }finally{
+    if(watchdog)clearTimeout(watchdog);
+    if(child&&child.exitCode===null)child.kill('SIGKILL');
+    if(closed)await closed.catch(()=>{});
+    const pid=Number(await readIfExists(pidFile));
+    if(Number.isSafeInteger(pid)&&pid>0) {
+      try{process.kill(pid,'SIGKILL');}catch{}
+    }
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:150});
   }
 });
