@@ -535,7 +535,8 @@ test('source Bash TaskOutput spills combined stdout/stderr to a complete retaine
       'complete stdout and stderr must survive the 1 MiB inline boundary');
     assert.ok(persisted.includes('A'.repeat(10000)));
     assert.ok(persisted.includes('B'.repeat(10000)));
-    assert.ok(persisted.includes('[stderr]'));
+    assert.equal(persisted.includes('[stderr]'),false,
+      'original file mode interleaves stdout/stderr via the same FD, without pipe markers');
     assert.ok(persisted.includes('DONE'));
     assert.equal(result.outputFileSize,Buffer.byteLength(persisted));
     assert.ok(Buffer.byteLength(result.stdout)<30*1024,
