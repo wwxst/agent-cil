@@ -508,6 +508,84 @@ setTimeout(()=>process.exit(0),180);
 });
 
 
+
+test('packed-capable CLI delivers source Bash spilled output location to model and durable Session', {
+  timeout:35000,
+},async()=>{
+  await workspace(async root=>{
+    const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
+      fileURLToPath(new URL('../src/index.js',import.meta.url));
+    const sessionId=randomUUID();
+    const command='node original-task-output.cjs';
+    const script=join(root,'original-task-output.cjs');
+    const requests=[];
+    const server=createServer(async(req,res)=>{
+      const chunks=[];
+      for await(const chunk of req)chunks.push(chunk);
+      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.end(requests.length===1?sseBashUse(command,18000):sseFinal());
+    });
+    let child,closed,watchdog;
+    try {
+      await writeFile(script,[
+        'process.stdout.write("SOURCE_STDOUT_".repeat(65000));',
+        'process.stderr.write("SOURCE_STDERR_".repeat(36000));',
+        'process.stdout.write("BASH_COMPLETE\\n");',
+      ].join('\n'));
+      await new Promise((resolve,reject)=>{
+        server.once('error',reject);
+        server.listen(0,'127.0.0.1',resolve);
+      });
+      child=spawn(process.execPath,[cli,'--print','--provider','deepseek',
+        '--cwd',root,'--max-retries','0','--max-turns','3',
+        '--compact-threshold','0','--session-id',sessionId,
+        '--allowedTools','Bash('+command+')',
+        '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic',
+        'Run Bash with large output and read the retained file path'],{
+        env:{...process.env,DEEPSEEK_API_KEY:'task-output-local-fixture'},
+        stdio:['ignore','pipe','pipe'],
+      });
+      const out=[],err=[];
+      child.stdout.on('data',buf=>out.push(buf));
+      child.stderr.on('data',buf=>err.push(buf));
+      closed=new Promise((resolve,reject)=>{
+        child.once('error',reject);
+        child.once('close',(code,signal)=>resolve({code,signal}));
+      });
+      watchdog=setTimeout(()=>child.kill('SIGKILL'),24000);
+      const result=await closed;
+      const stdout=Buffer.concat(out).toString('utf8');
+      const stderr=Buffer.concat(err).toString('utf8');
+      assert.equal(result.signal,null,stderr);
+      assert.equal(result.code,0,stdout+stderr);
+      assert.equal(requests.length,2,
+        'the large Bash output must not kill the tool or block next model round');
+      const next=JSON.stringify(requests[1].messages);
+      assert.match(next,/Output truncated/);
+      assert.match(next,/Full output saved to:/);
+      assert.match(next,/outputFilePath/);
+      assert.match(next,/outputFileSize/);
+      assert.match(next,/outputTaskId/);
+      assert.ok(!next.includes('SOURCE_STDOUT_'.repeat(1000)),
+        'model payload must not include the complete megabyte-size log');
+      const records=(await readFile(join(root,'.agent-cil','sessions',
+        sessionId,'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+      assert.ok(records.some(record=>record.kind==='tool_mapped'));
+      const committed=records.find(record=>record.kind==='tool');
+      assert.ok(committed,'durable Session must commit the completed Bash tool result');
+      assert.match(JSON.stringify(committed),/outputTaskId/);
+      assert.match(JSON.stringify(committed),/Full output saved to:/);
+    } finally {
+      if(watchdog)clearTimeout(watchdog);
+      if(child&&child.exitCode===null)child.kill('SIGKILL');
+      if(closed)await closed.catch(()=>{});
+      server.closeAllConnections?.();
+      if(server.listening)await new Promise(resolve=>server.close(resolve));
+    }
+  });
+});
+
 test('Windows real CLI stops before second model request when taskkill fails after a side-effecting Bash', {
   skip:process.platform!=='win32' &&
     'SystemRoot/System32 taskkill failure is a Windows-only OS cleanup path',
