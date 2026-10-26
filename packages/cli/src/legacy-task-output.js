@@ -139,7 +139,7 @@ export async function openReadableInternalTaskOutput(workspace,candidate,session
   try {
     const opened=await fh.stat({bigint:true});
     if(!opened.isFile() || !sameIdentity(identityOf(opened),record.fileIdentity) ||
-        opened.size!==record.expectedBytes)
+        (record.expectedBytes!==null && opened.size!==record.expectedBytes))
       throw new Error('Bash output file identity or size changed after tool completion.');
     return fh;
   }catch(error) {
@@ -381,8 +381,23 @@ export class TaskOutput {
   }
   getStderr() { return this.stdoutToFile||this.#disk?'':this.#stderrBuffer; }
 
-  registerCompletedOutput(workspace) {
-    if(!this.stdoutToFile || this.#outputFileRedundant ||
+  registerRunningOutput(workspace) {
+    // Original LocalShellTask hands the task path back while the Bash is
+    // still running. Trust the original opened native FD identity, never a
+    // user-supplied path; a live log can grow between Read operations.
+    if(!this.stdoutToFile || !this.#outputIdentity || !this.#directoryIdentity)
+      throw new Error('Only an active native Bash output can be registered.');
+    completedTaskOutputs.set(this.path,{
+      workspace:resolve(workspace),
+      sessionId:this.#sessionId,
+      fileIdentity:this.#outputIdentity,
+      directoryIdentity:this.#directoryIdentity,
+      expectedBytes:null,
+    });
+  }
+
+  registerCompletedOutput(workspace,{background=false}={}) {
+    if(!this.stdoutToFile || (!background && this.#outputFileRedundant) ||
        !this.#outputIdentity || !this.#directoryIdentity)
       throw new Error('Only verified, retained Bash file output can be authorized for Read.');
     completedTaskOutputs.set(this.path,{
