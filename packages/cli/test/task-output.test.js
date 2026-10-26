@@ -71,7 +71,8 @@ test('real registered Bash writes full 1MiB+ stdout/stderr to source TaskOutput 
       'native file-descriptor mode retains raw interleaved output without pipe labels');
     assert.ok(stored.includes('output-complete'));
     assert.equal(result.outputFileSize,Buffer.byteLength(stored));
-    assert.ok(Buffer.byteLength(result.stdout)<30000);
+    assert.ok(Buffer.byteLength(result.stdout)<32000,
+      'source file-FD mode reads the 30,000-byte prefix plus a short retained-file notice');
   }finally{
     await rm(root,{recursive:true,force:true,maxRetries:7,retryDelay:120});
   }
