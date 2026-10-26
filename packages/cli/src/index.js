@@ -1165,6 +1165,21 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   let history = journal.messages;
   let activeController;
+  let sigtermRequested = false;
+  const onSigterm = () => {
+    // Pinned original ShellCommandImpl delegates cancellation to the active
+    // abort signal, whose Bash process owner kills its entire process tree.
+    // Do not let Node's default SIGTERM exit orphan a still-running Bash.
+    sigtermRequested = true;
+    process.exitCode = 143;
+    if(activeController && !activeController.signal.aborted) {
+      const error = new Error('Terminated by SIGTERM.');
+      error.name = 'AbortError';
+      activeController.abort(error);
+    }
+    // Closing readline also exits an idle interactive shell.
+    rl?.close();
+  };
   const onSigint = () => {
     if (activeController && !activeController.signal.aborted) {
       const error = new Error('Interrupted by user.');
@@ -1176,6 +1191,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     }
   };
   process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
   loop.on('toolCallStarted', ({ toolName }) => {
     if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
       process.stderr.write('[permission] auto-approved ' + toolName + ' (--allow-edits)\n');
@@ -1187,6 +1203,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   });
 
   const runPrompt = async (text, { plain = false } = {}) => {
+    if(sigtermRequested)return 143;
     if(journal.needsToolReconciliation) {
       printError(journal.needsToolContextReview
       ? 'Session contains completed tool results but failed Hook/native context normalization. Inspect the preserved results and Hook side effects before continuing; automatic replay is unsafe.'
@@ -1228,6 +1245,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       });
       history = result.messages;
       process.stdout.write('\n');
+      if(sigtermRequested)return 143;
       if (result.stopReason === 'max_tokens') {
         printError('Model output reached --max-tokens before finishing. Increase --max-tokens or continue the conversation.');
         return 1;
@@ -1265,7 +1283,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         }
       }
       printError(error instanceof Error ? error.message : String(error));
-      return activeController.signal.aborted ? 130 : 1;
+      return sigtermRequested ? 143 : activeController.signal.aborted ? 130 : 1;
     } finally {
       loop.off('textDelta', onTextDelta);
       loop.off('turnFinished', onTurnFinished);
@@ -1286,7 +1304,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // tool-result checkpoint is retained when a later model turn fails, so
       // the interactive shell can safely continue without replaying tools.
     }
-    while (rl && !rl.closed) {
+    while (rl && !rl.closed && !sigtermRequested) {
       let text;
       try {
         text = await rl.question('you> ');
@@ -1299,9 +1317,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       const status = await runPrompt(trimmed);
       if (status === 130) process.stderr.write('Interrupted.\n');
     }
-    return 0;
+    return sigtermRequested ? 143 : 0;
   } finally {
     process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
     rl?.close();
     await journal.close();
   }
