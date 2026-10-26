@@ -2,6 +2,7 @@
 import { stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
 import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { killPosixProcessTree } from './kill-process-tree.js';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -621,13 +622,13 @@ function signalProcessTree(child, signalName) {
       }
     });
   }
-  try {
-    // detached=true gives the shell and its descendants a private process group.
-    process.kill(-child.pid, signalName);
-  } catch {
-    try{child.kill(signalName);}catch{}
-  }
-  return Promise.resolve();
+  // 2.1.304 killProcessTree() enumerates the descendant PID tree before
+  // signaling the POSIX group: a detached child can escape the shell PGID.
+  // The shell's ChildProcess exit status is the only proof that root PID
+  // still belongs to this invocation; after exit, only signal its PGID.
+  return killPosixProcessTree(child.pid, signalName, {
+    captureDescendants: child.exitCode === null && child.signalCode === null,
+  }).then(() => {});
 }
 
 // Port of the 2.1.304 ShellCommand state shape (liveShellCommands and
