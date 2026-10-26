@@ -960,6 +960,53 @@ await loop.run({input:'one Write'});
   });
 });
 
+
+test('real AgentLoop refuses Tool.call when executing-status witness cannot be persisted before side effects',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Write two files'}];
+    await journal.append({messages:input,kind:'input'});
+    const tools=new ToolRegistry();
+    let calls=0,requests=0;
+    tools.register({
+      name:'Write',description:'Original tool side-effect boundary',
+      call:async()=>{calls++;await writeFile(join(root,'must-not-exist.txt'),'unsafe');
+        return {data:'changed'};},
+      mapToolResultToToolResultBlockParam:(data,id)=>({
+        type:'tool_result',tool_use_id:id,content:data,
+      }),
+    });
+    const loop=new AgentLoop({
+      tools,maxTurns:2,permissionPolicy:async()=>({behavior:'allow'}),
+      onSessionCheckpoint:x=>journal.append(x),
+      // Simulate a source/tool name mismatch in the authenticated witness.
+      // The real SessionJournal validation rejects and poisons the writer
+      // before AgentLoop is allowed to call the actual tool.
+      onToolExecutionStart:x=>journal.appendToolExecutionStart({
+        ...x,toolName:'ForgedDifferentTool',
+      }),
+      model:{async *stream(){
+        requests++;
+        yield {type:'tool_use',id:'first',name:'Write',input:{}};
+        yield {type:'tool_use',id:'second',name:'Write',input:{}};
+        yield {type:'message_end',stopReason:'tool_use'};
+      }},
+    });
+    await assert.rejects(loop.run({input:input[0].content}),
+      /not writable|does not match committed assistant/);
+    assert.equal(calls,0,'Tool.call must never execute without a durable start record');
+    assert.equal(requests,1);
+    await assert.rejects(readFile(join(root,'must-not-exist.txt'),'utf8'),
+      {code:'ENOENT'});
+    assert.equal(journal.needsToolReconciliation,true);
+    const records=(await readFile(journal.path,'utf8')).trim()
+      .split('\n').map(JSON.parse);
+    assert.deepEqual(records.map(x=>x.kind),['input','tool_pending']);
+    await journal.close();
+  });
+});
+
 test('source strictOrderedResults refuses a future sibling as the first durable partial result',async()=>{
   await workspace(async root=>{
     const journal=await openSessionJournal({workspace:root,sessionId:randomUUID()});
