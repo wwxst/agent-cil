@@ -945,24 +945,42 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
       finishResult(result);
     });
     if(runInBackground) {
+      let registeredTaskId;
       try {
         if(!taskManager)throw new Error('Background Bash requires session task ownership.');
         if(signal?.aborted)throw abortError(signal);
-        const taskId=taskManager.spawnShellTask({
+        registeredTaskId=taskManager.spawnShellTask({
           taskOutput,command,completion,kill:()=>ownedShell.kill(),
         });
         taskOutput.registerRunningOutput(cwd);
         resolvePromise({
           exit_code:0,stdout:'',stderr:'',
-          backgroundTaskId:taskId,
-          outputTaskId:taskId,outputFilePath:taskOutput.path,
-          message:'Command running in background with ID: '+taskId+
+          backgroundTaskId:registeredTaskId,
+          outputTaskId:registeredTaskId,outputFilePath:taskOutput.path,
+          message:'Command running in background with ID: '+registeredTaskId+
             '. Output is being written to: '+taskOutput.path,
         });
       }catch(error){
-        void terminate().catch(()=>{});
-        void completion?.catch(()=>{});
-        rejectPromise(error);
+        // This failure happens AFTER spawn(). The 2.1.88 LocalShellTask
+        // owner must finish killing the actual shell/process tree before
+        // returning any tool result or allowing the next model round.
+        // Otherwise a rejected background Bash may keep changing files.
+        // Suppress a ghost completion notice if registration succeeded but
+        // the live output-path registration failed immediately afterward.
+        if(registeredTaskId)taskManager.markTaskNotified(registeredTaskId);
+        void (async()=>{
+          try {
+            await terminate();
+            // 'close' also flushes/retains or disposes the native TaskOutput
+            // FD. Its failure must not be hidden behind the registration
+            // error; ProcessTreeCleanupError and TaskOutputPersistenceError
+            // are fatal execution fences in the active AgentLoop.
+            await completion;
+            rejectPromise(error);
+          }catch(cleanupError){
+            rejectPromise(cleanupError);
+          }
+        })();
       }
     }
   });
