@@ -211,10 +211,12 @@ test('Windows taskkill launch failure is reported, never mistaken for a complete
     await workspace(async root=>{
       const script=join(root,'unavailable-taskkill-'+mode+'.cjs');
       const pidFile=join(root,'unreaped-'+mode+'.pid');
+      const launcherPidFile=join(root,'unreaped-'+mode+'-launcher.pid');
       const beatFile=join(root,'unreaped-'+mode+'.txt');
       await writeFile(script,`
 const fs=require('node:fs');
 const {spawn}=require('node:child_process');
+fs.writeFileSync('unreaped-${mode}-launcher.pid',String(process.pid));
 const child=spawn(process.execPath,['-e',
   "const fs=require('node:fs');"+
   "setInterval(()=>fs.appendFileSync('unreaped-${mode}.txt','x'),35);"
@@ -258,6 +260,7 @@ setInterval(()=>{},500);
         else process.env.SystemRoot=oldRoot;
         controller.abort();
         await killIfRunning(pidFile);
+        await killIfRunning(launcherPidFile);
         await execution.catch(()=>{});
       }
     });
@@ -475,6 +478,7 @@ setTimeout(()=>process.exit(0),180);
       if(child&&child.exitCode===null)child.kill('SIGKILL');
       if(closed)await closed.catch(()=>{});
       await killIfRunning(pidFile);
+      await killIfRunning(launcherPidFile);
       server.closeAllConnections?.();
       if(server.listening)await new Promise(resolve=>server.close(resolve));
     }
@@ -494,6 +498,7 @@ test('Windows real CLI stops before second model request when taskkill fails aft
     const command='node unconfirmed-children.cjs';
     const script=join(root,'unconfirmed-children.cjs');
     const pidFile=join(root,'unconfirmed-children.pid');
+    const launcherPidFile=join(root,'unconfirmed-launcher.pid');
     const beatFile=join(root,'unconfirmed-children.txt');
     const requests=[];
     const server=createServer(async(req,res)=>{
@@ -507,6 +512,7 @@ test('Windows real CLI stops before second model request when taskkill fails aft
       await writeFile(script,`
 const fs=require('node:fs');
 const {spawn}=require('node:child_process');
+fs.writeFileSync('unconfirmed-launcher.pid',String(process.pid));
 const leaf=spawn(process.execPath,['-e',
   "const fs=require('node:fs');"+
   "setInterval(()=>fs.appendFileSync('unconfirmed-children.txt','x'),35);"
