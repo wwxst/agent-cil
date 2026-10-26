@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -371,14 +372,14 @@ setTimeout(()=>process.exit(0),180);
 function sseFrame(type,data={}) {
   return 'event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n';
 }
-function sseBashUse(command) {
+function sseBashUse(command, timeoutMs=11000) {
   return sseFrame('message_start',{message:{usage:{input_tokens:20}}})+
     sseFrame('content_block_start',{index:0,content_block:{
       type:'tool_use',id:'exit-with-unowned-grandchild',name:'Bash',input:{},
     }})+
     sseFrame('content_block_delta',{index:0,delta:{
       type:'input_json_delta',partial_json:JSON.stringify({
-        command,timeout_ms:11000,
+        command,timeout_ms:timeoutMs,
       }),
     }})+
     sseFrame('content_block_stop',{index:0})+
@@ -469,6 +470,88 @@ setTimeout(()=>process.exit(0),180);
       await new Promise(resolve=>setTimeout(resolve,430));
       assert.equal(await readOptional(heartbeat),saved,
         'unowned side effects must be stopped before the model turn advances');
+    } finally {
+      if(watchdog)clearTimeout(watchdog);
+      if(child&&child.exitCode===null)child.kill('SIGKILL');
+      if(closed)await closed.catch(()=>{});
+      await killIfRunning(pidFile);
+      server.closeAllConnections?.();
+      if(server.listening)await new Promise(resolve=>server.close(resolve));
+    }
+  });
+});
+
+
+test('Windows real CLI stops before second model request when taskkill fails after a side-effecting Bash', {
+  skip:process.platform!=='win32' &&
+    'SystemRoot/System32 taskkill failure is a Windows-only OS cleanup path',
+  timeout:38000,
+},async()=>{
+  await workspace(async root=>{
+    const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
+      fileURLToPath(new URL('../src/index.js',import.meta.url));
+    const sessionId=randomUUID();
+    const command='node unconfirmed-children.cjs';
+    const script=join(root,'unconfirmed-children.cjs');
+    const pidFile=join(root,'unconfirmed-children.pid');
+    const beatFile=join(root,'unconfirmed-children.txt');
+    const requests=[];
+    const server=createServer(async(req,res)=>{
+      const chunks=[];for await(const chunk of req)chunks.push(chunk);
+      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.end(requests.length===1?sseBashUse(command,1250):sseFinal());
+    });
+    let child,closed,watchdog;
+    try {
+      await writeFile(script,`
+const fs=require('node:fs');
+const {spawn}=require('node:child_process');
+const leaf=spawn(process.execPath,['-e',
+  "const fs=require('node:fs');"+
+  "setInterval(()=>fs.appendFileSync('unconfirmed-children.txt','x'),35);"
+],{cwd:process.cwd(),stdio:'ignore',windowsHide:true});
+fs.writeFileSync('unconfirmed-children.pid',String(leaf.pid));
+setInterval(()=>{},500);
+`);
+      await new Promise((resolve,reject)=>{
+        server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+      });
+      child=spawn(process.execPath,[cli,
+        '--print','--provider','deepseek','--cwd',root,'--session-id',sessionId,
+        '--max-retries','0','--max-turns','3','--compact-threshold','0',
+        '--allowedTools','Bash('+command+')',
+        '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic',
+        'Run Bash once'],{
+        env:{...process.env,
+          DEEPSEEK_API_KEY:'only-local-unconfirmed-test',
+          SystemRoot:join(root,'nonexistent-SystemRoot')},
+        stdio:['ignore','pipe','pipe'],
+      });
+      const out=[],err=[];
+      child.stdout.on('data',b=>out.push(b));
+      child.stderr.on('data',b=>err.push(b));
+      closed=new Promise((resolve,reject)=>{
+        child.once('error',reject);
+        child.once('close',(code,signal)=>resolve({code,signal}));
+      });
+      watchdog=setTimeout(()=>child.kill('SIGKILL'),14000);
+      const result=await closed;
+      const stdout=Buffer.concat(out).toString('utf8');
+      const stderr=Buffer.concat(err).toString('utf8');
+      assert.equal(result.signal,null,stdout+stderr);
+      assert.equal(result.code,1,stdout+stderr);
+      assert.match(stderr,/process-tree cleanup could not be confirmed/);
+      assert.equal(requests.length,1,
+        'an unconfirmed Windows Bash cleanup must stop before a second model call');
+      assert.ok((await readOptional(beatFile)).length>0,
+        'the OS-side effect occurred before taskkill failed');
+      const jsonl=await readFile(join(root,'.agent-cil','sessions',
+        sessionId,'transcript.jsonl'),'utf8');
+      const records=jsonl.trim().split('\n').map(JSON.parse);
+      assert.deepEqual(records.map(x=>x.kind),
+        ['input','tool_pending','tool_started'],
+        'do not persist a fake tool_result when descendants remain unowned');
     } finally {
       if(watchdog)clearTimeout(watchdog);
       if(child&&child.exitCode===null)child.kill('SIGKILL');
