@@ -92,6 +92,7 @@ export class AgentLoop extends EventEmitter {
   #toolResultStorage;
   #onSessionCheckpoint;
   #onMappedToolResult;
+  #onToolExecutionStart;
   #mappedWitnessFailure;
   #requireCanUseTool;
   // Original REPL passes updatedToolUseContext and committed history into
@@ -114,6 +115,7 @@ export class AgentLoop extends EventEmitter {
     toolResultStorage,
     onSessionCheckpoint,
     onMappedToolResult,
+    onToolExecutionStart,
     requireCanUseTool = false,
   } = {}) {
     super();
@@ -158,6 +160,9 @@ export class AgentLoop extends EventEmitter {
       throw new TypeError('onMappedToolResult must be a function.');
     }
     this.#onMappedToolResult = onMappedToolResult;
+    if(onToolExecutionStart!==undefined && typeof onToolExecutionStart!=='function')
+      throw new TypeError('onToolExecutionStart must be a function.');
+    this.#onToolExecutionStart=onToolExecutionStart;
     // Original toolHooks.ts consumes the fork/query requireCanUseTool
     // capability flag. It defaults false for the standalone parent CLI;
     // true is explicitly supplied only by contexts requiring final review.
@@ -694,6 +699,21 @@ export class AgentLoop extends EventEmitter {
       signal,
       onPermissionRequired:event=>this.emit('permissionRequired',{turn,...event}),
     });
+    // Source StreamingToolExecutor marks this tool 'executing' before
+    // runToolUse dispatch; after final permission is granted, persist this
+    // exact execution transition before Tool.call can have side effects.
+    // Speculative Read is explicitly side-effect-free and may execute before
+    // the assistant UUID checkpoint, so it cannot use this witness boundary.
+    if(!speculative && this.#onToolExecutionStart) {
+      try {
+        await this.#onToolExecutionStart({
+          toolUseId:toolUse.id,toolName:tool.name,
+        });
+      } catch(error) {
+        this.#mappedWitnessFailure=error;
+        throw error;
+      }
+    }
     this.emit('toolCallStarted', { turn, toolUseId: toolUse.id, toolName: tool.name });
     try {
       // The final input was validated and authorized before this call.
