@@ -28,7 +28,8 @@ export function getSessionTaskOutputDirectory(workspace,sessionId) {
   return join(projectTaskRoot,digest,sessionId);
 }
 const privateDirectory=async directory=>{
-  const folders=[projectTaskRoot,dirname(directory),directory];
+  const folders=directory===taskOutputDir ? [directory] :
+    [projectTaskRoot,dirname(directory),directory];
   for(const folder of folders) {
     await mkdir(folder,{recursive:true,mode:0o700});
     const st=await lstat(folder,{bigint:true});
