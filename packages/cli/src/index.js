@@ -3,6 +3,7 @@ import { stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
 import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { killPosixProcessTree } from './kill-process-tree.js';
+import { createLocalShellTaskManager } from './local-shell-task.js';
 import {
   TaskOutput, isReadableInternalTaskOutputPath,
   openReadableInternalTaskOutput, restoreCompletedTaskOutputs,
@@ -307,6 +308,7 @@ export function createCliPermissionPolicy({
   workspace = process.cwd(),
   permissionContext = createCliPermissionContext(),
   sessionId = null,
+  taskManager = null,
 } = {}) {
   const root = resolve(workspace);
   const policy = async ({ name, input } = {}) => {
@@ -352,6 +354,14 @@ export function createCliPermissionPolicy({
         : { behavior: 'ask', reason: 'This tool modifies workspace files.' };
     }
 
+    if (name === 'TaskOutput' || name === 'TaskStop') {
+      const taskId=input?.task_id??input?.shell_id;
+      if(!taskManager?.has(taskId) ||
+          (name==='TaskStop' && taskManager.status(taskId)?.status!=='running'))
+        return {behavior:'deny',reason:'No active owned Bash task with that ID.'};
+      return checkWholeToolPermissionRules(permissionContext,{name}) ||
+        {behavior:'allow',reason:'Operate on this CLI session-owned background Bash task.'};
+    }
     if (name === 'Bash') {
       return checkWholeToolPermissionRules(permissionContext, { name }) ||
         { behavior: 'ask', reason: 'This command executes a shell process.',
@@ -704,7 +714,7 @@ export async function cleanupLiveShellCommands() {
   }
 }
 
-async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes, taskSession }) {
+async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes, taskSession, runInBackground=false, taskManager }) {
   if (signal?.aborted) throw abortError(signal);
   // Original 2.1.88 utils/Shell.ts exec() creates TaskOutput in file
   // mode BEFORE launching Bash. Both stdio fds point to the SAME file
@@ -718,6 +728,18 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
   }
 
   return new Promise((resolvePromise, rejectPromise) => {
+    let settleCompletion, failCompletion;
+    const completion=runInBackground?new Promise((resolve,reject)=>{
+      settleCompletion=resolve;failCompletion=reject;
+    }):null;
+    const finishResult=result=>{
+      if(runInBackground)settleCompletion(result);
+      else resolvePromise(result);
+    };
+    const finishError=error=>{
+      if(runInBackground)failCompletion(error);
+      else rejectPromise(error);
+    };
     let child;
     try {
       child = spawn(command, {
@@ -863,7 +885,7 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
         // The process-tree owner could not confirm that side effects
         // stopped. Throw into AgentLoop's fatal checkpoint fence rather
         // than mapping an ordinary tool_error and continuing the model.
-        rejectPromise(spawnError);
+        finishError(spawnError);
         return;
       }
       // In original file mode the kernel has already written output. Read
@@ -876,11 +898,11 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
       } catch(error) {
         const failure=new Error('Bash TaskOutput persistence failed: '+error.message,{cause:error});
         failure.name='TaskOutputPersistenceError';
-        rejectPromise(failure);
+        finishError(failure);
         return;
       }
       if (signal?.aborted) {
-        rejectPromise(abortError(signal));
+        finishError(abortError(signal));
         return;
       }
       const result = {
@@ -915,15 +937,36 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
         // ShellCommandImpl deletes a redundant foreground output file.
         await taskOutput.deleteOutputFile();
       }
-      resolvePromise(result);
+      finishResult(result);
     });
+    if(runInBackground) {
+      try {
+        if(!taskManager)throw new Error('Background Bash requires session task ownership.');
+        if(signal?.aborted)throw abortError(signal);
+        const taskId=taskManager.spawnShellTask({
+          taskOutput,command,completion,kill:()=>ownedShell.kill(),
+        });
+        resolvePromise({
+          exit_code:0,stdout:'',stderr:'',
+          backgroundTaskId:taskId,
+          outputTaskId:taskId,outputFilePath:taskOutput.path,
+          message:'Command running in background with ID: '+taskId+
+            '. Output is being written to: '+taskOutput.path,
+        });
+      }catch(error){
+        void terminate().catch(()=>{});
+        void completion?.catch(()=>{});
+        rejectPromise(error);
+      }
+    }
   });
 }
 
-export async function createBuiltinTools({ workspace = process.cwd(), permissionContext = createCliPermissionContext(), taskSession = null } = {}) {
+export async function createBuiltinTools({ workspace = process.cwd(), permissionContext = createCliPermissionContext(), taskSession = null, taskManager = null } = {}) {
   const { ToolRegistry } = await import('../../runtime/src/tool-registry.js');
   const root = resolve(workspace);
   const tools = new ToolRegistry();
+  const manager=taskManager??createLocalShellTaskManager({sessionId:taskSession?.sessionId});
 
   // Preserve the original workspace-safe Read implementation and its direct
   // execute() API, but route actual AgentLoop execution through the 2.1.88
@@ -1138,17 +1181,50 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       properties: {
         command: { type: 'string', minLength: 1 },
         timeout_ms: { type: 'integer', minimum: 1000, maximum: 120000 },
+        run_in_background: {type:'boolean'},
       },
       required: ['command'],
       additionalProperties: false,
     },
-    execute: async ({ command, timeout_ms = 30000 }, { signal } = {}) => runShellCommand(command, {
+    execute: async ({ command, timeout_ms = 30000, run_in_background = false }, { signal } = {}) => runShellCommand(command, {
       cwd: root,
       signal,
       timeoutMs: timeout_ms,
       maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
       taskSession,
+      runInBackground:run_in_background,
+      taskManager:manager,
     }),
+  });
+
+  tools.register({
+    name:'TaskOutput',
+    description:'Read output and status from a background Bash task. Prefer Read on the output file for completed tasks.',
+    isConcurrencySafe:()=>true,
+    inputSchema:{
+      type:'object',
+      properties:{
+        task_id:{type:'string'},
+        block:{type:'boolean'},
+        timeout:{type:'integer',minimum:0,maximum:600000},
+      },
+      required:['task_id'],additionalProperties:false,
+    },
+    execute:async(input,{signal}={})=>manager.getTaskOutput(input,signal),
+    maxResultSizeChars:100000,
+  });
+  tools.register({
+    name:'TaskStop',
+    description:'Stop a session-owned running background Bash task by ID.',
+    inputSchema:{
+      type:'object',
+      properties:{
+        task_id:{type:'string'},
+        shell_id:{type:'string'},
+      },
+      additionalProperties:false,
+    },
+    execute:async({task_id,shell_id})=>manager.stopTask(task_id??shell_id),
   });
 
   return tools;
@@ -1359,8 +1435,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     await journal.close();
     return 2;
   }
+  const taskManager=createLocalShellTaskManager({sessionId:journal.id});
   const tools = await createBuiltinTools({
     workspace,permissionContext,taskSession:{workspace,sessionId:journal.id},
+    taskManager,
   });
   const loop = new AgentLoop({
     model,
@@ -1388,6 +1466,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       workspace,
       permissionContext,
       sessionId:journal.id,
+      taskManager,
     }),
     maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
@@ -1570,7 +1649,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // 2.1.304 waits for pendingKillBackstops during shutdown. Do this
       // BEFORE releasing the durable session lock, including exceptional
       // and SIGTERM paths.
-      await cleanupLiveShellCommands();
+      try {await taskManager.killShellTasksForAgent();}
+      finally {await cleanupLiveShellCommands();}
     } finally {
       await journal.close();
     }
