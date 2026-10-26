@@ -445,7 +445,7 @@ test('built-in tools provide read, write and unique-match edit operations', asyn
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-cli-'));
   try {
     const tools = await createBuiltinTools({ workspace });
-    assert.deepEqual(tools.list().map((tool) => tool.name), ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']);
+    assert.deepEqual(tools.list().map((tool) => tool.name), ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'TaskOutput', 'TaskStop']);
 
     await tools.get('Write').execute({ file_path: 'src/example.js', content: 'const value = 1;\n' });
     assert.equal(await tools.get('Read').execute({ file_path: 'src/example.js' }), 'const value = 1;\n');
