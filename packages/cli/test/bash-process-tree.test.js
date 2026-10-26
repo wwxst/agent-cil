@@ -542,7 +542,7 @@ setInterval(()=>{},500);
         " return original.apply(this,arguments);",
         "};",
         "require('node:module').syncBuiltinESMExports();",
-      ].join('\\n'));
+      ].join('\n'));
       child=spawn(process.execPath,['--require',taskkillFailurePreload,cli,
         '--print','--provider','deepseek','--cwd',root,'--session-id',sessionId,
         '--max-retries','0','--max-turns','3','--compact-threshold','0',
