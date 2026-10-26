@@ -98,6 +98,55 @@ test('real registered Bash timeout kills descendants on Linux and Windows', {
 },async()=>exerciseTree({mode:'timeout'}));
 
 
+
+test('actual Bash abort also kills detached grandchild outside the original POSIX process group', {
+  skip: process.platform === 'win32' &&
+    'POSIX 2.1.304 getDescendantPids enumerates detached sessions; Windows uses System32 taskkill',
+  timeout: 24000,
+}, async()=>{
+  await workspace(async root=>{
+    const script=join(root,'escape-pgid.cjs');
+    const heartbeat=join(root,'escaped-heartbeat.txt');
+    const pidFile=join(root,'escaped-leaf.pid');
+    await writeFile(script,`
+const fs=require('node:fs');
+const {spawn}=require('node:child_process');
+const grandchild=spawn(process.execPath,['-e',
+  "const fs=require('node:fs');"+
+  "setInterval(()=>fs.appendFileSync('escaped-heartbeat.txt','x'),30);"
+],{cwd:process.cwd(),detached:true,stdio:'ignore'});
+fs.writeFileSync('escaped-leaf.pid',String(grandchild.pid));
+setInterval(()=>{},500);
+`);
+    const command='"'+process.execPath.replaceAll('"','')+'" "'+
+      script.replaceAll('"','')+'"';
+    const bash=(await createBuiltinTools({workspace:root})).get('Bash');
+    const controller=new AbortController();
+    const execution=bash.execute({command,timeout_ms:12000},{
+      signal:controller.signal,
+    });
+    try {
+      await waitForFile(pidFile);
+      await waitForFile(heartbeat,3);
+      const previous=await readOptional(heartbeat);
+      assert.ok(previous.length>0);
+      controller.abort(new Error('Abort Bash with detached descendant'));
+      await assert.rejects(execution,/Abort Bash with detached descendant/);
+      const after=await readOptional(heartbeat);
+      await new Promise(resolve=>setTimeout(resolve,500));
+      assert.equal(await readOptional(heartbeat),after,
+        'a detached grandson has a DIFFERENT POSIX process group but must be terminated');
+      assert.deepEqual(getShellLifecycleStatus(),{
+        liveShellCommands:0,pendingKillBackstops:0,
+      });
+    } finally {
+      controller.abort();
+      await killIfRunning(pidFile);
+      await execution.catch(()=>{});
+    }
+  });
+});
+
 test('source liveShellCommands and pendingKillBackstops reap two concurrent Bash trees before cleanup completes', {
   timeout:30000,
 },async()=>{
