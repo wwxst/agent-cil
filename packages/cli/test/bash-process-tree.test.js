@@ -495,12 +495,14 @@ setTimeout(()=>process.exit(0),180);
       if(watchdog)clearTimeout(watchdog);
       if(child&&child.exitCode===null)child.kill('SIGKILL');
       if(closed)await closed.catch(()=>{});
-      await killTreeIfRunning(launcherPidFile);
-      await killTreeIfRunning(pidFile);
-      if(process.platform==='win32')
-        await new Promise(resolve=>setTimeout(resolve,300));
-      server.closeAllConnections?.();
-      if(server.listening)await new Promise(resolve=>server.close(resolve));
+      try {
+        await killIfRunning(pidFile);
+      } finally {
+        // Even a failed emergency kill must not strand the local SSE
+        // server and pin node --test in progress indefinitely.
+        server.closeAllConnections?.();
+        if(server.listening)await new Promise(resolve=>server.close(resolve));
+      }
     }
   });
 });
@@ -605,9 +607,18 @@ setInterval(()=>{},500);
       if(watchdog)clearTimeout(watchdog);
       if(child&&child.exitCode===null)child.kill('SIGKILL');
       if(closed)await closed.catch(()=>{});
-      await killIfRunning(pidFile);
-      server.closeAllConnections?.();
-      if(server.listening)await new Promise(resolve=>server.close(resolve));
+      try {
+        // A real Windows taskkill /T is invoked by the test owner, NOT by
+        // the injected CLI preload, to prevent a residual launcher/leaf
+        // from keeping the workspace open after fault simulation.
+        await killTreeIfRunning(launcherPidFile);
+        await killTreeIfRunning(pidFile);
+        if(process.platform==='win32')
+          await new Promise(resolve=>setTimeout(resolve,300));
+      } finally {
+        server.closeAllConnections?.();
+        if(server.listening)await new Promise(resolve=>server.close(resolve));
+      }
     }
   });
 });
