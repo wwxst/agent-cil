@@ -7,9 +7,9 @@ function inputs(signal, checkpoint, acknowledged) {
   const taskId=randomUUID();
   const pending=[{
     taskId,
-    text:'<task_notification>\\n<task_id>'+taskId+
-      '</task_id>\\n<output_file>/private/owned.output</output_file>\\n'+
-      '<status>completed</status>\\n<summary>Task completed</summary>\\n'+
+    text:'<task_notification>\n<task_id>'+taskId+
+      '</task_id>\n<output_file>/private/owned.output</output_file>\n'+
+      '<status>completed</status>\n<summary>Task completed</summary>\n'+
       '</task_notification>',
   }];
   let providerCalls=0;
