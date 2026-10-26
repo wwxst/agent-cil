@@ -247,3 +247,97 @@ test('packed CLI queues exactly one durable native LocalShellTask completion not
     await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:140});
   }
 });
+
+
+test('native task notification checkpoint survives provider failure and resumes in another real CLI process', {
+  timeout:62000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-native-notice-resume-'));
+  const sessionId=randomUUID();
+  const command='node restart-native-notice.cjs';
+  let requests=0,seenBeforeFailure=false,seenOnResume=false;
+  const server=createServer(async(req,res)=>{
+    const parts=[];for await(const chunk of req)parts.push(chunk);
+    requests++;
+    const body=JSON.parse(Buffer.concat(parts).toString('utf8'));
+    const serialized=JSON.stringify(body.messages);
+    if(requests===3){
+      seenBeforeFailure=serialized.includes('<task_notification>') &&
+        serialized.includes('<status>completed</status>');
+      res.writeHead(503,{'content-type':'application/json'});
+      res.end(JSON.stringify({error:{message:'forced transport failure after task notification commit'}}));
+      return;
+    }
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    if(requests===1){
+      res.end(emitTool('notification-restart-bash','Bash',{
+        command,run_in_background:true,timeout_ms:10000,
+      }));
+    }else if(requests===2){
+      await new Promise(resolve=>setTimeout(resolve,1500));
+      res.end(emitTool('notification-restart-read','Read',{
+        file_path:'restart-native-notice.cjs',offset:0,limit:1,
+      }));
+    }else {
+      seenOnResume=serialized.includes('<task_notification>') &&
+        serialized.includes('<status>completed</status>');
+      res.end(finalAnswer());
+    }
+  });
+  async function run(args){
+    const child=spawn(process.execPath,[cli,...args],{
+      env:{...process.env,DEEPSEEK_API_KEY:'local-native-notice-restart'},
+      stdio:['ignore','pipe','pipe'],
+    });
+    const out=[],err=[];
+    child.stdout.on('data',chunk=>out.push(chunk));
+    child.stderr.on('data',chunk=>err.push(chunk));
+    const watchdog=setTimeout(()=>child.kill('SIGKILL'),19000);
+    try{
+      const [code,signal]=await new Promise((resolve,reject)=>{
+        child.once('error',reject);
+        child.once('close',(c,s)=>resolve([c,s]));
+      });
+      return {code,signal,stdout:Buffer.concat(out).toString('utf8'),
+        stderr:Buffer.concat(err).toString('utf8')};
+    } finally {clearTimeout(watchdog);}
+  }
+  try{
+    await writeFile(join(root,'restart-native-notice.cjs'),[
+      "const fs=require('node:fs');",
+      "fs.appendFileSync('only-once.txt','native task executed\\n');",
+      "setTimeout(()=>{process.stdout.write('BACKGROUND_RESTART_DONE\\n');process.exit(0)},850);",
+    ].join('\n'));
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    const base=['--print','--provider','deepseek','--cwd',root,
+      '--max-turns','5','--max-retries','0','--compact-threshold','0',
+      '--allowedTools','Bash('+command+')',
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic'];
+    const first=await run([...base,'--session-id',sessionId,
+      'Start background Bash and continue when its native notification arrives']);
+    assert.equal(first.signal,null,first.stderr);
+    assert.equal(first.code,1,first.stdout+first.stderr);
+    assert.equal(requests,3);
+    assert.equal(seenBeforeFailure,true);
+    const path=join(root,'.agent-cil','sessions',sessionId,'transcript.jsonl');
+    const records=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(records.filter(r=>r.kind==='task_notification').length,1);
+    const resumed=await run([...base,'--resume',sessionId]);
+    assert.equal(resumed.signal,null,resumed.stderr);
+    assert.equal(resumed.code,0,resumed.stdout+resumed.stderr);
+    assert.equal(requests,4,'do not replay a background Bash or its Read tool');
+    assert.equal(seenOnResume,true,'native task message must survive process restart');
+    assert.equal((await readFile(join(root,'only-once.txt'),'utf8')).trim(),
+      'native task executed');
+    const replayed=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(replayed.filter(r=>r.kind==='task_notification').length,1,
+      'resume must not inject duplicate native task notifications');
+    assert.equal(replayed.filter(r=>r.kind==='tool').length,2);
+  } finally {
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:150});
+  }
+});
