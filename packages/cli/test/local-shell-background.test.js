@@ -65,6 +65,13 @@ test('source run_in_background TaskOutput and TaskStop own a real Bash process t
     assert.equal(snapshot.retrieval_status,'not_ready');
     assert.equal(snapshot.task.status,'running');
     assert.match(snapshot.task.output,/BACKGROUND_SHELL_STARTED/);
+    assert.equal((await policy({
+      name:'Read',input:{file_path:result.outputFilePath,offset:0,limit:2},
+    })).behavior,'allow','source background output path is readable while still running');
+    const liveLog=await tools.get('Read').execute({
+      file_path:result.outputFilePath,offset:0,limit:2,
+    });
+    assert.match(liveLog,/BACKGROUND_SHELL_STARTED/);
     const stopped=await tools.get('TaskStop').execute({task_id:taskId});
     assert.equal(stopped.task_id,taskId);
     const final=await tools.get('TaskOutput').execute({task_id:taskId,block:true,timeout:1000});
