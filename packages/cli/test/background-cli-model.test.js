@@ -39,7 +39,9 @@ function toolResult(messages,id){
     if(message.role!=='user'||!Array.isArray(message.content))continue;
     for(const block of message.content) {
       if(block?.type==='tool_result'&&block.tool_use_id===id) {
-        if(typeof block.content==='string')return JSON.parse(block.content);
+        if(typeof block.content==='string'){
+          try{return JSON.parse(block.content);}catch{return block.content;}
+        }
         return block.content;
       }
     }
