@@ -108,6 +108,7 @@ export class TaskOutput {
   #totalBytes = 0;
   #maxMemory;
   #outputFileSize = 0;
+  #outputFileRedundant = false;
   #onProgress;
 
   constructor(taskId = randomUUID(), onProgress = null, stdoutToFile = false,
@@ -120,8 +121,25 @@ export class TaskOutput {
   }
   get totalBytes() { return this.#totalBytes; }
   get outputFileSize() { return this.#outputFileSize; }
-  get isOverflowed() { return this.#disk !== null; }
-  get outputFileRedundant() { return this.#disk === null; }
+  get isOverflowed() {
+    return this.stdoutToFile ? !this.#outputFileRedundant : this.#disk !== null;
+  }
+  get outputFileRedundant() {
+    return this.stdoutToFile ? this.#outputFileRedundant : this.#disk === null;
+  }
+
+  // Original utils/Shell.ts exec(): prepare one exclusive output file FD,
+  // pass this SAME descriptor for stdout and stderr, then close our own
+  // duplicate after the child process has started.
+  async initFileOutput() {
+    if(!this.stdoutToFile)throw new Error('Only file-mode TaskOutput owns a shell output fd.');
+    await mkdir(taskOutputDir,{recursive:true,mode:0o700});
+    const flags=process.platform==='win32'
+      ? 'wx'
+      : fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL |
+        fsConstants.O_APPEND | (fsConstants.O_NOFOLLOW??0);
+    return open(this.path,flags,0o600);
+  }
 
   writeStdout(data) { this.#writeBuffered(data,false); }
   writeStderr(data) { this.#writeBuffered(data,true); }
@@ -153,13 +171,38 @@ export class TaskOutput {
 
   async flush() {
     await this.#disk?.flush();
-    if (this.#disk) {
+    if (this.stdoutToFile || this.#disk) {
       try { this.#outputFileSize=(await stat(this.path)).size; }
       catch(error) { throw new Error('TaskOutput file unavailable: '+error.message,{cause:error}); }
     }
   }
 
   async getStdout() {
+    if(this.stdoutToFile) {
+      // Original BASH_MAX_OUTPUT_DEFAULT = 30_000, upper limit 150_000.
+      // Read only a bounded prefix as in 2.1.88 #readStdoutFromFile(),
+      // not the entire command output. Full bytes stay on disk.
+      const maxBytes=30000;
+      const fh=await open(this.path,'r');
+      try {
+        const size=(await fh.stat()).size;
+        this.#outputFileSize=size;
+        const buf=Buffer.alloc(Math.min(size,maxBytes));
+        let position=0;
+        while(position<buf.length) {
+          const {bytesRead}=await fh.read(buf,position,buf.length-position,position);
+          if(!bytesRead)break;
+          position+=bytesRead;
+        }
+        this.#outputFileRedundant=size<=position;
+        const text=buf.subarray(0,position).toString('utf8');
+        if(this.#outputFileRedundant)return text;
+        return text+'\\nOutput truncated ('+Math.round(size/1024)+
+          'KB total). Full output saved to: '+this.path;
+      }finally {
+        await fh.close();
+      }
+    }
     if (this.#disk) {
       await this.flush();
       const sizeKB=Math.round(this.#totalBytes/1024);
@@ -170,7 +213,7 @@ export class TaskOutput {
     }
     return this.#stdoutBuffer;
   }
-  getStderr() { return this.#disk?'':this.#stderrBuffer; }
+  getStderr() { return this.stdoutToFile||this.#disk?'':this.#stderrBuffer; }
   async deleteOutputFile() {
     try { await unlink(this.path); } catch(error) {
       if (error?.code!=='ENOENT') throw error;
