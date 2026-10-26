@@ -198,7 +198,7 @@ export async function getTaskOutput(taskId, maxBytes=8*1024*1024) {
       Math.max(0,size-buffer.length));
     const tail=buffer.subarray(0,bytesRead).toString('utf8');
     return size>bytesRead?
-      '['+Math.round((size-bytesRead)/1024)+'KB of earlier output omitted]\\n'+tail : tail;
+      '['+Math.round((size-bytesRead)/1024)+'KB of earlier output omitted]\n'+tail : tail;
   } finally {
     await file.close();
   }
