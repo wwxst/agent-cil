@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { randomUUID, createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, rm, readFile, appendFile, symlink, mkdir, writeFile, stat, realpath, rename, truncate } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -792,6 +792,170 @@ test('real serial AgentLoop does not execute a later Write if the first pre-Hook
       }],
     }],kind:'tool'}),/not writable/);
     await journal.close();
+  });
+});
+
+
+test('original executor executing status is durable before Tool.call, remains uncompleted after restart',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Write one file'}];
+    const pending=[...input,{role:'assistant',content:[
+      {type:'tool_use',id:'first-tool',name:'Write',input:{}},
+      {type:'tool_use',id:'second-tool',name:'Write',input:{}},
+    ]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    await journal.appendToolExecutionStart({
+      toolUseId:'first-tool',toolName:'Write',
+    });
+    assert.deepEqual(journal.startedToolExecutions.map(x=>x.toolUseId),
+      ['first-tool']);
+    assert.equal(journal.needsToolReconciliation,true);
+    assert.deepEqual(journal.messages,pending,
+      'an executing tool is NOT an already completed provider tool_result');
+    await assert.rejects(journal.appendToolExecutionStart({
+      toolUseId:'first-tool',toolName:'Write',
+    }),/already started/);
+    await assert.rejects(journal.appendToolExecutionStart({
+      toolUseId:'second-tool',toolName:'Write',
+    }),/not writable/,
+      'failed status transitions fence the journal instead of allowing re-execution');
+    const path=journal.path;
+    await journal.close();
+    const lines=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(lines.map(x=>x.kind),
+      ['input','tool_pending','tool_started']);
+    assert.equal(lines[2].status,'executing');
+    assert.equal(lines[2].assistantUuid,lines[1].leafUuid);
+    assert.equal(lines[2].leafUuid,lines[1].leafUuid);
+    const reopened=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(reopened.needsToolReconciliation,true);
+    assert.deepEqual(reopened.startedToolExecutions.map(x=>x.toolUseId),['first-tool']);
+    assert.deepEqual(reopened.messages,pending);
+    await reopened.close();
+  });
+});
+
+test('checksum-valid forged executing status cannot impersonate another tool or earlier assistant',async()=>{
+  await workspace(async root=>{
+    const id=randomUUID();
+    const journal=await openSessionJournal({workspace:root,sessionId:id});
+    const input=[{role:'user',content:'Write'}];
+    const pending=[...input,{role:'assistant',content:[{
+      type:'tool_use',id:'expected-tool',name:'Write',input:{},
+    }]}];
+    await journal.append({messages:input,kind:'input'});
+    await journal.append({messages:pending,kind:'tool_pending'});
+    await journal.appendToolExecutionStart({toolUseId:'expected-tool',toolName:'Write'});
+    const path=journal.path;
+    await journal.close();
+    const lines=(await readFile(path,'utf8')).trim().split('\n').map(JSON.parse);
+    for(const modify of [
+      last=>{last.toolUseId='other-tool';},
+      last=>{last.toolName='Bash';},
+      last=>{last.assistantUuid=randomUUID();},
+      last=>{last.status='completed';},
+    ]){
+      const forged=structuredClone(lines);
+      modify(forged.at(-1));
+      const {hash:oldHash,...payload}=forged.at(-1);
+      forged.at(-1).hash=createHash('sha256')
+        .update(JSON.stringify(payload)).digest('hex');
+      await writeFile(path,forged.map(x=>JSON.stringify(x)).join('\n')+'\n');
+      await assert.rejects(openSessionJournal({workspace:root,sessionId:id,resume:true}),
+        /Invalid tool execution witness|does not match committed assistant tool_use/);
+    }
+    await writeFile(path,lines.map(x=>JSON.stringify(x)).join('\n')+'\n');
+    const resumed=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+    assert.equal(resumed.startedToolExecutions[0].toolUseId,'expected-tool');
+    await resumed.close();
+  });
+});
+
+test('real SIGKILL inside Tool.call retains executing witness with no fabricated mapped result', {
+  timeout:35000,
+},async()=>{
+  await workspace(async root=>{
+    const id=randomUUID(),script=join(root,'call-hanging.mjs');
+    const agentUrl=new URL('../src/agent-loop.js',import.meta.url).href;
+    const toolsUrl=new URL('../src/tool-registry.js',import.meta.url).href;
+    const journalUrl=new URL('../src/legacy-session/session-storage.js',import.meta.url).href;
+    await writeFile(script,`
+import {writeFileSync} from 'node:fs';
+import {AgentLoop} from ${JSON.stringify(agentUrl)};
+import {ToolRegistry} from ${JSON.stringify(toolsUrl)};
+import {openSessionJournal} from ${JSON.stringify(journalUrl)};
+const [root,id]=process.argv.slice(2);
+const journal=await openSessionJournal({workspace:root,sessionId:id});
+const input=[{role:'user',content:'one Write'}];
+await journal.append({messages:input,kind:'input'});
+const tools=new ToolRegistry();
+tools.register({
+  name:'Write',description:'Simulated side-effecting original Tool.call',
+  call:async()=>{
+    writeFileSync(root+'/tool-side-effect.txt','side effect already happened');
+    await new Promise(()=>{});
+  },
+  mapToolResultToToolResultBlockParam:(data,toolUseId)=>({
+    type:'tool_result',tool_use_id:toolUseId,content:data,
+  }),
+});
+const loop=new AgentLoop({
+  tools,maxTurns:2,
+  permissionPolicy:async()=>({behavior:'allow'}),
+  onSessionCheckpoint:x=>journal.append(x),
+  onToolExecutionStart:x=>journal.appendToolExecutionStart(x),
+  model:{async *stream(){
+    yield {type:'tool_use',id:'write-in-progress',name:'Write',input:{}};
+    yield {type:'message_end',stopReason:'tool_use'};
+  }},
+});
+await loop.run({input:'one Write'});
+`);
+    const child=spawn(process.execPath,[script,root,id],{
+      cwd:root,stdio:['ignore','pipe','pipe'],
+    });
+    const errors=[];
+    child.stderr.on('data',b=>errors.push(b));
+    child.stdout.resume();
+    const closed=new Promise((resolve,reject)=>{
+      child.once('error',reject);
+      child.once('close',(code,signal)=>resolve({code,signal}));
+    });
+    try{
+      let observed=false;
+      for(let n=0;n<240;n++){
+        try{
+          observed=(await readFile(join(root,'tool-side-effect.txt'),'utf8'))===
+            'side effect already happened';
+          if(observed)break;
+        }catch(error){if(error.code!=='ENOENT')throw error;}
+        await new Promise(resolve=>setTimeout(resolve,35));
+      }
+      assert.equal(observed,true,Buffer.concat(errors).toString('utf8'));
+      child.kill('SIGKILL');
+      await closed;
+      const journal=await openSessionJournal({workspace:root,sessionId:id,resume:true});
+      assert.equal(journal.needsToolReconciliation,true);
+      assert.equal(journal.canContinueWithoutPrompt,false);
+      assert.deepEqual(journal.startedToolExecutions.map(x=>x.toolUseId),
+        ['write-in-progress']);
+      assert.deepEqual(journal.mappedToolResults,[],
+        'Tool.call never returned, so a successful result must not be fabricated');
+      assert.deepEqual(journal.messages.map(x=>x.role),['user','assistant']);
+      const lines=(await readFile(journal.path,'utf8')).trim().split('\n').map(JSON.parse);
+      assert.deepEqual(lines.map(x=>x.kind),
+        ['input','tool_pending','tool_started']);
+      assert.equal(lines[2].toolName,'Write');
+      assert.equal(lines[2].status,'executing');
+      assert.equal(lines[2].assistantUuid,lines[1].leafUuid);
+      await journal.close();
+    }finally{
+      if(child.exitCode===null)child.kill('SIGKILL');
+      await closed;
+    }
   });
 });
 
