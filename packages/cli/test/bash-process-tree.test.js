@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -149,6 +151,119 @@ setTimeout(()=>process.exit(0),200);
     } finally {
       await killIfRunning(pidFile);
       await execution.catch(()=>{});
+    }
+  });
+});
+
+
+function sseFrame(type,data={}) {
+  return 'event: '+type+'\\ndata: '+JSON.stringify({type,...data})+'\\n\\n';
+}
+function sseBashUse(command) {
+  return sseFrame('message_start',{message:{usage:{input_tokens:20}}})+
+    sseFrame('content_block_start',{index:0,content_block:{
+      type:'tool_use',id:'exit-with-unowned-grandchild',name:'Bash',input:{},
+    }})+
+    sseFrame('content_block_delta',{index:0,delta:{
+      type:'input_json_delta',partial_json:JSON.stringify({
+        command,timeout_ms:11000,
+      }),
+    }})+
+    sseFrame('content_block_stop',{index:0})+
+    sseFrame('message_delta',{delta:{stop_reason:'tool_use'},usage:{output_tokens:12}})+
+    sseFrame('message_stop');
+}
+function sseFinal() {
+  return sseFrame('message_start',{message:{usage:{input_tokens:30}}})+
+    sseFrame('content_block_start',{index:0,content_block:{type:'text',text:''}})+
+    sseFrame('content_block_delta',{index:0,delta:{
+      type:'text_delta',text:'Handled unsupported background process safely',
+    }})+
+    sseFrame('content_block_stop',{index:0})+
+    sseFrame('message_delta',{delta:{stop_reason:'end_turn'},usage:{output_tokens:15}})+
+    sseFrame('message_stop');
+}
+
+test('real packed-capable CLI carries early shell-exit result and stderr to next model round', {
+  // Only POSIX detached process-group semantics can currently prove the
+  // background descendant is gone. Windows Job ownership is not yet ported.
+  skip:process.platform==='win32' &&
+    'Windows Job ownership remains unported; process inherited pipe closes are not reliable',
+  timeout:30000,
+},async()=>{
+  await workspace(async root=>{
+    const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
+      fileURLToPath(new URL('../src/index.js',import.meta.url));
+    const script=join(root,'cli-exits.cjs');
+    const pidFile=join(root,'cli-unowned.pid');
+    const heartbeat=join(root,'cli-unowned-heartbeat.txt');
+    const command='node cli-exits.cjs';
+    const requests=[];
+    const server=createServer(async(req,res)=>{
+      const chunks=[];for await(const b of req)chunks.push(b);
+      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.end(requests.length===1?sseBashUse(command):sseFinal());
+    });
+    let child,closed,watchdog;
+    try {
+      await writeFile(script,`
+const fs=require('node:fs');
+const {spawn}=require('node:child_process');
+const leaf=spawn(process.execPath,['-e',
+  "const fs=require('node:fs');"+
+  "setInterval(()=>fs.appendFileSync('cli-unowned-heartbeat.txt','x'),35);"
+],{cwd:process.cwd(),stdio:['ignore','inherit','inherit']});
+fs.writeFileSync('cli-unowned.pid',String(leaf.pid));
+process.stdout.write('original foreground output\\n');
+process.stderr.write('original foreground stderr\\n');
+setTimeout(()=>process.exit(0),180);
+`);
+      await new Promise((resolve,reject)=>{
+        server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+      });
+      const started=Date.now();
+      child=spawn(process.execPath,[cli,'--print','--provider','deepseek',
+        '--cwd',root,'--max-retries','0','--max-turns','3',
+        '--compact-threshold','0',
+        '--allowedTools','Bash('+command+')',
+        '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic',
+        'Run one Bash command and explain the result'],{
+        env:{...process.env,DEEPSEEK_API_KEY:'local-unowned-fixture'},
+        stdio:['ignore','pipe','pipe'],
+      });
+      const out=[],err=[];
+      child.stdout.on('data',b=>out.push(b));
+      child.stderr.on('data',b=>err.push(b));
+      closed=new Promise((resolve,reject)=>{
+        child.once('error',reject);
+        child.once('close',(code,signal)=>resolve({code,signal}));
+      });
+      watchdog=setTimeout(()=>child.kill('SIGKILL'),14500);
+      const result=await closed;
+      const stdout=Buffer.concat(out).toString('utf8');
+      const stderr=Buffer.concat(err).toString('utf8');
+      assert.equal(result.signal,null,stderr);
+      assert.equal(result.code,0,stdout+stderr);
+      assert.ok(Date.now()-started<7000,'must not wait for the 11s Bash timeout');
+      assert.match(stdout,/Handled unsupported background process safely/);
+      assert.equal(requests.length,2);
+      const providerBody=JSON.stringify(requests[1].messages);
+      assert.match(providerBody,/unsupported background task was terminated/);
+      assert.match(providerBody,/original foreground output/);
+      assert.match(providerBody,/original foreground stderr/);
+      const saved=await readOptional(heartbeat);
+      assert.ok(saved.length>0,'the grandchild must have executed before kill');
+      await new Promise(resolve=>setTimeout(resolve,430));
+      assert.equal(await readOptional(heartbeat),saved,
+        'unowned side effects must be stopped before the model turn advances');
+    } finally {
+      if(watchdog)clearTimeout(watchdog);
+      if(child&&child.exitCode===null)child.kill('SIGKILL');
+      if(closed)await closed.catch(()=>{});
+      await killIfRunning(pidFile);
+      server.closeAllConnections?.();
+      if(server.listening)await new Promise(resolve=>server.close(resolve));
     }
   });
 });
