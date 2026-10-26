@@ -124,3 +124,56 @@ test('background Bash completes normally and TaskOutput block returns completed 
    await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:130});
  }
 });
+
+
+test('source killShellTasksForAgent reaps a real unfinished Bash without requiring TaskStop', {
+  timeout:26000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-background-agent-exit-'));
+  const sessionId=randomUUID();
+  const manager=createLocalShellTaskManager({sessionId});
+  let created=false;
+  try {
+    const script=join(root,'still-running.cjs');
+    await writeFile(script,[
+      "const fs=require('node:fs');",
+      "setInterval(()=>{",
+      " fs.appendFileSync('agent-exit-heartbeat.txt','1');",
+      " process.stdout.write('EXIT_WATCHER_RUNNING\\n');",
+      "},35);",
+    ].join('\n'));
+    const tools=await createBuiltinTools({
+      workspace:root,taskManager:manager,taskSession:{workspace:root,sessionId},
+    });
+    const command='"'+process.execPath.replaceAll('"','')+'" "'+
+      script.replaceAll('"','')+'"';
+    const result=await tools.get('Bash').execute({
+      command,run_in_background:true,timeout_ms:11000,
+    });
+    const heartbeat=join(root,'agent-exit-heartbeat.txt');
+    for(let i=0;i<100;i++){
+      if((await readOptional(heartbeat)).length>=2){created=true;break;}
+      await pause(30);
+    }
+    assert.equal(created,true,'actual background side effects must occur before agent exits');
+    await manager.killShellTasksForAgent();
+    await cleanupLiveShellCommands();
+    assert.equal(manager.status(result.backgroundTaskId)?.status,'killed');
+    assert.equal(manager.status(result.backgroundTaskId)?.notified,true);
+    const after=await readOptional(heartbeat);
+    await pause(440);
+    assert.equal(await readOptional(heartbeat),after,
+      'agent teardown must not leave an active Bash descendant behind');
+    assert.deepEqual(getShellLifecycleStatus(),{
+      liveShellCommands:0,pendingKillBackstops:0,
+    });
+    await manager.killShellTasksForAgent();
+    assert.deepEqual(getShellLifecycleStatus(),{
+      liveShellCommands:0,pendingKillBackstops:0,
+    },'repeat agent cleanup must be idempotent');
+  }finally {
+    await manager.killShellTasksForAgent().catch(()=>{});
+    await cleanupLiveShellCommands().catch(()=>{});
+    await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:130});
+  }
+});
