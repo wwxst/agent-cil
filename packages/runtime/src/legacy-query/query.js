@@ -146,10 +146,14 @@ export async function query({
             await onSessionCheckpoint?.({
               messages:structuredClone(nextHistory),kind:'task_notification',
             });
-            abortIfNeeded(signal);
+            // Once fsync succeeds, acknowledge this EXACT notification
+            // before inspecting a racing AbortSignal. Otherwise the
+            // in-memory task queue could deliver the already committed
+            // notice a second time during the next interactive prompt.
             history=nextHistory;
             state.messages=history;
             await onTaskNotificationsCommitted?.(pending.map(item=>item.taskId));
+            abortIfNeeded(signal);
           }
         }
         // Original 2.1.88 query.ts performs microcompact/autocompact before
