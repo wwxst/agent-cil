@@ -5,17 +5,39 @@
 // This headless CLI has no LocalShellTask session registry yet; each process
 // owns a random, mode-0700 OS temp directory. Output paths stay stable after
 // command completion, so tool_result readers can inspect the original bytes.
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { mkdir, open, stat, lstat, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve, basename } from 'node:path';
 
 export const MAX_TASK_OUTPUT_BYTES = 5 * 1024 * 1024 * 1024;
 const MAX_TASK_OUTPUT_BYTES_DISPLAY = '5GB';
 const OUTPUT_MEMORY_BYTES = 1024 * 1024;
 const MAX_RETURN_TAIL_BYTES = 8192;
 const taskOutputDir = join(tmpdir(), 'agent-cil-task-'+process.pid+'-'+randomUUID());
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const projectTaskRoot=join(tmpdir(),'agent-cil-project-task-outputs');
+export function getSessionTaskOutputDirectory(workspace,sessionId) {
+  if(typeof workspace!=='string' || typeof sessionId!=='string' ||
+     !UUID.test(sessionId))throw new TypeError('Task output session requires a workspace and UUID.');
+  // Source 2.1.88 project temp ownership survives process exit; tie the
+  // private output directory to the stable workspace + explicit session.
+  // Never use a model-supplied path to select this directory.
+  const digest=createHash('sha256').update(resolve(workspace)).digest('hex');
+  return join(projectTaskRoot,digest,sessionId);
+}
+const privateDirectory=async directory=>{
+  const folders=[projectTaskRoot,dirname(directory),directory];
+  for(const folder of folders) {
+    await mkdir(folder,{recursive:true,mode:0o700});
+    const st=await lstat(folder,{bigint:true});
+    if(!st.isDirectory() || st.isSymbolicLink() ||
+      (process.platform!=='win32' && (st.mode & 0o077n)!==0n))
+      throw new Error('Task output directory is not a private ordinary directory.');
+  }
+};
+
 // Direct-port of the old checkReadableInternalPath allowlist *boundary*,
 // narrowly restricted until session-scoped project-temp task ownership is
 // ported. Only results this process actually completed may be read by Read;
@@ -31,6 +53,68 @@ export function isReadableInternalTaskOutputPath(workspace, candidate) {
   if(typeof candidate !== 'string' || !isAbsolute(candidate))return false;
   const record=completedTaskOutputs.get(candidate);
   return !!record && record.workspace===resolve(workspace);
+}
+export async function restoreCompletedTaskOutputs({workspace,sessionId,messages}) {
+  if(!Array.isArray(messages))throw new TypeError('Committed Session messages are required.');
+  const directory=getSessionTaskOutputDirectory(workspace,sessionId);
+  // Do not create a directory on resume. A legacy/random-path session,
+  // forged tool_result or vanished output does not confer read authority.
+  let directoryStat;
+  try {
+    directoryStat=await lstat(directory,{bigint:true});
+    if(!directoryStat.isDirectory() || directoryStat.isSymbolicLink() ||
+      (process.platform!=='win32' && (directoryStat.mode & 0o077n)!==0n))
+      return 0;
+    for(const component of [projectTaskRoot,dirname(directory)]) {
+      const parent=await lstat(component,{bigint:true});
+      if(!parent.isDirectory() || parent.isSymbolicLink() ||
+        (process.platform!=='win32' && (parent.mode & 0o077n)!==0n))
+        return 0;
+    }
+  } catch {return 0;}
+  const assistantTools=new Map();
+  let count=0;
+  for(const message of messages){
+    if(message?.role==='assistant' && Array.isArray(message.content)){
+      for(const block of message.content){
+        if(block?.type==='tool_use' && block.name==='Bash' &&
+           typeof block.id==='string')
+          assistantTools.set(block.id,true);
+      }
+      continue;
+    }
+    if(message?.role!=='user' || !Array.isArray(message.content))continue;
+    for(const block of message.content) {
+      if(block?.type!=='tool_result' || block.is_error ||
+         !assistantTools.has(block.tool_use_id))continue;
+      // Do not parse arbitrary prose as a capability. Source mapToolResult
+      // serializes the actual JSON object, never a freeform output path.
+      let data=block.content;
+      if(typeof data==='string'){
+        try{data=JSON.parse(data);}catch{continue;}
+      }
+      if(!data || typeof data!=='object' || Array.isArray(data))continue;
+      const taskId=data.outputTaskId,expectedSize=data.outputFileSize;
+      if(typeof taskId!=='string' || !UUID.test(taskId) ||
+         !Number.isSafeInteger(expectedSize) || expectedSize<1 ||
+         data.outputFilePath!==getTaskOutputPath(taskId,directory) ||
+         !data.stdout?.includes?.('Full output saved to:'))continue;
+      try {
+        const path=data.outputFilePath;
+        const file=await lstat(path,{bigint:true});
+        if(!file.isFile() || file.isSymbolicLink() ||
+           file.size!==BigInt(expectedSize))continue;
+        completedTaskOutputs.set(path,{
+          workspace:resolve(workspace),
+          fileIdentity:identityOf(file),
+          directoryIdentity:identityOf(directoryStat),
+          expectedBytes:file.size,
+        });
+        count++;
+      }catch{/* Missing/corrupt output cannot become a read grant. */}
+    }
+  }
+  return count;
 }
 export async function openReadableInternalTaskOutput(workspace,candidate) {
   if(!isReadableInternalTaskOutputPath(workspace,candidate))
@@ -61,10 +145,10 @@ export async function openReadableInternalTaskOutput(workspace,candidate) {
   }
 }
 
-export function getTaskOutputPath(taskId) {
+export function getTaskOutputPath(taskId, directory=taskOutputDir) {
   if (typeof taskId !== 'string' || !/^[a-f0-9-]{36}$/i.test(taskId))
     throw new TypeError('Task output requires a generated UUID.');
-  return join(taskOutputDir, taskId + '.output');
+  return join(directory, taskId + '.output');
 }
 
 export class DiskTaskOutput {
@@ -156,11 +240,15 @@ export class TaskOutput {
   #outputIdentity = null;
   #directoryIdentity = null;
   #onProgress;
+  #taskDirectory;
 
   constructor(taskId = randomUUID(), onProgress = null, stdoutToFile = false,
-      maxMemory = OUTPUT_MEMORY_BYTES) {
+      maxMemory = OUTPUT_MEMORY_BYTES, session = null) {
     this.taskId=taskId;
-    this.path=getTaskOutputPath(taskId);
+    this.#taskDirectory=session ?
+      getSessionTaskOutputDirectory(session.workspace,session.sessionId) :
+      taskOutputDir;
+    this.path=getTaskOutputPath(taskId,this.#taskDirectory);
     this.stdoutToFile=stdoutToFile;
     this.#maxMemory=maxMemory;
     this.#onProgress=onProgress;
@@ -179,8 +267,8 @@ export class TaskOutput {
   // duplicate after the child process has started.
   async initFileOutput() {
     if(!this.stdoutToFile)throw new Error('Only file-mode TaskOutput owns a shell output fd.');
-    await mkdir(taskOutputDir,{recursive:true,mode:0o700});
-    const directory=await lstat(taskOutputDir,{bigint:true});
+    await privateDirectory(this.#taskDirectory);
+    const directory=await lstat(this.#taskDirectory,{bigint:true});
     if(directory.isSymbolicLink() || !directory.isDirectory())
       throw new Error('Bash output directory must be an ordinary private directory.');
     this.#directoryIdentity=identityOf(directory);
