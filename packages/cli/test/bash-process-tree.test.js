@@ -157,7 +157,7 @@ setTimeout(()=>process.exit(0),200);
 
 
 function sseFrame(type,data={}) {
-  return 'event: '+type+'\\ndata: '+JSON.stringify({type,...data})+'\\n\\n';
+  return 'event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n';
 }
 function sseBashUse(command) {
   return sseFrame('message_start',{message:{usage:{input_tokens:20}}})+
