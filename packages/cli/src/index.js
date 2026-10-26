@@ -695,6 +695,32 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     child.once('exit', () => {
       shellExited = true;
       if (terminationTask) return;
+      if(process.platform !== 'win32' && child.pid) {
+        // 2.1.304 ShellCommand reports leftRunningPgid if the foreground
+        // shell exited but its process group still exists. This CLI has no
+        // LocalShellTask background owner yet: fail closed and reap that
+        // group, including descendants that discarded both stdio pipes.
+        // A reaped shell with no descendants has no remaining process group.
+        try {
+          process.kill(-child.pid,0);
+          unsupportedBackground = true;
+        } catch(error) {
+          // EPERM means the group exists but cannot be inspected. Treat it
+          // as unsafe rather than reporting a successful command.
+          if(error?.code !== 'ESRCH') unsupportedBackground = true;
+        }
+        if(unsupportedBackground) {
+          exitDrainTimer = setTimeout(() => {
+            if(!terminationTask)terminate();
+            void terminationTask?.then(() => {
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+            });
+          },100);
+          exitDrainTimer.unref?.();
+          return;
+        }
+      }
       exitDrainTimer = setTimeout(() => {
         if (terminationTask) return;
         unsupportedBackground = true;
@@ -712,6 +738,9 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     child.once('close', async code => {
       clearTimeout(timeout);
       clearTimeout(exitDrainTimer);
+      // A POSIX group with ignored/closed stdout can emit 'close' before
+      // the delayed cleanup timer. Reap its surviving descendants anyway.
+      if(unsupportedBackground && !terminationTask)terminate();
       signal?.removeEventListener('abort', onAbort);
       // Do not report cancellation as cleaned up while Windows taskkill
       // is still terminating grandchildren of cmd.exe.
