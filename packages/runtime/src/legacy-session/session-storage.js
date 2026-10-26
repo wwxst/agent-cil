@@ -18,7 +18,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MAX_JOURNAL_BYTES = 64 * 1024 * 1024;
 const MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024;
 const ZERO = '0'.repeat(64);
-const CHECKPOINT_TYPES = new Set(['input', 'tool_pending', 'tool_partial', 'tool_uncertain', 'tool_mapped', 'tool', 'finished', 'compact']);
+const CHECKPOINT_TYPES = new Set(['input', 'tool_pending', 'tool_partial', 'tool_uncertain', 'tool_mapped', 'tool_started', 'tool', 'finished', 'compact']);
 const NOFOLLOW = constants.O_NOFOLLOW || 0;
 function digest(payload) { return createHash('sha256').update(JSON.stringify(payload)).digest('hex'); }
 function validMessage(message) {
@@ -226,6 +226,8 @@ export class SessionJournal {
   // generator. Keep a separately hash-chained, non-model-visible record of
   // that mapped result while a command Hook can still be interrupted.
   #mappedResults = new Map();
+  // Mirrors source StreamingToolExecutor 'executing' status across SIGKILL.
+  #startedTools = new Map();
   // 2.1.304 fences transcript writes after storage failures. Record the
   // actual on-disk file identity and committed length as a Node fd adapter;
   // a session lock alone does not protect against external replacement.
@@ -257,6 +259,26 @@ export class SessionJournal {
   get messages(){return structuredClone(this.#messages);}
   get path(){return this.#path;}
   get mappedToolResults(){return structuredClone([...this.#mappedResults.values()]);}
+  get startedToolExecutions(){return structuredClone([...this.#startedTools.values()]);}
+  #validateToolStart(toolUseId,toolName,assistantUuid){
+    if(!['tool_pending','tool_partial'].includes(this.#lastKind))
+      throw new Error('Tool execution start requires an unfinished assistant batch.');
+    if(typeof toolUseId!=='string' || !toolUseId ||
+       typeof toolName!=='string' || !toolName)
+      throw new TypeError('Tool execution start needs valid tool ID and name.');
+    const assistant=this.#nodes.get(assistantUuid);
+    if(assistant?.type!=='assistant' || assistant.sessionId!==this.#id ||
+       !Array.isArray(assistant.message.content) ||
+       !assistant.message.content.some(block=>
+         block?.type==='tool_use' && block.id===toolUseId && block.name===toolName))
+      throw new Error('Tool execution start does not match committed assistant tool_use.');
+    if(this.#startedTools.has(toolUseId) || this.#mappedResults.has(toolUseId) ||
+       this.#messages.some(message=>message.role==='user' &&
+         Array.isArray(message.content) &&
+         message.content.some(block=>block?.type==='tool_result' &&
+           block.tool_use_id===toolUseId)))
+      throw new Error('Tool execution already started or completed.');
+  }
   #validateMappedToolResult(result, assistantUuid) {
     if(!['tool_pending','tool_partial'].includes(this.#lastKind))
       throw new Error('Mapped tool result requires an unfinished source tool batch.');
@@ -343,11 +365,23 @@ export class SessionJournal {
           assistantUuid:payload.assistantUuid,
           mappedResult:structuredClone(payload.mappedResult),
         });
+      } else if(payload.type==='session_tool_execution' &&
+                payload.version===2 && payload.kind==='tool_started') {
+        if(payload.status!=='executing' || payload.root!==false ||
+           payload.leafUuid!==this.#leafUuid ||
+           payload.assistantUuid!==this.#currentToolAssistantUuid())
+          throw new Error('Invalid tool execution witness ancestry.');
+        this.#validateToolStart(payload.toolUseId,payload.toolName,payload.assistantUuid);
+        this.#startedTools.set(payload.toolUseId,{
+          assistantUuid:payload.assistantUuid,toolUseId:payload.toolUseId,
+          toolName:payload.toolName,status:'executing',
+        });
       } else if (payload.type === 'session_checkpoint' && payload.version === 1) {
         // v1 had no input kind; reject synthetic input records masquerading
         // as a legacy snapshot, even with a recomputed checksum.
         if(payload.kind === 'input' || payload.kind === 'tool_partial' ||
-           payload.kind === 'tool_uncertain')
+           payload.kind === 'tool_uncertain' || payload.kind==='tool_started' ||
+           payload.kind==='tool_mapped')
           throw new Error('Legacy checkpoint kind was never supported.');
         // Read-only migration of already shipped v1 whole-transcript records.
         // New writes always use source-style UUID/parentUuid message chains.
@@ -356,8 +390,8 @@ export class SessionJournal {
         this.#messages=structuredClone(payload.messages);
         this.#leafUuid=null;
       } else if(payload.type === 'session_commit' && payload.version === 2) {
-        if(payload.kind==='tool_mapped')
-          throw new Error('Mapped result witnesses must not masquerade as transcript entries.');
+        if(payload.kind==='tool_mapped' || payload.kind==='tool_started')
+          throw new Error('Tool execution witnesses must not masquerade as transcript entries.');
         if(this.#messages.length && !this.#leafUuid && !payload.migration)
           throw new Error('Legacy session migration boundary is missing.');
         if(payload.migration && (this.#leafUuid!==null || !this.#messages.length))
@@ -400,7 +434,10 @@ export class SessionJournal {
         for(const message of this.#messages){
           if(message.role==='user' && Array.isArray(message.content))
             for(const block of message.content)
-              if(block?.type==='tool_result')this.#mappedResults.delete(block.tool_use_id);
+              if(block?.type==='tool_result'){
+                this.#mappedResults.delete(block.tool_use_id);
+                this.#startedTools.delete(block.tool_use_id);
+              }
         }
       } else {
         throw new Error('Unsupported session transcript record version.');
@@ -408,7 +445,8 @@ export class SessionJournal {
       this.#sequence=payload.sequence;
       this.#previousHash=hash;
       this.#lastEncoded=JSON.stringify(this.#messages);
-      if(payload.kind!=='tool_mapped')this.#lastKind=payload.kind;
+      if(payload.kind!=='tool_mapped' && payload.kind!=='tool_started')
+        this.#lastKind=payload.kind;
     }
     if(!this.#sequence)throw new Error('Session has no committed messages to resume.');
     // A crash can truncate the last JSONL line. Never use that partial entry;
@@ -441,6 +479,35 @@ export class SessionJournal {
     }
     this.#fileState={dev:loaded.dev,ino:loaded.ino,size:loaded.size};
     return this.messages;
+  }
+  async appendToolExecutionStart({toolUseId,toolName}={}) {
+    if(this.#closed || this.#poisoned)throw new Error('Session journal is not writable.');
+    const pending=this.#writeQueue.then(()=>this.#appendToolExecutionStart({
+      toolUseId,toolName,
+    }));
+    this.#writeQueue=pending.catch(()=>{this.#poisoned=true;});
+    return pending;
+  }
+  async #appendToolExecutionStart({toolUseId,toolName}) {
+    if(this.#poisoned)throw new Error('Session journal is not writable.');
+    await assertLockOwner(this.#lock,this.#lockToken);
+    const assistantUuid=this.#currentToolAssistantUuid();
+    this.#validateToolStart(toolUseId,toolName,assistantUuid);
+    const payload={
+      type:'session_tool_execution',version:2,
+      sessionId:this.#id,workspace:this.#workspace,
+      kind:'tool_started',sequence:this.#sequence+1,
+      previousHash:this.#previousHash,root:false,
+      leafUuid:this.#leafUuid,assistantUuid,
+      toolUseId,toolName,status:'executing',
+    };
+    const hash=await this.#writePayload(payload);
+    this.#startedTools.set(toolUseId,{
+      assistantUuid,toolUseId,toolName,status:'executing',
+    });
+    this.#previousHash=hash;
+    this.#sequence++;
+    // Do not invent a completed tool_result in provider-facing messages.
   }
   async appendMappedToolResult({mappedResult}={}) {
     if(this.#closed || this.#poisoned)throw new Error('Session journal is not writable.');
@@ -491,8 +558,8 @@ export class SessionJournal {
     if(this.#poisoned)throw new Error('Session journal is not writable.');
     await assertLockOwner(this.#lock,this.#lockToken);
     if(!CHECKPOINT_TYPES.has(kind))throw new TypeError('Invalid session checkpoint kind.');
-    if(kind==='tool_mapped')
-      throw new TypeError('Mapped results must use appendMappedToolResult().');
+    if(kind==='tool_mapped' || kind==='tool_started')
+      throw new TypeError('Tool witnesses must use their dedicated append methods.');
     if(this.#lastKind==='tool_uncertain') {
       throw new Error('Session has an unresolved post-tool context failure; continuation is fenced.');
     }
@@ -583,7 +650,10 @@ export class SessionJournal {
     for(const message of this.#messages) {
       if(message.role==='user' && Array.isArray(message.content))
         for(const block of message.content)
-          if(block?.type==='tool_result')this.#mappedResults.delete(block.tool_use_id);
+          if(block?.type==='tool_result'){
+              this.#mappedResults.delete(block.tool_use_id);
+              this.#startedTools.delete(block.tool_use_id);
+            }
     }
     this.#lastEncoded=encoded;
     this.#previousHash=hash;
