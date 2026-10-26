@@ -650,7 +650,6 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     let terminationTask;
     let exitDrainTimer;
     let unsupportedBackground = false;
-    let shellExited = false;
 
     const terminate = () => {
       if(terminationTask)return;
@@ -693,7 +692,6 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     // any unowned descendant tree instead of hanging the tool round or
     // silently leaving a background process with write access.
     child.once('exit', () => {
-      shellExited = true;
       if (terminationTask) return;
       if(process.platform !== 'win32' && child.pid) {
         // 2.1.304 ShellCommand reports leftRunningPgid if the foreground
