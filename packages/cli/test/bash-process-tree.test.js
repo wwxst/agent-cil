@@ -99,9 +99,7 @@ test('real registered Bash timeout kills descendants on Linux and Windows', {
 
 
 
-test('actual Bash abort also kills detached grandchild outside the original POSIX process group', {
-  skip: process.platform === 'win32' &&
-    'POSIX 2.1.304 getDescendantPids enumerates detached sessions; Windows uses System32 taskkill',
+test('real Bash cancellation kills a detached grandchild on Linux and Windows', {
   timeout: 24000,
 }, async()=>{
   await workspace(async root=>{
@@ -114,7 +112,7 @@ const {spawn}=require('node:child_process');
 const grandchild=spawn(process.execPath,['-e',
   "const fs=require('node:fs');"+
   "setInterval(()=>fs.appendFileSync('escaped-heartbeat.txt','x'),30);"
-],{cwd:process.cwd(),detached:true,stdio:'ignore'});
+],{cwd:process.cwd(),detached:true,stdio:'ignore',windowsHide:true});
 fs.writeFileSync('escaped-leaf.pid',String(grandchild.pid));
 setInterval(()=>{},500);
 `);
