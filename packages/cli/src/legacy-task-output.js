@@ -197,7 +197,7 @@ export class TaskOutput {
         this.#outputFileRedundant=size<=position;
         const text=buf.subarray(0,position).toString('utf8');
         if(this.#outputFileRedundant)return text;
-        return text+'\\nOutput truncated ('+Math.round(size/1024)+
+        return text+'\nOutput truncated ('+Math.round(size/1024)+
           'KB total). Full output saved to: '+this.path;
       }finally {
         await fh.close();
@@ -215,9 +215,10 @@ export class TaskOutput {
   }
   getStderr() { return this.stdoutToFile||this.#disk?'':this.#stderrBuffer; }
   async deleteOutputFile() {
-    try { await unlink(this.path); } catch(error) {
-      if (error?.code!=='ENOENT') throw error;
-    }
+    // Original TaskOutput.deleteOutputFile is best-effort: when the entire
+    // output is already in result.stdout, failing to delete a redundant
+    // file must not strand the close handler or change the tool result.
+    try { await unlink(this.path); } catch {}
   }
   clear() {
     this.#stdoutBuffer='';
