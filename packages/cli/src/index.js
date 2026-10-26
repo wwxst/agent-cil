@@ -3,6 +3,7 @@ import { stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
 import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { killPosixProcessTree } from './kill-process-tree.js';
+import { TaskOutput } from './legacy-task-output.js';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -702,11 +703,11 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const stdout = [];
-    const stderr = [];
-    let outputBytes = 0;
+    // Port the source 2.1.88 ShellCommand → TaskOutput pipe-mode path.
+    // It retains a bounded inline buffer, then spills ALL stdout/stderr
+    // to an owned output file instead of aborting a successful large command.
+    const taskOutput = new TaskOutput(undefined,null,false,maxOutputBytes);
     let timedOut = false;
-    let outputLimitHit = false;
     let spawnError;
     let terminationTask;
     let exitDrainTimer;
@@ -748,18 +749,12 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     const onAbort = () => { void terminate().catch(() => {}); };
     signal?.addEventListener('abort', onAbort, { once: true });
 
-    const collect = (target, chunk) => {
-      const remaining = Math.max(0, maxOutputBytes - outputBytes);
-      if (remaining > 0) target.push(chunk.subarray(0, remaining));
-      outputBytes += chunk.length;
-      if (outputBytes > maxOutputBytes && !outputLimitHit) {
-        outputLimitHit = true;
-        void terminate().catch(() => {});
-      }
-    };
-
-    child.stdout.on('data', chunk => collect(stdout, chunk));
-    child.stderr.on('data', chunk => collect(stderr, chunk));
+    // The source TaskOutput accepts string chunks (not Buffer.toString()
+    // per arbitrary chunk, which would break UTF-8 multibyte boundaries).
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', chunk => taskOutput.writeStdout(chunk));
+    child.stderr?.on('data', chunk => taskOutput.writeStderr(chunk));
     child.once('error', error => {
       spawnError = error;
     });
@@ -842,6 +837,17 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
         rejectPromise(spawnError);
         return;
       }
+      // Source LocalShellTask flushes disk output before finishing or
+      // evicting its task. A failed flush is not a successful tool result:
+      // leave Session tool_started unfinished and fence unsafe replay.
+      try {
+        await taskOutput.flush();
+      } catch(error) {
+        const failure=new Error('Bash TaskOutput persistence failed: '+error.message,{cause:error});
+        failure.name='TaskOutputPersistenceError';
+        rejectPromise(failure);
+        return;
+      }
       if (signal?.aborted) {
         rejectPromise(abortError(signal));
         return;
@@ -849,15 +855,14 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
 
       const result = {
         exit_code: Number.isInteger(code) && code >= 0 ? code : 1,
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
+        stdout: await taskOutput.getStdout(),
+        stderr: taskOutput.getStderr(),
       };
       if(shutdownRequested) {
         result.exit_code = 1;
         result.error = 'Command terminated while releasing its owning CLI session.';
       }
       else if (timedOut) result.error = 'Command was killed or timed out.';
-      else if (outputLimitHit) result.error = 'Command output exceeded the 1 MiB limit.';
       else if (spawnError) result.error = spawnError.message;
       else if (unsupportedBackground) {
         // Do not report a successful foreground tool round for a detached
@@ -865,6 +870,13 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
         result.exit_code = 1;
         result.error = 'Command left inherited-pipe background processes after the shell exited; unsupported background task was terminated.';
       } else if (code !== 0) result.error = 'Command exited with status ' + String(code) + '.';
+      if(taskOutput.isOverflowed) {
+        // Original ExecResult.outputFilePath/Size/TaskId contract. Full
+        // output is retained on disk, not truncated or silently discarded.
+        result.outputFilePath=taskOutput.path;
+        result.outputFileSize=taskOutput.outputFileSize;
+        result.outputTaskId=taskOutput.taskId;
+      }
       resolvePromise(result);
     });
   });
