@@ -571,7 +571,9 @@ test('packed-capable CLI delivers source Bash spilled output location to model a
         'model payload must not include the complete megabyte-size log');
       const records=(await readFile(join(root,'.agent-cil','sessions',
         sessionId,'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
-      assert.ok(records.some(record=>record.kind==='tool_mapped'));
+      // A normal Bash without PostToolUse can commit its mapped result
+      // directly. The separate tool_mapped witness is required only while
+      // an asynchronous PostToolUse hook still has to run.
       const committed=records.find(record=>record.kind==='tool');
       assert.ok(committed,'durable Session must commit the completed Bash tool result');
       assert.match(JSON.stringify(committed),/outputTaskId/);
