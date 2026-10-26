@@ -692,21 +692,34 @@ export async function cleanupLiveShellCommands() {
   }
 }
 
-function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
-  if (signal?.aborted) return Promise.reject(abortError(signal));
+async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
+  if (signal?.aborted) throw abortError(signal);
+  // Original 2.1.88 utils/Shell.ts exec() creates TaskOutput in file
+  // mode BEFORE launching Bash. Both stdio fds point to the SAME file
+  // handle so even multi-GB output never enters the Node heap.
+  const taskOutput = new TaskOutput(undefined,null,true,maxOutputBytes);
+  const outputHandle = await taskOutput.initFileOutput();
+  if(signal?.aborted) {
+    await outputHandle.close();
+    await taskOutput.deleteOutputFile();
+    throw abortError(signal);
+  }
 
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, {
-      cwd,
-      shell: true,
-      detached: process.platform !== 'win32',
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    // Port the source 2.1.88 ShellCommand → TaskOutput pipe-mode path.
-    // It retains a bounded inline buffer, then spills ALL stdout/stderr
-    // to an owned output file instead of aborting a successful large command.
-    const taskOutput = new TaskOutput(undefined,null,false,maxOutputBytes);
+    let child;
+    try {
+      child = spawn(command, {
+        cwd,
+        shell: true,
+        detached: process.platform !== 'win32',
+        windowsHide: true,
+        stdio: ['ignore', outputHandle.fd, outputHandle.fd],
+      });
+    } catch(error) {
+      void outputHandle.close().then(()=>taskOutput.deleteOutputFile()).catch(()=>{});
+      rejectPromise(error);
+      return;
+    }
     let timedOut = false;
     let spawnError;
     let terminationTask;
@@ -749,12 +762,15 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     const onAbort = () => { void terminate().catch(() => {}); };
     signal?.addEventListener('abort', onAbort, { once: true });
 
-    // The source TaskOutput accepts string chunks (not Buffer.toString()
-    // per arbitrary chunk, which would break UTF-8 multibyte boundaries).
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', chunk => taskOutput.writeStdout(chunk));
-    child.stderr?.on('data', chunk => taskOutput.writeStderr(chunk));
+    // File-FD mode: source Shell.ts closes the parent's duplicate AFTER
+    // spawn attaches the error/exit listeners. The child retains its dup.
+    // Unlike pipe mode, stdout/stderr are null and cannot hold JS memory.
+    void outputHandle.close().catch(error=>{
+      const failure=new Error('Bash TaskOutput descriptor close failed: '+error.message,{cause:error});
+      failure.name='TaskOutputPersistenceError';
+      spawnError ??= failure;
+      void terminate().catch(()=>{});
+    });
     child.once('error', error => {
       spawnError = error;
     });
@@ -830,18 +846,21 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
         shellLifecycle.liveShellCommands.delete(ownedShell);
       }
 
-      if (spawnError?.name==='ProcessTreeCleanupError') {
+      if (spawnError?.name==='ProcessTreeCleanupError' ||
+          spawnError?.name==='TaskOutputPersistenceError') {
         // The process-tree owner could not confirm that side effects
         // stopped. Throw into AgentLoop's fatal checkpoint fence rather
         // than mapping an ordinary tool_error and continuing the model.
         rejectPromise(spawnError);
         return;
       }
-      // Source LocalShellTask flushes disk output before finishing or
-      // evicting its task. A failed flush is not a successful tool result:
-      // leave Session tool_started unfinished and fence unsafe replay.
+      // In original file mode the kernel has already written output. Read
+      // only the original bounded 30k prefix and retain the whole file
+      // when it exceeds inline capacity. A lost/unreadable file is fatal.
+      let capturedStdout;
       try {
         await taskOutput.flush();
+        capturedStdout=await taskOutput.getStdout();
       } catch(error) {
         const failure=new Error('Bash TaskOutput persistence failed: '+error.message,{cause:error});
         failure.name='TaskOutputPersistenceError';
@@ -852,10 +871,9 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
         rejectPromise(abortError(signal));
         return;
       }
-
       const result = {
         exit_code: Number.isInteger(code) && code >= 0 ? code : 1,
-        stdout: await taskOutput.getStdout(),
+        stdout: capturedStdout,
         stderr: taskOutput.getStderr(),
       };
       if(shutdownRequested) {
@@ -876,6 +894,10 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
         result.outputFilePath=taskOutput.path;
         result.outputFileSize=taskOutput.outputFileSize;
         result.outputTaskId=taskOutput.taskId;
+      } else {
+        // The full small-file output is already in result.stdout. Original
+        // ShellCommandImpl deletes a redundant foreground output file.
+        await taskOutput.deleteOutputFile();
       }
       resolvePromise(result);
     });
