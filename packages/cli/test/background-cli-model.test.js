@@ -162,3 +162,88 @@ test('packed CLI model executes Bash background, TaskOutput, Read live log and T
     await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:150});
   }
 });
+
+test('packed CLI queues exactly one durable native LocalShellTask completion notice between provider rounds', {
+  timeout:44000,
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-bg-notification-'));
+  const sessionId=randomUUID();
+  const command='node bg-completes-and-notifies.cjs';
+  let requests=0,receivedNotification=false,backgroundId;
+  const server=createServer(async(req,res)=>{
+    const chunks=[];for await(const piece of req)chunks.push(piece);
+    requests++;
+    const body=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    if(requests===1){
+      res.end(emitTool('notification-bash','Bash',{
+        command,run_in_background:true,timeout_ms:10000,
+      }));
+    }else if(requests===2){
+      backgroundId=toolResult(body.messages,'notification-bash')?.backgroundTaskId;
+      // The background shell finishes WHILE the next provider request
+      // is streaming, so source enqueuePendingNotification(priority:later)
+      // must deliver it BEFORE the third provider request, not mid-stream.
+      await new Promise(resolve=>setTimeout(resolve,2100));
+      res.end(emitTool('read-small-source','Read',{
+        file_path:'bg-completes-and-notifies.cjs',offset:0,limit:1,
+      }));
+    }else {
+      const bodyText=JSON.stringify(body.messages);
+      receivedNotification=bodyText.includes('<task_notification>') &&
+        bodyText.includes('<status>completed</status>') &&
+        bodyText.includes(backgroundId??'unknown-bg') &&
+        bodyText.includes('read-small-source');
+      res.end(finalAnswer());
+    }
+  });
+  let child,closed,watchdog;
+  try {
+    await writeFile(join(root,'bg-completes-and-notifies.cjs'),[
+      "process.stdout.write('NATIVE_TASK_NOTIFICATION_STARTED\\n');",
+      "setTimeout(()=>{process.stdout.write('NATIVE_TASK_FINISHED\\n');process.exit(0)},1400);",
+    ].join('\n'));
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    child=spawn(process.execPath,[cli,'--print','--provider','deepseek',
+      '--cwd',root,'--session-id',sessionId,'--max-turns','5',
+      '--max-retries','0','--compact-threshold','0',
+      '--allowedTools','Bash('+command+')',
+      '--base-url','http://127.0.0.1:'+server.address().port+'/anthropic',
+      'Start a background command and continue after its completion notification'],{
+      env:{...process.env,DEEPSEEK_API_KEY:'only-local-native-notification'},
+      stdio:['ignore','pipe','pipe'],
+    });
+    const stdout=[],stderr=[];
+    child.stdout.on('data',b=>stdout.push(b));
+    child.stderr.on('data',b=>stderr.push(b));
+    closed=new Promise((resolve,reject)=>{
+      child.once('error',reject);
+      child.once('close',(code,signal)=>resolve({code,signal}));
+    });
+    watchdog=setTimeout(()=>child.kill('SIGKILL'),32000);
+    const [code,signal]=await closed.then(v=>[v.code,v.signal]);
+    const output=Buffer.concat(stdout).toString('utf8');
+    const errors=Buffer.concat(stderr).toString('utf8');
+    assert.equal(signal,null,errors);
+    assert.equal(code,0,errors+output);
+    assert.equal(requests,3,'Bash tool, Read tool, final answer');
+    assert.match(backgroundId,/^[0-9a-f-]{36}$/i);
+    assert.equal(receivedNotification,true,
+      'native task-notification must be delivered with Read result to subsequent provider');
+    const journal=(await readFile(join(root,'.agent-cil','sessions',
+      sessionId,'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(journal.filter(x=>x.kind==='task_notification').length,1,
+      'one native task-notification must be fsynced before model delivery');
+    assert.equal(journal.filter(x=>x.kind==='tool').length,2);
+    assert.equal(JSON.stringify(journal).includes('<status>completed</status>'),true);
+  }finally{
+    if(watchdog)clearTimeout(watchdog);
+    if(child&&child.exitCode===null)child.kill('SIGKILL');
+    if(closed)await closed.catch(()=>{});
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:140});
+  }
+});
