@@ -816,7 +816,8 @@ export class AgentLoop extends EventEmitter {
       // so it must NOT be hidden by the source interrupt hook branch.
       // Preserve the source assistant/tool_started journal and fence model
       // continuation even when AbortSignal was set during the OS cleanup.
-      if(error?.name==='ProcessTreeCleanupError') {
+      if(error?.name==='ProcessTreeCleanupError' ||
+          error?.name==='TaskOutputPersistenceError') {
         this.#mappedWitnessFailure=error;
         this.emit('toolCallFinished',{
           turn,toolUseId:toolUse.id,toolName:tool.name,
