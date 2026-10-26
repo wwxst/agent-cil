@@ -69,11 +69,11 @@ test('OS cleanup uncertainty beats concurrent AbortSignal and blocks sibling sid
       ['unsafe-first']);
     assert.deepEqual(journal.mappedToolResults,[]);
     assert.deepEqual(journal.messages.map(x=>x.role),['user','assistant']);
+    const journalPath=journal.path;
     await journal.close();
     journal=undefined;
-    const records=(await readFile(join(workspace,'.agent-cil','sessions',
-      [...(await (await import('node:fs/promises')).readdir(join(workspace,'.agent-cil','sessions')))].at(0),
-      'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+    const records=(await readFile(journalPath,'utf8')).trim()
+      .split('\n').map(JSON.parse);
     assert.deepEqual(records.map(x=>x.kind),
       ['input','tool_pending','tool_started'],
       'no invented tool_result after abort and unconfirmed OS cleanup');
