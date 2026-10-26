@@ -543,9 +543,11 @@ setInterval(()=>{},500);
       await new Promise((resolve,reject)=>{
         server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
       });
-      // Test-only preloader intercepts ONLY the OS taskkill executable
-      // and simulates ENOENT. Do not corrupt SystemRoot: Node's Windows
-      // CSPRNG can fail during initialization with a fake SystemRoot.
+      // Test-only preloader delegates to the REAL Windows taskkill worker,
+      // allowing its process-tree cleanup to complete, then forces a
+      // nonzero status visible to the CLI. This verifies fail-closed model
+      // behavior without deliberately leaving orphaned CI processes.
+      // Actual taskkill launch ENOENT is covered by the direct Bash test.
       const taskkillFailurePreload=join(root,'inject-taskkill-failure.cjs');
       await writeFile(taskkillFailurePreload,[
         "const cp=require('node:child_process');",
@@ -553,11 +555,13 @@ setInterval(()=>{},500);
         "const original=cp.spawn;",
         "cp.spawn=function(binary,args,options){",
         " if(typeof binary==='string'&&/taskkill[.]exe$/i.test(binary)){",
-        "   const fake=new events.EventEmitter();",
-        "   fake.kill=()=>true;",
-        "   process.nextTick(()=>fake.emit('error',",
-        "     Object.assign(new Error('test-only taskkill failure'),{code:'ENOENT'})));",
-        "   return fake;",
+        "   const real=original.apply(this,arguments);",
+        "   const proxy=new events.EventEmitter();",
+        "   proxy.kill=(...parts)=>real.kill(...parts);",
+        "   real.once('error',error=>proxy.emit('error',error));",
+        "   real.once('close',(code,signal)=>",
+        "     proxy.emit('close',code===0?1:code,signal));",
+        "   return proxy;",
         " }",
         " return original.apply(this,arguments);",
         "};",
