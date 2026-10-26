@@ -7,7 +7,7 @@
 // command completion, so tool_result readers can inspect the original bytes.
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { mkdir, open, readFile, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, stat, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -186,6 +186,20 @@ export class TaskOutput {
 }
 
 export async function getTaskOutput(taskId, maxBytes=8*1024*1024) {
-  const data=await readFile(getTaskOutputPath(taskId));
-  return data.subarray(Math.max(0,data.length-maxBytes)).toString('utf8');
+  // Source diskOutput.getTaskOutput() reads a bounded tail, not the whole
+  // task file. Large Bash logs may be gigabytes; never Buffer the full file.
+  if (!Number.isSafeInteger(maxBytes) || maxBytes<1 || maxBytes>8*1024*1024)
+    throw new RangeError('Task output tail must be 1..8388608 bytes.');
+  const file=await open(getTaskOutputPath(taskId),'r');
+  try {
+    const size=(await file.stat()).size;
+    const buffer=Buffer.alloc(Math.min(maxBytes,size));
+    const {bytesRead}=await file.read(buffer,0,buffer.length,
+      Math.max(0,size-buffer.length));
+    const tail=buffer.subarray(0,bytesRead).toString('utf8');
+    return size>bytesRead?
+      '['+Math.round((size-bytesRead)/1024)+'KB of earlier output omitted]\\n'+tail : tail;
+  } finally {
+    await file.close();
+  }
 }
