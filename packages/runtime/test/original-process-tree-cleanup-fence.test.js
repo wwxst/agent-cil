@@ -64,6 +64,14 @@ test('OS cleanup uncertainty beats concurrent AbortSignal and blocks sibling sid
       'uncertain OS process cleanup must not be downgraded to AbortError');
     assert.equal(requests,1,'must not request another model round');
     assert.deepEqual(toolCalls,[1],'second queued tool must never run');
+    assert.equal(loop.active,false);
+    // A new prompt on the same AgentLoop instance must not reset a prior
+    // fatal OS cleanup error. This is separate from the CLI's durable
+    // journal fail-closed resume fence.
+    await assert.rejects(loop.run({input:'try another new tool'}),
+      error=>error?.name==='ProcessTreeCleanupError');
+    assert.equal(requests,1,'a second run cannot contact the model');
+    assert.deepEqual(toolCalls,[1],'a second run cannot execute more tools');
     assert.equal(journal.needsToolReconciliation,true);
     assert.deepEqual(journal.startedToolExecutions.map(x=>x.toolUseId),
       ['unsafe-first']);
