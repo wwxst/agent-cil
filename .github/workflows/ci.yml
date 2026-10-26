@@ -31,7 +31,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm test
+      - name: Verify every Node test file with bounded child ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The previously unbounded node --test worker pool can remain
+          # in_progress indefinitely when one child retains open handles.
+          # Run all existing files (protocol/runtime/CLI), one at a time,
+          # each as a real fresh Node process with an independent deadline.
+          # Print the exact failing filename; never treat a timeout as pass.
+          while IFS= read -r -d '' file; do
+            echo "::group::node --test $file"
+            if timeout --signal=TERM --kill-after=10s 110s node --test "$file"; then
+              echo "::endgroup::"
+            else
+              status=$?
+              echo "::error file=$file::Node test process failed or exceeded 110s (exit $status)"
+              echo "::endgroup::"
+              exit "$status"
+            fi
+          done < <(find packages -path '*/test/*.test.js' -type f -print0 | sort -z)
       - name: Syntax-check source, tests, and optional live-provider harness
         run: |
           find packages -name '*.js' -print0 | xargs -0 -n1 node --check
