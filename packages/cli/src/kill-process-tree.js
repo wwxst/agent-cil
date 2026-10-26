@@ -42,8 +42,14 @@ async function descendantPids(rootPid) {
     };
     timer = setTimeout(() => finish(false), ENUMERATION_TIMEOUT_MS);
     snapshot.stdout?.on('data', chunk => {
+      if (settled) return;
+      // The source process snapshot must be bounded even if an injected ps
+      // process floods stdout after timeout/kill. Do not retain its tail.
+      if (Buffer.byteLength(output, 'utf8') + chunk.length > MAX_PS_OUTPUT_BYTES) {
+        finish(false);
+        return;
+      }
       output += chunk.toString('utf8');
-      if (output.length > MAX_PS_OUTPUT_BYTES) finish(false);
     });
     snapshot.once('error', () => finish(false));
     snapshot.once('close', code => finish(code === 0));
