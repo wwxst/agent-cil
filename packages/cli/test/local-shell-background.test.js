@@ -177,3 +177,61 @@ test('source killShellTasksForAgent reaps a real unfinished Bash without requiri
     await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:130});
   }
 });
+
+
+test('2.1.88 LocalShellTask natural completion enqueues exactly one source XML notification and TaskOutput deduplicates',async()=>{
+  const manager=createLocalShellTaskManager({sessionId:randomUUID()});
+  const id=randomUUID();
+  let finish;
+  const completion=new Promise(resolve=>{finish=resolve;});
+  const output={
+    taskId:id,path:'/owned/shell-'+id+'.output',
+    getStdout:async()=> 'task output already captured',
+  };
+  manager.spawnShellTask({
+    taskOutput:output,command:'echo "<unsafe> & value"',
+    completion,kill:async()=>{},
+  });
+  assert.deepEqual(manager.pendingNotifications(),[],
+    'a live task cannot notify completion early');
+  finish({exit_code:0,stdout:'done'});
+  await completion;
+  await new Promise(resolve=>setImmediate(resolve));
+  const notices=manager.pendingNotifications();
+  assert.equal(notices.length,1);
+  assert.equal(notices[0].taskId,id);
+  assert.match(notices[0].text,/<task_notification>/);
+  assert.match(notices[0].text,/<status>completed<\/status>/);
+  assert.match(notices[0].text,/&lt;unsafe&gt; &amp; value/);
+  assert.doesNotMatch(notices[0].text,/<unsafe>/);
+  assert.equal(manager.status(id).notified,false,
+    'notification is not acknowledged until a durable provider checkpoint exists');
+  const response=await manager.getTaskOutput({task_id:id,block:true,timeout:1000});
+  assert.equal(response.retrieval_status,'success');
+  assert.equal(response.task.status,'completed');
+  assert.deepEqual(manager.pendingNotifications(),[],
+    'TaskOutput already told the model the terminal state: no duplicate notification');
+  assert.equal(manager.status(id).notified,true);
+  manager.acknowledgeNotifications([id]);
+  assert.deepEqual(manager.pendingNotifications(),[]);
+  await manager.killShellTasksForAgent();
+});
+
+test('source failed background task is notified and acknowledgements are exactly once',async()=>{
+  const manager=createLocalShellTaskManager({sessionId:randomUUID()});
+  const id=randomUUID();
+  const output={taskId:id,path:'/owned/task-'+id+'.output',
+    getStdout:async()=>''};
+  manager.spawnShellTask({taskOutput:output,
+    command:'a failing command',kill:async()=>{},
+    completion:Promise.resolve({exit_code:7,error:'Command exited with status 7.'}),
+  });
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(manager.pendingNotifications().length,1);
+  assert.match(manager.pendingNotifications()[0].text,/<status>failed<\/status>/);
+  assert.match(manager.pendingNotifications()[0].text,/exit code 7/);
+  manager.acknowledgeNotifications([id]);
+  assert.deepEqual(manager.pendingNotifications(),[]);
+  assert.equal(manager.status(id).notified,true);
+  await manager.killShellTasksForAgent();
+});
