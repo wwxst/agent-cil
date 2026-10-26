@@ -1468,6 +1468,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // Original StreamingToolExecutor executing transition, durably linked
     // only after final permission and before invoking a side-effecting tool.
     onToolExecutionStart: result => journal.appendToolExecutionStart(result),
+    // Native 2.1.88 LocalShellTask.enqueueShellNotification is a pending
+    // user-side message, durably committed in Query before provider delivery.
+    // A TaskOutput/TaskStop result suppresses duplicate completion notices.
+    getPendingTaskNotifications:()=>taskManager.pendingNotifications(),
+    onTaskNotificationsCommitted:taskIds=>taskManager.acknowledgeNotifications(taskIds),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
       permissionContext,
