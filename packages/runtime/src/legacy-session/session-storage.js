@@ -18,9 +18,20 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MAX_JOURNAL_BYTES = 64 * 1024 * 1024;
 const MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024;
 const ZERO = '0'.repeat(64);
-const CHECKPOINT_TYPES = new Set(['input', 'tool_pending', 'tool_partial', 'tool_uncertain', 'tool_mapped', 'tool_started', 'tool', 'finished', 'compact']);
+const CHECKPOINT_TYPES = new Set(['input', 'tool_pending', 'tool_partial', 'tool_uncertain', 'tool_mapped', 'tool_started', 'tool', 'finished', 'compact', 'task_notification']);
 const NOFOLLOW = constants.O_NOFOLLOW || 0;
 function digest(payload) { return createHash('sha256').update(JSON.stringify(payload)).digest('hex'); }
+function isNativeTaskNotificationCommit(before,after){
+  if(!Array.isArray(before)||!Array.isArray(after) ||
+     after.length!==before.length+1 ||
+     JSON.stringify(after.slice(0,-1))!==JSON.stringify(before))return false;
+  const last=after.at(-1);
+  return last?.role==='user' && Array.isArray(last.content) &&
+    last.content.length>=1 && last.content.length<=128 &&
+    last.content.every(block=>block?.type==='text' &&
+      typeof block.text==='string' && block.text.length<=8192 &&
+      /^<task_notification>\n<task_id>[0-9a-f-]{36}<\/task_id>\n<output_file>[\s\S]{1,4096}<\/output_file>\n<status>(completed|failed)<\/status>\n<summary>[\s\S]{1,4096}<\/summary>\n<\/task_notification>$/.test(block.text));
+}
 function validMessage(message) {
   return message && typeof message === 'object' && !Array.isArray(message) &&
     (message.role === 'assistant' || message.role === 'user') &&
@@ -318,7 +329,9 @@ export class SessionJournal {
   }
   get needsToolContextReview(){return this.#lastKind==='tool_uncertain';}
   get canContinueWithoutPrompt(){
-    return ((this.#lastKind === 'tool' || this.#lastKind === 'compact') &&
+    return (this.#lastKind==='task_notification' &&
+      isNativeTaskNotificationCommit(this.#messages.slice(0,-1),this.#messages)) ||
+      ((this.#lastKind === 'tool' || this.#lastKind === 'compact') &&
       hasPendingToolResponse(this.#messages)) ||
       (this.#lastKind === 'input' && hasPendingUserInput(this.#messages));
   }
@@ -381,7 +394,7 @@ export class SessionJournal {
         // as a legacy snapshot, even with a recomputed checksum.
         if(payload.kind === 'input' || payload.kind === 'tool_partial' ||
            payload.kind === 'tool_uncertain' || payload.kind==='tool_started' ||
-           payload.kind==='tool_mapped')
+           payload.kind==='tool_mapped' || payload.kind==='task_notification')
           throw new Error('Legacy checkpoint kind was never supported.');
         // Read-only migration of already shipped v1 whole-transcript records.
         // New writes always use source-style UUID/parentUuid message chains.
@@ -412,6 +425,11 @@ export class SessionJournal {
           (payload.entries.length!==1 || payload.entries[0].type!=='user' ||
            !['tool_pending','tool_partial'].includes(this.#lastKind))) {
           throw new Error('Invalid persisted partial tool-result checkpoint.');
+        }
+        if(payload.kind==='task_notification' &&
+           (payload.entries.length!==1 || payload.entries[0].type!=='user' ||
+            !isNativeTaskNotificationCommit(this.#messages,restored.messages))) {
+          throw new Error('Invalid persisted native task notification checkpoint.');
         }
         if(payload.kind==='tool_uncertain' &&
           (payload.entries.length!==1 || payload.entries[0].type!=='user' ||
@@ -588,6 +606,9 @@ export class SessionJournal {
         JSON.stringify(messages.slice(0,-1))!==JSON.stringify(this.#messages))) {
       throw new Error('A pending tool checkpoint must append exactly one assistant tool_use message.');
     }
+    if(kind==='task_notification' &&
+       !isNativeTaskNotificationCommit(this.#messages,messages))
+      throw new Error('Native task notification must append one source-format user message.');
     if(kind === 'input' && (!hasPendingUserInput(messages) ||
         messages.length !== this.#messages.length + 1 ||
         JSON.stringify(messages.slice(0,-1)) !== JSON.stringify(this.#messages))) {
