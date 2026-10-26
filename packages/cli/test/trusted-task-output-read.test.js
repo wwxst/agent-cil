@@ -59,6 +59,42 @@ test('completed Bash output is readable in bounded sections by real Read; no bla
   }
 });
 
+test('different Session ID in same workspace cannot borrow a live Bash output Read capability', {
+  timeout:23000,
+},async()=>{
+  const root=await makeWorkspace();
+  const sessionA=(await import('node:crypto')).randomUUID();
+  const sessionB=(await import('node:crypto')).randomUUID();
+  try{
+    const script=join(root,'session-bound.cjs');
+    await writeFile(script,'process.stdout.write(("SESSION_A_LOG\\n").repeat(10000));');
+    const session={workspace:root,sessionId:sessionA};
+    const owner=await createBuiltinTools({workspace:root,taskSession:session});
+    const command='"'+process.execPath.replaceAll('"','')+'" "'+script.replaceAll('"','')+'"';
+    const result=await owner.get('Bash').execute({command,timeout_ms:12000});
+    assert.equal(result.exit_code,0);
+    const path=result.outputFilePath;
+    assert.ok(path);
+    assert.equal(isReadableInternalTaskOutputPath(root,path,sessionA),true);
+    assert.equal(isReadableInternalTaskOutputPath(root,path,sessionB),false);
+    const sameWorkspaceOther=await createBuiltinTools({
+      workspace:root,taskSession:{workspace:root,sessionId:sessionB},
+    });
+    await assert.rejects(
+      sameWorkspaceOther.get('Read').execute({file_path:path,offset:5,limit:2}),
+      /escapes the workspace/,
+    );
+    const otherPolicy=createCliPermissionPolicy({workspace:root,sessionId:sessionB});
+    assert.equal((await otherPolicy({name:'Read',input:{file_path:path}})).behavior,'deny');
+    const ownPolicy=createCliPermissionPolicy({workspace:root,sessionId:sessionA});
+    assert.equal((await ownPolicy({name:'Read',input:{file_path:path}})).behavior,'allow');
+    const selected=await owner.get('Read').execute({file_path:path,offset:3,limit:1});
+    assert.match(selected,/SESSION_A_LOG/);
+  } finally {
+    await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:130});
+  }
+});
+
 test('completed Bash Read capability refuses output path replacement, including symlinks', {
   timeout:20000,
 },async()=>{
