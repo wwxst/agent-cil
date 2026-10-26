@@ -1,13 +1,44 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, stat, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DiskTaskOutput, TaskOutput, getTaskOutputPath, getTaskOutput,
 } from '../src/legacy-task-output.js';
 import { createBuiltinTools } from '../src/index.js';
+
+
+test('original file-FD TaskOutput preserves raw merged streams and removes redundant small file',async()=>{
+  const output=new TaskOutput(randomUUID(),null,true);
+  const handle=await output.initFileOutput();
+  try {
+    await handle.writeFile('STDOUT first\\nSTDERR second\\n');
+  } finally {
+    await handle.close();
+  }
+  await output.flush();
+  assert.equal(output.stdoutToFile,true);
+  assert.equal(await output.getStdout(),'STDOUT first\\nSTDERR second\\n');
+  assert.equal(output.getStderr(),'');
+  assert.equal(output.outputFileRedundant,true);
+  assert.equal(output.isOverflowed,false);
+  assert.equal(output.outputFileSize,Buffer.byteLength('STDOUT first\\nSTDERR second\\n'));
+  await output.deleteOutputFile();
+  await assert.rejects(stat(output.path),{code:'ENOENT'});
+});
+
+test('original exclusive file-FD output creation cannot overwrite an existing task file',async()=>{
+  const id=randomUUID();
+  const path=getTaskOutputPath(id);
+  await mkdir((await import('node:path')).dirname(path),{recursive:true,mode:0o700});
+  await writeFile(path,'KEEP EXISTING OUTPUT');
+  const output=new TaskOutput(id,null,true);
+  await assert.rejects(output.initFileOutput(),{code:'EEXIST'});
+  assert.equal(await readFile(path,'utf8'),'KEEP EXISTING OUTPUT');
+  await output.deleteOutputFile();
+});
 
 test('original DiskTaskOutput writes and flushes multiple output batches without overwriting earlier bytes',async()=>{
   const id=randomUUID();
