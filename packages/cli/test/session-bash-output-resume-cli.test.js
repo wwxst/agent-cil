@@ -117,6 +117,7 @@ test('separate CLI --resume process restores only committed Bash output ownershi
     assert.match(prior,/durable-bash-output/);
     assert.match(prior,/outputTaskId/);
     assert.equal(restoredPath,undefined);
+    stage='resume-read';
     const resumed=await runCli([...flags,'--resume',id,'Read the saved task output near line 19000'],env);
     assert.equal(resumed.signal,null,resumed.stderr);
     assert.equal(resumed.code,0,resumed.stdout+resumed.stderr);
