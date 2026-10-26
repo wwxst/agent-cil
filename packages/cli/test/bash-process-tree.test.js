@@ -200,6 +200,69 @@ setInterval(()=>{},500);
   });
 });
 
+
+test('Windows taskkill launch failure is reported, never mistaken for a completed Bash subtree cleanup', {
+  skip:process.platform!=='win32' &&
+    'SystemRoot/System32 taskkill.exe validation requires the real Windows process API',
+  timeout:30000,
+},async()=>{
+  for(const mode of ['abort','owner-shutdown']) {
+    await workspace(async root=>{
+      const script=join(root,'unavailable-taskkill-'+mode+'.cjs');
+      const pidFile=join(root,'unreaped-'+mode+'.pid');
+      const beatFile=join(root,'unreaped-'+mode+'.txt');
+      await writeFile(script,`
+const fs=require('node:fs');
+const {spawn}=require('node:child_process');
+const child=spawn(process.execPath,['-e',
+  "const fs=require('node:fs');"+
+  "setInterval(()=>fs.appendFileSync('unreaped-${mode}.txt','x'),35);"
+],{cwd:process.cwd(),windowsHide:true,stdio:'ignore'});
+fs.writeFileSync('unreaped-${mode}.pid',String(child.pid));
+setInterval(()=>{},500);
+`);
+      const cmd='"'+process.execPath.replaceAll('"','')+'" "'+
+        script.replaceAll('"','')+'"';
+      const bash=(await createBuiltinTools({workspace:root})).get('Bash');
+      const controller=new AbortController();
+      const execution=bash.execute({command:cmd,timeout_ms:12000},{
+        signal:controller.signal,
+      });
+      const oldRoot=process.env.SystemRoot;
+      try {
+        await waitForFile(pidFile);
+        await waitForFile(beatFile,3);
+        // Force the same taskkill.exe ENOENT condition that occurs on a
+        // damaged Windows environment. This must NEVER count as cleaning
+        // the whole process tree. The already-created child may survive.
+        process.env.SystemRoot=join(root,'unavailable-SystemRoot');
+        if(mode==='abort') {
+          controller.abort(new Error('cancel the real Bash subtree'));
+          await assert.rejects(execution,error=>
+            error?.name==='ProcessTreeCleanupError' &&
+            /Windows Bash process-tree cleanup could not be confirmed/.test(error.message));
+        }else {
+          await assert.rejects(cleanupLiveShellCommands(),error=>
+            error instanceof AggregateError && error.errors.some(reason=>
+              reason?.name==='ProcessTreeCleanupError'));
+          const result=await execution;
+          assert.equal(result.exit_code,1);
+          assert.match(result.error,/process-tree cleanup could not be confirmed/);
+        }
+        assert.deepEqual(getShellLifecycleStatus(),{
+          liveShellCommands:0,pendingKillBackstops:0,
+        });
+      }finally {
+        if(oldRoot===undefined)delete process.env.SystemRoot;
+        else process.env.SystemRoot=oldRoot;
+        controller.abort();
+        await killIfRunning(pidFile);
+        await execution.catch(()=>{});
+      }
+    });
+  }
+});
+
 test('original Bash exit boundary cannot hang on a grandchild retaining stdout and stderr', {
   // CMD does not guarantee inherited-pipe handles remain open after it
   // exits. A successful close there cannot prove that grandchildren died.
