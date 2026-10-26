@@ -18,7 +18,7 @@ jobs:
           node-version: 22
       - name: Verify integrated original stream, tokens, tool results, permission and Hook chain on Windows
         run: |
-          node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/pretooluse-hooks-cli.test.js packages/cli/test/posttooluse-hooks-cli.test.js packages/cli/test/permission-rules-cli.test.js packages/cli/test/tool-result-storage-cli.test.js packages/cli/test/usage-context-compact-cli.test.js packages/cli/test/streaming-readonly-cli.test.js packages/cli/test/session-resume-cli.test.js packages/runtime/test/pretooluse-hook-cancellation.test.js
+          node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/pretooluse-hooks-cli.test.js packages/cli/test/posttooluse-hooks-cli.test.js packages/cli/test/permission-rules-cli.test.js packages/cli/test/tool-result-storage-cli.test.js packages/cli/test/usage-context-compact-cli.test.js packages/cli/test/streaming-readonly-cli.test.js packages/cli/test/session-resume-cli.test.js packages/cli/test/bash-process-tree.test.js packages/runtime/test/pretooluse-hook-cancellation.test.js
 
       - name: Verify original execution input, PreToolUse checkpoint, permission and interruption contracts on Windows
         run: |
