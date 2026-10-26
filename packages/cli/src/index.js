@@ -1070,6 +1070,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   process.stderr.write('[session] ' + journal.id + (options.resume ? ' resumed' : ' created') + '\n');
   if(journal.needsToolReconciliation) {
+    if(journal.startedToolExecutions.length) {
+      process.stderr.write('[session] ' + journal.startedToolExecutions.length +
+        ' started tool call(s) recorded; verify side effects before resuming.\n');
+    }
     if(journal.mappedToolResults.length) {
       process.stderr.write('[session] ' + journal.mappedToolResults.length +
         ' mapped tool result(s) saved before PostToolUse; Hook completion still requires reconciliation.\n');
@@ -1110,6 +1114,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // The source non-MCP mapped result exists before PostToolUse. Preserve
     // it in the same fsynced, locked journal while the command Hook runs.
     onMappedToolResult: result => journal.appendMappedToolResult(result),
+    // Original StreamingToolExecutor executing transition, durably linked
+    // only after final permission and before invoking a side-effecting tool.
+    onToolExecutionStart: result => journal.appendToolExecutionStart(result),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
       permissionContext,
