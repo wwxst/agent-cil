@@ -643,24 +643,15 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     let timedOut = false;
     let outputLimitHit = false;
     let spawnError;
-    let forceKillTimer;
     let terminationTask;
 
     const terminate = () => {
       if(terminationTask)return;
-      // The shell may close before a detached, SIGTERM-resistant descendant.
-      // Always complete the escalation window BEFORE reporting cleanup.
-      // Original Bash cancellation owns the entire process group, not only
-      // the direct shell child's close event.
-      terminationTask=(async()=>{
-        await signalProcessTree(child,'SIGTERM');
-        if(process.platform !== 'win32') {
-          await new Promise(resolve=>{
-            forceKillTimer=setTimeout(resolve,250);
-          });
-          await signalProcessTree(child,'SIGKILL');
-        }
-      })();
+      // Pinned 2.1.88 utils/ShellCommand.ts #doKill() uses
+      // treeKill(pid,'SIGKILL') immediately on abort/timeout. The headless
+      // shell owns an isolated POSIX process group; Windows uses taskkill /T
+      // /F. Await the entire tree termination before settling Bash output.
+      terminationTask=signalProcessTree(child,'SIGKILL');
     };
 
     const timeout = setTimeout(() => {
