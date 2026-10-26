@@ -67,7 +67,8 @@ test('real registered Bash writes full 1MiB+ stdout/stderr to source TaskOutput 
     const stored=await readFile(result.outputFilePath,'utf8');
     assert.ok(stored.includes('A'.repeat(10000)));
     assert.ok(stored.includes('B'.repeat(10000)));
-    assert.ok(stored.includes('[stderr] '));
+    assert.equal(stored.includes('[stderr] '),false,
+      'native file-descriptor mode retains raw interleaved output without pipe labels');
     assert.ok(stored.includes('output-complete'));
     assert.equal(result.outputFileSize,Buffer.byteLength(stored));
     assert.ok(Buffer.byteLength(result.stdout)<30000);
