@@ -51,7 +51,7 @@ async function optional(path){
   catch(e){if(e.code==='ENOENT')return '';throw e;}
 }
 
-test('packed-capable real model runs Bash in background, calls TaskOutput then TaskStop with original Session checkpoints',{
+test('packed CLI model executes Bash background, TaskOutput, Read live log and TaskStop with durable Session',{
   timeout:45000,
 },async()=>{
   const root=await mkdtemp(join(tmpdir(),'agent-cil-background-model-'));
@@ -80,9 +80,18 @@ test('packed-capable real model runs Bash in background, calls TaskOutput then T
          output?.retrieval_status!=='not_ready') {
         res.end(finalAnswer());return;
       }
-      // Ensure the actual side-effecting background process had enough
-      // time to write before TaskStop; do not infer it from a task ID.
+      // Wait until the process can actually write before Read inspects
+      // its growing native output file. This is not permission bypass:
+      // the CLI Read tool must verify the original session-owned FD.
       await new Promise(resolve=>setTimeout(resolve,300));
+      res.end(emitTool('tool-bg-read','Read',{
+        file_path:reportedOutput,offset:0,limit:1,
+      }));
+    }else if(requests===4) {
+      const readResult=toolResult(body.messages,'tool-bg-read');
+      if(typeof readResult!=='string' || !readResult.includes('BACKGROUND_MODEL_BASH_STARTED')) {
+        res.end(finalAnswer());return;
+      }
       res.end(emitTool('tool-bg-stop','TaskStop',{task_id:taskId}));
     }else {
       const stoppedResult=toolResult(body.messages,'tool-bg-stop');
@@ -125,7 +134,7 @@ test('packed-capable real model runs Bash in background, calls TaskOutput then T
     const errors=Buffer.concat(stderr).toString('utf8');
     assert.equal(result.signal,null,errors);
     assert.equal(result.code,0,errors+output);
-    assert.equal(requests,4,'expected Bash, TaskOutput, TaskStop, final response');
+    assert.equal(requests,5,'expected Bash, TaskOutput, Read, TaskStop, final response');
     assert.match(output,/Background task was started, inspected and stopped/);
     assert.ok(stopped,'real TaskStop result was returned to the model');
     assert.match(taskId,/^[0-9a-f-]{36}$/i);
@@ -138,8 +147,9 @@ test('packed-capable real model runs Bash in background, calls TaskOutput then T
       'TaskStop and CLI close must release background process descendants');
     const journal=(await readFile(join(root,'.agent-cil','sessions',
       sessionId,'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
-    assert.equal(journal.filter(x=>x.kind==='tool').length,3,
-      'all three tool rounds must be durably committed');
+    assert.equal(journal.filter(x=>x.kind==='tool').length,4,
+      'all four tool rounds must be durably committed');
+    assert.match(JSON.stringify(journal),/tool-bg-read/);
     assert.match(JSON.stringify(journal),/tool-bg-stop/);
   } finally {
     if(watchdog)clearTimeout(watchdog);
