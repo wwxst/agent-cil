@@ -932,9 +932,10 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
         // identity has been checked and a real mapped tool result exists.
         // Read authorization never trusts a string returned by the model.
         taskOutput.registerCompletedOutput(cwd);
-      } else {
-        // The full small-file output is already in result.stdout. Original
-        // ShellCommandImpl deletes a redundant foreground output file.
+      } else if(!runInBackground) {
+        // Source LocalShellTask MUST retain background output even when
+        // small: TaskOutput/Read may be called after completion. Only
+        // unregistered foreground results can delete redundant files.
         await taskOutput.deleteOutputFile();
       }
       finishResult(result);
