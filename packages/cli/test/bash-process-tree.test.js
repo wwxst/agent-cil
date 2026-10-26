@@ -96,6 +96,13 @@ test('real registered Bash timeout kills descendants on Linux and Windows', {
 },async()=>exerciseTree({mode:'timeout'}));
 
 test('original Bash exit boundary cannot hang on a grandchild retaining stdout and stderr', {
+  // CMD does not guarantee inherited-pipe handles remain open after it
+  // exits. A successful close there cannot prove that grandchildren died.
+  // Windows process ownership requires the still-unported native task
+  // registry / Job Object; do not pretend the POSIX process-group guard
+  // provides that OS-specific guarantee.
+  skip:process.platform==='win32' &&
+    'Windows shell close does not prove descendant lifecycle; Job ownership remains unported',
   timeout:25000,
 },async()=>{
   await workspace(async root=>{
