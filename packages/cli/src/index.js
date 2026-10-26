@@ -589,21 +589,41 @@ function abortError(signal) {
 }
 
 function signalProcessTree(child, signalName) {
-  if (!child.pid) return;
-  if (process.platform !== 'win32') {
-    try {
-      // detached=true gives the shell and its descendants a private process group.
-      process.kill(-child.pid, signalName);
-      return;
-    } catch {
-      // Fall back to signaling the direct child if the process group is unavailable.
-    }
+  if (!child.pid) return Promise.resolve();
+  if (process.platform === 'win32') {
+    // Node child.kill() terminates only cmd.exe, not the shell's children.
+    // The original Bash lifecycle owns the whole launched process tree.
+    // Windows has no POSIX process groups: use the OS tree terminator with
+    // argv (never interpolate a tool command or PID into a shell command).
+    return new Promise(resolveKill => {
+      let killer;
+      let settled=false;
+      const finish=ok=>{
+        if(settled)return;
+        settled=true;
+        if(!ok){
+          try{child.kill('SIGKILL');}catch{}
+        }
+        resolveKill();
+      };
+      try{
+        killer=spawn('taskkill',
+          ['/PID',String(child.pid),'/T','/F'],
+          {windowsHide:true,stdio:'ignore',shell:false});
+        killer.once('error',()=>finish(false));
+        killer.once('close',code=>finish(code===0));
+      }catch{
+        finish(false);
+      }
+    });
   }
   try {
-    child.kill(signalName);
+    // detached=true gives the shell and its descendants a private process group.
+    process.kill(-child.pid, signalName);
   } catch {
-    // The process may have exited between the state check and signal delivery.
+    try{child.kill(signalName);}catch{}
   }
+  return Promise.resolve();
 }
 
 function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
@@ -624,17 +644,18 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     let outputLimitHit = false;
     let spawnError;
     let forceKillTimer;
+    let terminationTask;
 
     const terminate = () => {
-      signalProcessTree(child, 'SIGTERM');
-      if (!forceKillTimer) {
-        forceKillTimer = setTimeout(() => {
-          try {
-            signalProcessTree(child, 'SIGKILL');
-          } catch {
-            // Best-effort escalation; close/error handling reports the command outcome.
-          }
-        }, 250);
+      if(terminationTask)return;
+      // A single tree-wide cancellation owns the process until it exits.
+      // Avoid starting competing taskkill processes on Windows.
+      terminationTask=signalProcessTree(child, 'SIGTERM');
+      if(process.platform !== 'win32') {
+        forceKillTimer=setTimeout(() => {
+          void signalProcessTree(child, 'SIGKILL');
+        },250);
+        forceKillTimer.unref?.();
       }
     };
 
@@ -662,9 +683,13 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     child.once('error', error => {
       spawnError = error;
     });
-    child.once('close', code => {
+    child.once('close', async code => {
       clearTimeout(timeout);
+      clearTimeout(forceKillTimer);
       signal?.removeEventListener('abort', onAbort);
+      // Do not report cancellation as cleaned up while Windows taskkill
+      // is still terminating grandchildren of cmd.exe.
+      if(terminationTask)await terminationTask;
 
       if (signal?.aborted) {
         rejectPromise(abortError(signal));
