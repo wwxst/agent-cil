@@ -180,6 +180,10 @@ export class AgentLoop extends EventEmitter {
 
   async run({ messages = [], input, signal } = {}) {
     if (this.#active) throw new Error('This AgentLoop already has an active run.');
+    // A prior write/fsync or OS descendant-tree cleanup failure is an
+    // irreversible safety fence for this AgentLoop instance. A new root
+    // prompt must NOT reset it and replay tools into an uncertain workspace.
+    if (this.#mappedWitnessFailure) throw this.#mappedWitnessFailure;
     this.#active = true;
     // Continue a session only when the caller presents the exact last
     // committed conversation. A new root prompt or forked history cannot
@@ -196,7 +200,6 @@ export class AgentLoop extends EventEmitter {
     this.#toolAttachments = [];
     this.#toolNativeMessages = [];
     this.#hookStopReason = undefined;
-    this.#mappedWitnessFailure = undefined;
     try {
       const result = await query({
         messages, input, signal,
