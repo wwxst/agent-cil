@@ -50,7 +50,7 @@ async function runCli(args,env) {
   }finally{clearTimeout(timeout);}
 }
 
-test('real CLI SIGTERM aborts active Bash process tree, preserves executing witness and never replays', {
+test('real CLI SIGTERM kills a detached Bash grandchild outside the shell process group and safely fences resume', {
   skip:process.platform==='win32' &&
     'Windows does not deliver catchable POSIX SIGTERM to Node; Windows Bash cancellation uses AbortSignal tests',
   timeout:45000,
@@ -72,7 +72,7 @@ test('real CLI SIGTERM aborts active Bash process tree, preserves executing witn
       "const {spawn}=require('node:child_process');"+
       "const leaf=spawn(process.execPath,['-e',"+
       "\"const fs=require('node:fs');setInterval(()=>fs.appendFileSync('grandchild-heartbeat.txt','x'),35)\""+
-      "],{cwd:process.cwd(),stdio:'ignore'});"+
+      "],{cwd:process.cwd(),detached:true,stdio:'ignore'});"+
       "fs.writeFileSync('grandchild-pid.txt',String(leaf.pid));"+
       "setInterval(()=>{},500);");
     await new Promise((resolve,reject)=>{
@@ -105,6 +105,8 @@ test('real CLI SIGTERM aborts active Bash process tree, preserves executing witn
     const exit=await closed;
     assert.equal(exit.signal,null,Buffer.concat(err).toString('utf8'));
     assert.equal(exit.code,143,Buffer.concat(err).toString('utf8'));
+    // Detached:true creates a distinct POSIX session: the old group-only
+    // kill misses it, but 2.1.304 descendant-PID enumeration must not.
     const checkpoint=await maybeRead(heartbeat);
     await new Promise(resolve=>setTimeout(resolve,500));
     assert.equal(await maybeRead(heartbeat),checkpoint,
