@@ -94,3 +94,54 @@ test('real registered Bash abort kills descendants on Linux and Windows', {
 test('real registered Bash timeout kills descendants on Linux and Windows', {
   timeout:25000,
 },async()=>exerciseTree({mode:'timeout'}));
+
+test('original Bash exit boundary cannot hang on a grandchild retaining stdout and stderr', {
+  timeout:25000,
+},async()=>{
+  await workspace(async root=>{
+    const script=join(root,'foreground-exits.cjs');
+    const pidFile=join(root,'orphan-candidate.pid');
+    const heartbeat=join(root,'unowned-heartbeat.txt');
+    await writeFile(script,`
+const fs=require('node:fs');
+const {spawn}=require('node:child_process');
+const leaf=spawn(process.execPath,['-e',
+  "const fs=require('node:fs');"+
+  "setInterval(()=>fs.appendFileSync('unowned-heartbeat.txt','x'),35);"
+],{cwd:process.cwd(),stdio:['ignore','inherit','inherit'],windowsHide:true});
+fs.writeFileSync('orphan-candidate.pid',String(leaf.pid));
+process.stdout.write('foreground finished\\n');
+setTimeout(()=>process.exit(0),200);
+`);
+    const command='"'+process.execPath.replaceAll('"','')+'" "'+
+      script.replaceAll('"','')+'"';
+    const bash=(await createBuiltinTools({workspace:root})).get('Bash');
+    const started=Date.now();
+    const execution=bash.execute({command,timeout_ms:8000,maxOutputBytes:1024*1024});
+    try {
+      await waitForFile(pidFile);
+      await waitForFile(heartbeat,2);
+      const result=await execution;
+      assert.ok(Date.now()-started<4000,
+        'foreground shell exit must not block on inherited descendant pipes until 8s timeout');
+      assert.equal(result.exit_code,1,
+        'unregistered background tasks are fail-closed rather than reported as successful Bash');
+      assert.match(result.stdout,/foreground finished/);
+      assert.match(result.error,/inherited-pipe background processes|unsupported background task/);
+      if(process.platform!=='win32'){
+        // Unix descendants are in the actual Bash detached process group;
+        // they must stop before the tool result is returned.
+        const saved=await readOptional(heartbeat);
+        await new Promise(resolve=>setTimeout(resolve,400));
+        assert.equal(await readOptional(heartbeat),saved,
+          'POSIX unowned background group must be terminated on shell exit');
+      }
+      // Windows CMD can exit before taskkill /T captures grandchildren.
+      // The adapter returns an explicit failure, never false success; full
+      // native Windows job ownership remains a separate parity task.
+    } finally {
+      await killIfRunning(pidFile);
+      await execution.catch(()=>{});
+    }
+  });
+});
