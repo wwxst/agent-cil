@@ -80,6 +80,9 @@ jobs:
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/posttooluse-hooks-cli.test.js
           # Verify source session JSONL persists a completed Write and resumes in a new packed CLI process.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/session-resume-cli.test.js
+          # Verify real Bash foreground-exit, unowned descendant result,
+          # AbortSignal and timeout cleanup through the packed CLI entry point.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/bash-process-tree.test.js
           # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 
