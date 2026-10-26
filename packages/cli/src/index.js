@@ -630,6 +630,35 @@ function signalProcessTree(child, signalName) {
   return Promise.resolve();
 }
 
+// Port of the 2.1.304 ShellCommand state shape (liveShellCommands and
+// pendingKillBackstops), retained as a headless adapter. The mature 2.1.88
+// LocalShellTask/killShellTasks.ts exits also kill outstanding owned tasks.
+// This is NOT a Windows Job Object nor a native persistent task registry.
+const shellLifecycle = {
+  liveShellCommands: new Set(),
+  pendingKillBackstops: new Set(),
+};
+
+export function getShellLifecycleStatus() {
+  return {
+    liveShellCommands: shellLifecycle.liveShellCommands.size,
+    pendingKillBackstops: shellLifecycle.pendingKillBackstops.size,
+  };
+}
+
+export async function cleanupLiveShellCommands() {
+  // Like 2.1.304's live-shell shutdown + await of pendingKillBackstops:
+  // release every currently owned Bash, not just the last active tool.
+  const owned = [...shellLifecycle.liveShellCommands];
+  await Promise.allSettled(owned.map(shell => shell.kill()));
+  // A kill task may have already been started by a signal/timeout.
+  // Await the snapshot repeatedly in case the tracked set changed while
+  // shell 'close' callbacks were still completing.
+  while (shellLifecycle.pendingKillBackstops.size) {
+    await Promise.allSettled([...shellLifecycle.pendingKillBackstops]);
+  }
+}
+
 function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
   if (signal?.aborted) return Promise.reject(abortError(signal));
 
@@ -650,15 +679,30 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     let terminationTask;
     let exitDrainTimer;
     let unsupportedBackground = false;
+    let shutdownRequested = false;
 
     const terminate = () => {
-      if(terminationTask)return;
+      if(terminationTask)return terminationTask;
       // Pinned 2.1.88 utils/ShellCommand.ts #doKill() uses
       // treeKill(pid,'SIGKILL') immediately on abort/timeout. The headless
       // shell owns an isolated POSIX process group; Windows uses taskkill /T
       // /F. Await the entire tree termination before settling Bash output.
       terminationTask=signalProcessTree(child,'SIGKILL');
+      shellLifecycle.pendingKillBackstops.add(terminationTask);
+      // Task completion must remove the same promise instance and may not
+      // escape as an unhandled rejection during a normal tool shutdown.
+      void terminationTask.finally(() => {
+        shellLifecycle.pendingKillBackstops.delete(terminationTask);
+      }).catch(() => {});
+      return terminationTask;
     };
+    const ownedShell = {
+      kill() {
+        shutdownRequested = true;
+        return terminate();
+      },
+    };
+    shellLifecycle.liveShellCommands.add(ownedShell);
 
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -742,7 +786,13 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
       signal?.removeEventListener('abort', onAbort);
       // Do not report cancellation as cleaned up while Windows taskkill
       // is still terminating grandchildren of cmd.exe.
-      if(terminationTask)await terminationTask;
+      try {
+        if(terminationTask)await terminationTask;
+      } catch(error) {
+        spawnError ??= error;
+      } finally {
+        shellLifecycle.liveShellCommands.delete(ownedShell);
+      }
 
       if (signal?.aborted) {
         rejectPromise(abortError(signal));
@@ -754,7 +804,11 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
         stdout: Buffer.concat(stdout).toString('utf8'),
         stderr: Buffer.concat(stderr).toString('utf8'),
       };
-      if (timedOut) result.error = 'Command was killed or timed out.';
+      if(shutdownRequested) {
+        result.exit_code = 1;
+        result.error = 'Command terminated while releasing its owning CLI session.';
+      }
+      else if (timedOut) result.error = 'Command was killed or timed out.';
       else if (outputLimitHit) result.error = 'Command output exceeded the 1 MiB limit.';
       else if (spawnError) result.error = spawnError.message;
       else if (unsupportedBackground) {
@@ -1380,7 +1434,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.off('SIGINT', onSigint);
     process.off('SIGTERM', onSigterm);
     rl?.close();
-    await journal.close();
+    try {
+      // 2.1.88 LocalShellTask kills agent-owned shells on exit, and
+      // 2.1.304 waits for pendingKillBackstops during shutdown. Do this
+      // BEFORE releasing the durable session lock, including exceptional
+      // and SIGTERM paths.
+      await cleanupLiveShellCommands();
+    } finally {
+      await journal.close();
+    }
   }
 }
 
