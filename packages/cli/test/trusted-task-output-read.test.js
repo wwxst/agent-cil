@@ -19,7 +19,7 @@ test('completed Bash output is readable in bounded sections by real Read; no bla
     const read=tools.get('Read'), bash=tools.get('Bash');
     const script=join(workspace,'many-lines.cjs');
     await writeFile(script,[
-      "for(let i=0;i<22000;i++)process.stdout.write('ROW_'+String(i).padStart(5,'0')+' original recorded output\\n');",
+      "for(let i=0;i<41000;i++)process.stdout.write('ROW_'+String(i).padStart(5,'0')+' original recorded output\\n');",
       "process.stdout.write('END_OF_ORIGINAL_LOG\\n');",
     ].join('\n'));
     const command='"'+process.execPath.replaceAll('"','')+'" "'+script.replaceAll('"','')+'"';
