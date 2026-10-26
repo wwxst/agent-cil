@@ -1615,26 +1615,33 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return 0;
     } catch (error) {
       process.stdout.write('\n');
+      // 2.1.88 sessionStorage.ts commits the actual message chain, not the
+      // last Query turnFinished event. Query can fsync a LocalShellTask
+      // <task_notification> AFTER emitting turnFinished and BEFORE a failed
+      // provider request. Reverting to committedHistory here drops that
+      // durable message and makes the next interactive input a non-prefix
+      // session rewrite. The journal is the authoritative last committed
+      // history for ALL errors, including compact roots and abort races.
+      const priorHistoryLength=history.length;
+      history=journal.messages;
       if(journal.needsToolContextReview) {
         // Tool mapping completed, but Hook/native context normalization
         // failed. Preserve the confirmed final tool result without pretending
         // that the failed post-tool context can be safely replayed.
-        history=journal.messages;
         if(interactiveInput) {
           process.stderr.write('[recovery] Completed tool results were saved, but post-tool context needs manual review. Automatic replay is blocked.\n');
         }
       } else if (committedHistory) {
-        // The erroring model response is NOT committed. Only the preceding
-        // completed tool rounds (including the original user request) survive.
-        history = committedHistory;
+        // The erroring model response is NOT committed. Keep every preceding
+        // durable transition, including task notifications since the last
+        // completed tool batch. Never reconstruct history from an older event.
         if (interactiveInput) {
           process.stderr.write('[recovery] Completed tool results were retained. ' +
             'Continue the conversation without re-running previous tools.\n');
         }
-      } else if (journal.messages.length > history.length) {
+      } else if (history.length > priorHistoryLength) {
         // A provider failure before its first complete response must not
         // strand a durable user prompt outside the interactive history.
-        history = journal.messages;
         if (interactiveInput) {
           process.stderr.write('[recovery] The unanswered prompt was saved. ' +
             'It can be retried with --resume after restart.\n');
