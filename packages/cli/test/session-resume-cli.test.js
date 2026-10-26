@@ -129,7 +129,9 @@ test('real installed CLI: --resume with no new prompt continues pending tool res
     assert.equal(requests.filter(x=>x.mode==='resume').length,1,
       'resumed CLI must not call model to rerun previously committed tool');
     const resumed=requests.find(x=>x.mode==='resume').body.messages;
-    const stored=records.flatMap(record=>record.entries.map(entry=>entry.message));
+    // Execution/mapped witnesses are durable evidence, not model messages.
+    const stored=records.flatMap(record=>
+      Array.isArray(record.entries)?record.entries.map(entry=>entry.message):[]);
     // The Anthropic adapter intentionally strips internal stop_reason and
     // usage from the outgoing API projection; the persisted journal retains
     // them. Verify every original message's identity and API-visible content.
