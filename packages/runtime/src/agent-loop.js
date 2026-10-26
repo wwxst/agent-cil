@@ -800,6 +800,19 @@ export class AgentLoop extends EventEmitter {
         ? { ...result, permissionContentBlocks }
         : result;
     } catch (error) {
+      // Process-tree cleanup uncertainty overrides an ordinary AbortError:
+      // the user's cancellation may have failed to terminate descendants,
+      // so it must NOT be hidden by the source interrupt hook branch.
+      // Preserve the source assistant/tool_started journal and fence model
+      // continuation even when AbortSignal was set during the OS cleanup.
+      if(error?.name==='ProcessTreeCleanupError') {
+        this.#mappedWitnessFailure=error;
+        this.emit('toolCallFinished',{
+          turn,toolUseId:toolUse.id,toolName:tool.name,
+          isError:true,interrupted:signal?.aborted===true,
+        });
+        throw error;
+      }
       // Original 2.1.88 checkPermissionsAndCallTool() catches AbortError
       // and dispatches PostToolUseFailure with isInterrupt=true BEFORE
       // returning its tool_result. The current Node Query propagates
@@ -820,17 +833,6 @@ export class AgentLoop extends EventEmitter {
           });
           abortIfNeeded(signal);
         }
-      }
-      // Fatal OS subtree cleanup failures cannot be reconciled as a
-      // conventional tool error: descendants may still be writing files.
-      // Setting the existing fatal execution fence prevents subsequent
-      // queued tools, and the checkpoint guard prevents a second model turn.
-      if(error?.name==='ProcessTreeCleanupError') {
-        this.#mappedWitnessFailure=error;
-        this.emit('toolCallFinished',{
-          turn,toolUseId:toolUse.id,toolName:tool.name,isError:true,
-        });
-        throw error;
       }
       if (this.#postToolUseFailureHooks.length) {
         await this.#emitPostToolUseFailureHooks({
