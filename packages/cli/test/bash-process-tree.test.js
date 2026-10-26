@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createBuiltinTools } from '../src/index.js';
+import { createBuiltinTools, cleanupLiveShellCommands, getShellLifecycleStatus } from '../src/index.js';
 
 // Exercise the actual registered CLI Bash implementation, not a synthetic
 // process-manager helper. Child trees must be gone before abort/timeout
@@ -96,6 +96,62 @@ test('real registered Bash abort kills descendants on Linux and Windows', {
 test('real registered Bash timeout kills descendants on Linux and Windows', {
   timeout:25000,
 },async()=>exerciseTree({mode:'timeout'}));
+
+
+test('source liveShellCommands and pendingKillBackstops reap two concurrent Bash trees before cleanup completes', {
+  timeout:30000,
+},async()=>{
+  await workspace(async root=>{
+    const bash=(await createBuiltinTools({workspace:root})).get('Bash');
+    const executions=[], pidFiles=[],heartbeatFiles=[];
+    try {
+      for(const index of [1,2]){
+        const script=join(root,'owned-'+index+'.cjs');
+        const pidFile=join(root,'owned-'+index+'.pid');
+        const heartbeat=join(root,'owned-'+index+'.txt');
+        pidFiles.push(pidFile);
+        heartbeatFiles.push(heartbeat);
+        await writeFile(script,`
+const fs=require('node:fs');
+const {spawn}=require('node:child_process');
+const leaf=spawn(process.execPath,['-e',
+  "const fs=require('node:fs');"+
+  "setInterval(()=>fs.appendFileSync('owned-${index}.txt','x'),35);"
+],{cwd:process.cwd(),stdio:'ignore',windowsHide:true});
+fs.writeFileSync('owned-${index}.pid',String(leaf.pid));
+setInterval(()=>{},500);
+`);
+        const command='"'+process.execPath.replaceAll('"','')+'" "'+
+          script.replaceAll('"','')+'"';
+        executions.push(bash.execute({command,timeout_ms:11000}));
+      }
+      await Promise.all(heartbeatFiles.map(file=>waitForFile(file,3)));
+      assert.equal(getShellLifecycleStatus().liveShellCommands,2,
+        'the same original-style registry must own BOTH live commands');
+      await cleanupLiveShellCommands();
+      const outputs=await Promise.all(executions);
+      for(const result of outputs){
+        assert.equal(result.exit_code,1);
+        assert.match(result.error,/terminated while releasing its owning CLI session/);
+      }
+      const after=await Promise.all(heartbeatFiles.map(readOptional));
+      await new Promise(resolve=>setTimeout(resolve,450));
+      assert.deepEqual(await Promise.all(heartbeatFiles.map(readOptional)),after,
+        'awaited process-tree shutdown must stop both grandchild side effects');
+      assert.deepEqual(getShellLifecycleStatus(),{
+        liveShellCommands:0,pendingKillBackstops:0,
+      });
+      await cleanupLiveShellCommands();
+      assert.deepEqual(getShellLifecycleStatus(),{
+        liveShellCommands:0,pendingKillBackstops:0,
+      },'repeated global cleanup is idempotent');
+    }finally {
+      await cleanupLiveShellCommands();
+      for(const file of pidFiles)await killIfRunning(file);
+      await Promise.allSettled(executions);
+    }
+  });
+});
 
 test('original Bash exit boundary cannot hang on a grandchild retaining stdout and stderr', {
   // CMD does not guarantee inherited-pipe handles remain open after it
