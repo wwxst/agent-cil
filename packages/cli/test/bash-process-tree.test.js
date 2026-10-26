@@ -567,8 +567,10 @@ test('packed-capable CLI delivers source Bash spilled output location to model a
       assert.match(next,/outputFilePath/);
       assert.match(next,/outputFileSize/);
       assert.match(next,/outputTaskId/);
-      assert.ok(!next.includes('SOURCE_STDOUT_'.repeat(1000)),
-        'model payload must not include the complete megabyte-size log');
+      assert.ok(Buffer.byteLength(next,'utf8')<100000,
+        'model request must contain only the original bounded 30k prefix, not 1MiB of Bash log');
+      assert.ok(!next.includes('SOURCE_STDOUT_'.repeat(3000)),
+        'the large Bash log must remain on disk, not be copied into model context');
       const records=(await readFile(join(root,'.agent-cil','sessions',
         sessionId,'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
       // A normal Bash without PostToolUse can commit its mapped result
