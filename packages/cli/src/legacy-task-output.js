@@ -50,10 +50,11 @@ const sameIdentity = (left,right) => !!left && !!right &&
 const identityOf = info => ({
   dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs,
 });
-export function isReadableInternalTaskOutputPath(workspace, candidate) {
+export function isReadableInternalTaskOutputPath(workspace, candidate, sessionId=null) {
   if(typeof candidate !== 'string' || !isAbsolute(candidate))return false;
   const record=completedTaskOutputs.get(candidate);
-  return !!record && record.workspace===resolve(workspace);
+  return !!record && record.workspace===resolve(workspace) &&
+    record.sessionId===sessionId;
 }
 export async function restoreCompletedTaskOutputs({workspace,sessionId,messages}) {
   if(!Array.isArray(messages))throw new TypeError('Committed Session messages are required.');
@@ -107,6 +108,7 @@ export async function restoreCompletedTaskOutputs({workspace,sessionId,messages}
            file.size!==BigInt(expectedSize))continue;
         completedTaskOutputs.set(path,{
           workspace:resolve(workspace),
+          sessionId,
           fileIdentity:identityOf(file),
           directoryIdentity:identityOf(directoryStat),
           expectedBytes:file.size,
@@ -117,8 +119,8 @@ export async function restoreCompletedTaskOutputs({workspace,sessionId,messages}
   }
   return count;
 }
-export async function openReadableInternalTaskOutput(workspace,candidate) {
-  if(!isReadableInternalTaskOutputPath(workspace,candidate))
+export async function openReadableInternalTaskOutput(workspace,candidate,sessionId=null) {
+  if(!isReadableInternalTaskOutputPath(workspace,candidate,sessionId))
     throw new Error('Read target is not an authorized completed Bash task output.');
   const record=completedTaskOutputs.get(candidate);
   // Parent directory is private and created by this process. An attacker
@@ -242,10 +244,12 @@ export class TaskOutput {
   #directoryIdentity = null;
   #onProgress;
   #taskDirectory;
+  #sessionId;
 
   constructor(taskId = randomUUID(), onProgress = null, stdoutToFile = false,
       maxMemory = OUTPUT_MEMORY_BYTES, session = null) {
     this.taskId=taskId;
+    this.#sessionId=session?.sessionId??null;
     this.#taskDirectory=session ?
       getSessionTaskOutputDirectory(session.workspace,session.sessionId) :
       taskOutputDir;
@@ -383,6 +387,7 @@ export class TaskOutput {
       throw new Error('Only verified, retained Bash file output can be authorized for Read.');
     completedTaskOutputs.set(this.path,{
       workspace:resolve(workspace),
+      sessionId:this.#sessionId,
       fileIdentity:this.#outputIdentity,
       directoryIdentity:this.#directoryIdentity,
       expectedBytes:BigInt(this.#outputFileSize),
