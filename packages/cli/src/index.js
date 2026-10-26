@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { killPosixProcessTree } from './kill-process-tree.js';
 import {
   TaskOutput, isReadableInternalTaskOutputPath,
-  openReadableInternalTaskOutput,
+  openReadableInternalTaskOutput, restoreCompletedTaskOutputs,
 } from './legacy-task-output.js';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -703,12 +703,12 @@ export async function cleanupLiveShellCommands() {
   }
 }
 
-async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
+async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes, taskSession }) {
   if (signal?.aborted) throw abortError(signal);
   // Original 2.1.88 utils/Shell.ts exec() creates TaskOutput in file
   // mode BEFORE launching Bash. Both stdio fds point to the SAME file
   // handle so even multi-GB output never enters the Node heap.
-  const taskOutput = new TaskOutput(undefined,null,true,maxOutputBytes);
+  const taskOutput = new TaskOutput(undefined,null,true,maxOutputBytes,taskSession);
   const outputHandle = await taskOutput.initFileOutput();
   if(signal?.aborted) {
     await outputHandle.close();
@@ -919,7 +919,7 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
   });
 }
 
-export async function createBuiltinTools({ workspace = process.cwd(), permissionContext = createCliPermissionContext() } = {}) {
+export async function createBuiltinTools({ workspace = process.cwd(), permissionContext = createCliPermissionContext(), taskSession = null } = {}) {
   const { ToolRegistry } = await import('../../runtime/src/tool-registry.js');
   const root = resolve(workspace);
   const tools = new ToolRegistry();
@@ -1146,6 +1146,7 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       signal,
       timeoutMs: timeout_ms,
       maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
+      taskSession,
     }),
   });
 
@@ -1270,7 +1271,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const permissionContext = createCliPermissionContext({
     allowEdits: options.allowEdits, permissionRules: options.permissionRules,
   });
-  const tools = await createBuiltinTools({ workspace, permissionContext });
   let toolHooks = { PreToolUse: [], PostToolUse: [], PostToolUseFailure: [] };
   if (options.hooksFile) {
     try {
@@ -1342,6 +1342,25 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     await journal.close();
     return 2;
   }
+  // Source Session task ownership: only committed Bash tool_result records
+  // can restore output permissions in a fresh CLI process, and the path
+  // itself is independently derived from canonical workspace + session UUID.
+  // Never allow arbitrary transcript text to become a global /tmp grant.
+  try {
+    if(options.resume) {
+      await restoreCompletedTaskOutputs({
+        workspace,sessionId:journal.id,messages:journal.messages,
+      });
+    }
+  }catch(error) {
+    printError('Task output recovery failed: '+
+      (error instanceof Error?error.message:String(error)));
+    await journal.close();
+    return 2;
+  }
+  const tools = await createBuiltinTools({
+    workspace,permissionContext,taskSession:{workspace,sessionId:journal.id},
+  });
   const loop = new AgentLoop({
     model,
     tools,
