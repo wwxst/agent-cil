@@ -30,6 +30,7 @@ export class DiskTaskOutput {
   #capped = false;
   #flushPromise = null;
   #failure = null;
+  #created = false;
   constructor(taskId) {
     this.#path = getTaskOutputPath(taskId);
   }
@@ -61,10 +62,12 @@ export class DiskTaskOutput {
       // workspace symlinks cannot redirect process output.
       await mkdir(taskOutputDir, { recursive:true, mode:0o700 });
       const flags = process.platform === 'win32'
-        ? 'ax'
-        : fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT |
-          fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
+        ? (this.#created ? 'a' : 'ax')
+        : fsConstants.O_WRONLY | fsConstants.O_APPEND |
+          (this.#created ? 0 : fsConstants.O_CREAT | fsConstants.O_EXCL) |
+          (fsConstants.O_NOFOLLOW ?? 0);
       const fh = await open(this.#path, flags, 0o600);
+      this.#created = true;
       try {
         while (this.#queue.length) {
           const chunks = this.#queue.splice(0);
