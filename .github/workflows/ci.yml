@@ -112,6 +112,10 @@ jobs:
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/session-bash-output-resume-cli.test.js
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/local-shell-background.test.js
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/background-cli-model.test.js
+          # The source Query may durably append a LocalShellTask completion
+          # notice after its last turnFinished event. A failed provider call
+          # must not discard the notice when the SAME TTY resumes on next input.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/interactive-native-notice-recovery.test.js
           # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 
