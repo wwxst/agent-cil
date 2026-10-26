@@ -306,6 +306,7 @@ export function createCliPermissionContext({ allowEdits = false, permissionRules
 export function createCliPermissionPolicy({
   workspace = process.cwd(),
   permissionContext = createCliPermissionContext(),
+  sessionId = null,
 } = {}) {
   const root = resolve(workspace);
   const policy = async ({ name, input } = {}) => {
@@ -324,7 +325,7 @@ export function createCliPermissionPolicy({
       // output files. Until session-specific task ownership is ported,
       // only an exact, completed in-process Bash output is permitted.
       // Explicit deny/ask tool rules still take precedence.
-      if(name==='Read' && isReadableInternalTaskOutputPath(root,candidate)) {
+      if(name==='Read' && isReadableInternalTaskOutputPath(root,candidate,sessionId)) {
         return checkWholeToolPermissionRules(permissionContext,{name}) ||
           {behavior:'allow',reason:'Verified completed Bash output file.'};
       }
@@ -931,8 +932,8 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
     if (signal?.aborted) throw abortError(signal);
     const options=offset===undefined && limit===undefined
       ? undefined : {offset,limit};
-    if(isReadableInternalTaskOutputPath(root,file_path)) {
-      const fh=await openReadableInternalTaskOutput(root,file_path);
+    if(isReadableInternalTaskOutputPath(root,file_path,taskSession?.sessionId??null)) {
+      const fh=await openReadableInternalTaskOutput(root,file_path,taskSession?.sessionId??null);
       try {
         const text=options===undefined
           ? await readTextHandle(fh,file_path,signal)
@@ -1386,6 +1387,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     permissionPolicy: createCliPermissionPolicy({
       workspace,
       permissionContext,
+      sessionId:journal.id,
     }),
     maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
