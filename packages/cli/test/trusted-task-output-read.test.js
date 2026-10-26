@@ -65,7 +65,7 @@ test('completed Bash Read capability refuses output path replacement, including 
   const workspace=await makeWorkspace();
   try{
     const script=join(workspace,'larger.cjs');
-    await writeFile(script,'process.stdout.write("S".repeat(1100000));');
+    await writeFile(script,'process.stdout.write(("S".repeat(75)+"\\n").repeat(16000));');
     const tools=await createBuiltinTools({workspace});
     const result=await tools.get('Bash').execute({
       command:'"'+process.execPath.replaceAll('"','')+'" "'+script.replaceAll('"','')+'"',
