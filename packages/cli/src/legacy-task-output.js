@@ -62,21 +62,27 @@ export class DiskTaskOutput {
       // The source uses O_NOFOLLOW for task file writes so untrusted
       // workspace symlinks cannot redirect process output.
       await mkdir(taskOutputDir, { recursive:true, mode:0o700 });
-      const flags = process.platform === 'win32'
-        ? (this.#created ? 'a' : 'ax')
-        : fsConstants.O_WRONLY | fsConstants.O_APPEND |
-          (this.#created ? 0 : fsConstants.O_CREAT | fsConstants.O_EXCL) |
-          (fsConstants.O_NOFOLLOW ?? 0);
-      const fh = await open(this.#path, flags, 0o600);
-      this.#created = true;
-      try {
-        while (this.#queue.length) {
-          const chunks = this.#queue.splice(0);
-          const buffers = chunks.map(x => Buffer.from(x,'utf8'));
-          for (const buffer of buffers) await fh.writeFile(buffer);
+      // Retain the original source drain's post-close queue check:
+      // append() can run while await fh.close() is pending. If we exit
+      // here, those bytes would silently never be written on a later flush.
+      while(true) {
+        const flags = process.platform === 'win32'
+          ? (this.#created ? 'a' : 'ax')
+          : fsConstants.O_WRONLY | fsConstants.O_APPEND |
+            (this.#created ? 0 : fsConstants.O_CREAT | fsConstants.O_EXCL) |
+            (fsConstants.O_NOFOLLOW ?? 0);
+        const fh = await open(this.#path, flags, 0o600);
+        this.#created = true;
+        try {
+          while (this.#queue.length) {
+            const chunks = this.#queue.splice(0);
+            const buffers = chunks.map(x => Buffer.from(x,'utf8'));
+            for (const buffer of buffers) await fh.writeFile(buffer);
+          }
+        } finally {
+          await fh.close();
         }
-      } finally {
-        await fh.close();
+        if(this.#queue.length===0)break;
       }
     } catch(error) {
       this.#failure = error;
