@@ -738,11 +738,14 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
 
     const timeout = setTimeout(() => {
       timedOut = true;
-      terminate();
+      void terminate().catch(() => {});
     }, timeoutMs);
     timeout.unref?.();
 
-    const onAbort = () => terminate();
+    // EventTarget does not await Promise-returning event listeners. Never
+    // allow a failed Windows taskkill to become an uncaught exception; the
+    // close handler awaits and propagates the same owned terminationTask.
+    const onAbort = () => { void terminate().catch(() => {}); };
     signal?.addEventListener('abort', onAbort, { once: true });
 
     const collect = (target, chunk) => {
@@ -751,7 +754,7 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
       outputBytes += chunk.length;
       if (outputBytes > maxOutputBytes && !outputLimitHit) {
         outputLimitHit = true;
-        terminate();
+        void terminate().catch(() => {});
       }
     };
 
@@ -785,8 +788,11 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
         }
         if(unsupportedBackground) {
           exitDrainTimer = setTimeout(() => {
-            if(!terminationTask)terminate();
+            if(!terminationTask)void terminate().catch(() => {});
             void terminationTask?.then(() => {
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+            }, () => {
               child.stdout?.destroy();
               child.stderr?.destroy();
             });
@@ -798,11 +804,14 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
       exitDrainTimer = setTimeout(() => {
         if (terminationTask) return;
         unsupportedBackground = true;
-        terminate();
+        void terminate().catch(() => {});
         // Node 'close' waits for all inherited pipe handles. After the
         // process-group kill has been dispatched, release inherited fds
         // regardless of whether a descendant ignores the group signal.
         void terminationTask.then(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+        }, () => {
           child.stdout?.destroy();
           child.stderr?.destroy();
         });
@@ -814,7 +823,7 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
       clearTimeout(exitDrainTimer);
       // A POSIX group with ignored/closed stdout can emit 'close' before
       // the delayed cleanup timer. Reap its surviving descendants anyway.
-      if(unsupportedBackground && !terminationTask)terminate();
+      if(unsupportedBackground && !terminationTask)void terminate().catch(() => {});
       signal?.removeEventListener('abort', onAbort);
       // Do not report cancellation as cleaned up while Windows taskkill
       // is still terminating grandchildren of cmd.exe.
