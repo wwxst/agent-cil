@@ -258,6 +258,14 @@ export class AgentLoop extends EventEmitter {
       if (this.#toolAttachments.length) result.toolAttachments = structuredClone(this.#toolAttachments);
       if (this.#toolNativeMessages.length) result.toolNativeMessages = structuredClone(this.#toolNativeMessages);
       return result;
+    } catch(error) {
+      // The scheduler's ordinary AbortSignal check can win the race with
+      // tool execution and obscure a failed OS tree kill or journal fsync.
+      // The side-effect safety fence takes precedence over cancellation:
+      // callers must learn that descendants may still be alive and that
+      // the source assistant/tool_started transcript needs reconciliation.
+      if(this.#mappedWitnessFailure)throw this.#mappedWitnessFailure;
+      throw error;
     } finally {
       this.#active = false;
     }
