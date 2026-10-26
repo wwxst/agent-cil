@@ -648,6 +648,9 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     let outputLimitHit = false;
     let spawnError;
     let terminationTask;
+    let exitDrainTimer;
+    let unsupportedBackground = false;
+    let shellExited = false;
 
     const terminate = () => {
       if(terminationTask)return;
@@ -682,10 +685,33 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
     child.once('error', error => {
       spawnError = error;
     });
+    // The mature 2.1.88 ShellCommandImpl and 2.1.304 ShellCommand both
+    // use 'exit' for the foreground result. 'close' can wait indefinitely
+    // for grandchildren inheriting the shell's stdout/stderr pipes.
+    // This headless CLI has no original LocalShellTask background registry
+    // yet: give foreground pipe data a short drain window, then terminate
+    // any unowned descendant tree instead of hanging the tool round or
+    // silently leaving a background process with write access.
+    child.once('exit', () => {
+      shellExited = true;
+      if (terminationTask) return;
+      exitDrainTimer = setTimeout(() => {
+        if (terminationTask) return;
+        unsupportedBackground = true;
+        terminate();
+        // Node 'close' waits for all inherited pipe handles. After the
+        // process-group kill has been dispatched, release inherited fds
+        // regardless of whether a descendant ignores the group signal.
+        void terminationTask.then(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+        });
+      }, 250);
+      exitDrainTimer.unref?.();
+    });
     child.once('close', async code => {
       clearTimeout(timeout);
-      // Do NOT cancel the SIGKILL escalation on shell close: background
-      // descendants can be alive after sh/cmd.exe itself has exited.
+      clearTimeout(exitDrainTimer);
       signal?.removeEventListener('abort', onAbort);
       // Do not report cancellation as cleaned up while Windows taskkill
       // is still terminating grandchildren of cmd.exe.
@@ -704,7 +730,12 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
       if (timedOut) result.error = 'Command was killed or timed out.';
       else if (outputLimitHit) result.error = 'Command output exceeded the 1 MiB limit.';
       else if (spawnError) result.error = spawnError.message;
-      else if (code !== 0) result.error = 'Command exited with status ' + String(code) + '.';
+      else if (unsupportedBackground) {
+        // Do not report a successful foreground tool round for a detached
+        // descendant we cannot yet register/clean up as LocalShellTask.
+        result.exit_code = 1;
+        result.error = 'Command left inherited-pipe background processes after the shell exited; unsupported background task was terminated.';
+      } else if (code !== 0) result.error = 'Command exited with status ' + String(code) + '.';
       resolvePromise(result);
     });
   });
