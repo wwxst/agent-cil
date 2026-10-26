@@ -760,6 +760,7 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
     let exitDrainTimer;
     let unsupportedBackground = false;
     let shutdownRequested = false;
+    let backgroundAdmissionFailed = false;
 
     const terminate = () => {
       if(terminationTask)return terminationTask;
@@ -922,7 +923,12 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
         result.exit_code = 1;
         result.error = 'Command left inherited-pipe background processes after the shell exited; unsupported background task was terminated.';
       } else if (code !== 0) result.error = 'Command exited with status ' + String(code) + '.';
-      if(taskOutput.isOverflowed) {
+      if(backgroundAdmissionFailed) {
+        // A Bash tool whose background admission failed never returned a
+        // trusted output path. Do not register an orphaned file as readable
+        // task output; after confirmed cleanup discard that native file.
+        await taskOutput.deleteOutputFile();
+      } else if(taskOutput.isOverflowed) {
         // Original ExecResult.outputFilePath/Size/TaskId contract. Full
         // output is retained on disk, not truncated or silently discarded.
         result.outputFilePath=taskOutput.path;
@@ -961,6 +967,7 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
             '. Output is being written to: '+taskOutput.path,
         });
       }catch(error){
+        backgroundAdmissionFailed = true;
         // This failure happens AFTER spawn(). The 2.1.88 LocalShellTask
         // owner must finish killing the actual shell/process tree before
         // returning any tool result or allowing the next model round.
