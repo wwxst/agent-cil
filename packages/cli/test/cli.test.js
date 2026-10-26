@@ -506,18 +506,40 @@ test('Bash tool executes a command in the workspace and captures its output', as
 });
 
 
-test('Bash enforces the combined stdout and stderr output limit', {
-  skip: process.platform === 'win32',
+test('source Bash TaskOutput spills combined stdout/stderr to a complete retained output file', {
+  timeout:20000,
 }, async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-output-limit-'));
-  const script = 'process.stdout.write("x".repeat(1100000))';
-  const encodedScript = Buffer.from(script).toString('base64');
-  const command = JSON.stringify(process.execPath) + " -e \"eval(Buffer.from('" + encodedScript + "', 'base64').toString())\"";
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-bash-task-output-'));
+  const scriptPath=join(workspace,'large-output.cjs');
   try {
+    await writeFile(scriptPath,[
+      'process.stdout.write("A".repeat(650000));',
+      'process.stderr.write("B".repeat(550000));',
+      'process.stdout.write("DONE\\n");',
+    ].join('\n'));
+    const command='"'+process.execPath.replaceAll('"','')+'" "'+
+      scriptPath.replaceAll('"','')+'"';
     const tools = await createBuiltinTools({ workspace });
-    const result = await tools.get('Bash').execute({ command, timeout_ms: 5000 });
-    assert.match(result.error, /output exceeded the 1 MiB limit/);
-    assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= 1024 * 1024);
+    const result = await tools.get('Bash').execute({ command, timeout_ms: 10000 });
+    assert.equal(result.exit_code,0,
+      'source TaskOutput must not kill a successful command on 1 MiB stdout');
+    assert.equal(result.error,undefined);
+    assert.match(result.stdout,/Output truncated/);
+    assert.match(result.stdout,/Full output saved to:/);
+    assert.equal(result.stderr,'',
+      'source TaskOutput stores overflowing stderr with a [stderr] marker');
+    assert.match(result.outputTaskId,/^[a-f0-9-]{36}$/i);
+    assert.equal(result.outputFilePath.endsWith(result.outputTaskId+'.output'),true);
+    const persisted=await readFile(result.outputFilePath,'utf8');
+    assert.ok(persisted.length>=1200000,
+      'complete stdout and stderr must survive the 1 MiB inline boundary');
+    assert.ok(persisted.includes('A'.repeat(10000)));
+    assert.ok(persisted.includes('B'.repeat(10000)));
+    assert.ok(persisted.includes('[stderr]'));
+    assert.ok(persisted.includes('DONE'));
+    assert.equal(result.outputFileSize,Buffer.byteLength(persisted));
+    assert.ok(Buffer.byteLength(result.stdout)<30*1024,
+      'model tool result must not include all 1.2MB output');
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
