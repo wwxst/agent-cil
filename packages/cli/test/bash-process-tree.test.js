@@ -35,6 +35,24 @@ async function killIfRunning(path) {
     try {process.kill(pid,'SIGKILL');}catch{}
   }
 }
+async function killTreeIfRunning(path) {
+  const pid=Number(await readOptional(path));
+  if(!Number.isSafeInteger(pid)||pid<=1)return;
+  if(process.platform==='win32'){
+    // Test-only cleanup: taskkill is NOT intercepted in this test process.
+    // After the intentionally failed CLI taskkill, wait for the real OS
+    // termination worker before releasing the temporary workspace.
+    await new Promise(resolve=>{
+      const systemRoot=process.env.SystemRoot || 'C:\\Windows';
+      const killer=spawn(join(systemRoot,'System32','taskkill.exe'),
+        ['/PID',String(pid),'/T','/F'],
+        {windowsHide:true,stdio:'ignore',shell:false});
+      killer.once('error',()=>resolve());
+      killer.once('close',()=>resolve());
+    });
+  }
+  try{process.kill(pid,'SIGKILL');}catch{}
+}
 async function exerciseTree({mode}) {
   await workspace(async root=>{
     const heartbeat=join(root,'grandchild-heartbeat.txt');
@@ -477,8 +495,10 @@ setTimeout(()=>process.exit(0),180);
       if(watchdog)clearTimeout(watchdog);
       if(child&&child.exitCode===null)child.kill('SIGKILL');
       if(closed)await closed.catch(()=>{});
-      await killIfRunning(pidFile);
-      await killIfRunning(launcherPidFile);
+      await killTreeIfRunning(launcherPidFile);
+      await killTreeIfRunning(pidFile);
+      if(process.platform==='win32')
+        await new Promise(resolve=>setTimeout(resolve,300));
       server.closeAllConnections?.();
       if(server.listening)await new Promise(resolve=>server.close(resolve));
     }
