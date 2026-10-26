@@ -135,20 +135,43 @@ export async function loadPreToolUseHookSettings(file) {
 }
 
 function abortHookProcess(child) {
-  if (!child || child.exitCode !== null) return;
+  if (!child) return Promise.resolve();
+  // The original 2.1.88 ShellCommand kill and the 2.1.304
+  // killProcessTree() helper operate on the process tree. A shell can
+  // already have exited while a grandchild still holds stdout open,
+  // so checking only child.exitCode loses the opportunity to clean up.
   if (process.platform === 'win32' && child.pid) {
-    const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
-      windowsHide: true, stdio: 'ignore',
+    return new Promise(resolve => {
+      let settled = false;
+      const done = successful => {
+        if (settled) return;
+        settled = true;
+        if (!successful) {
+          try { child.kill('SIGKILL'); } catch {}
+        }
+        resolve();
+      };
+      try {
+        // The 2.1.304 Windows tree-kill module resolves System32 explicitly.
+        // Never execute a same-named tool from a repository cwd or PATH.
+        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+        const killer = spawn(join(systemRoot, 'System32', 'taskkill.exe'),
+          ['/PID', String(child.pid), '/T', '/F'],
+          { cwd: undefined, shell: false, windowsHide: true, stdio: 'ignore' });
+        killer.once('error', () => done(false));
+        killer.once('close', code => done(code === 0));
+      } catch {
+        done(false);
+      }
     });
-    killer.on('error', () => child.kill());
-  } else {
-    if (child.pid) {
-      try { process.kill(-child.pid, 'SIGKILL'); }
-      catch { try { child.kill('SIGKILL'); } catch {} }
-    } else {
-      try { child.kill('SIGKILL'); } catch {}
-    }
   }
+  if (child.pid) {
+    try { process.kill(-child.pid, 'SIGKILL'); }
+    catch { try { child.kill('SIGKILL'); } catch {} }
+  } else {
+    try { child.kill('SIGKILL'); } catch {}
+  }
+  return Promise.resolve();
 }
 
 /**
@@ -175,21 +198,26 @@ export async function execCommandHook(command, hookInput, workspace, signal, tim
     detached: !isWindows, windowsHide: true, stdio: ['pipe','pipe','pipe'],
   });
   let out = '', err = '', overflow = false, timedOut = false;
+  let killTask;
+  const terminate = () => {
+    if (!killTask) killTask = abortHookProcess(child);
+    return killTask;
+  };
   const append = (value, key) => {
     if (key === 'stdout') out += value;
     else err += value;
     if (Buffer.byteLength(out) + Buffer.byteLength(err) > MAX_HOOK_OUTPUT_BYTES) {
       overflow = true;
-      abortHookProcess(child);
+      void terminate();
     }
   };
   child.stdin.on('error', () => {}); // Child can exit before stdin flushes.
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', value => append(value, 'stdout'));
   child.stderr.on('data', value => append(value, 'stderr'));
-  const onAbort = () => abortHookProcess(child);
+  const onAbort = () => { void terminate(); };
   signal?.addEventListener('abort', onAbort, { once: true });
-  const watchdog = setTimeout(() => { timedOut = true; abortHookProcess(child); }, timeoutMs);
+  const watchdog = setTimeout(() => { timedOut = true; void terminate(); }, timeoutMs);
   try {
     child.stdin.end(JSON.stringify(hookInput) + '\n');
     const status = await new Promise((done, fail) => {
@@ -203,7 +231,11 @@ export async function execCommandHook(command, hookInput, workspace, signal, tim
   } finally {
     clearTimeout(watchdog);
     signal?.removeEventListener('abort', onAbort);
-    if (child.exitCode === null) abortHookProcess(child);
+    // Original ShellCommand.cleanup() does not declare a cancelled tool
+    // complete while child cleanup is still pending. In particular, await
+    // the Windows taskkill /T worker before the Hook's turn is released.
+    if (child.exitCode === null && child.signalCode === null) void terminate();
+    if (killTask) await killTask;
   }
 }
 
