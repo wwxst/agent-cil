@@ -245,9 +245,9 @@ setInterval(()=>{},500);
           await assert.rejects(cleanupLiveShellCommands(),error=>
             error instanceof AggregateError && error.errors.some(reason=>
               reason?.name==='ProcessTreeCleanupError'));
-          const result=await execution;
-          assert.equal(result.exit_code,1);
-          assert.match(result.error,/process-tree cleanup could not be confirmed/);
+          await assert.rejects(execution,error=>
+            error?.name==='ProcessTreeCleanupError' &&
+            /process-tree cleanup could not be confirmed/.test(error.message));
         }
         assert.deepEqual(getShellLifecycleStatus(),{
           liveShellCommands:0,pendingKillBackstops:0,
