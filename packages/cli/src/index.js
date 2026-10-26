@@ -820,12 +820,15 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
         shellLifecycle.liveShellCommands.delete(ownedShell);
       }
 
+      if (spawnError?.name==='ProcessTreeCleanupError') {
+        // The process-tree owner could not confirm that side effects
+        // stopped. Throw into AgentLoop's fatal checkpoint fence rather
+        // than mapping an ordinary tool_error and continuing the model.
+        rejectPromise(spawnError);
+        return;
+      }
       if (signal?.aborted) {
-        if(spawnError?.name==='ProcessTreeCleanupError') {
-          // Keep the aborted state, but do not disguise an unsuccessful
-          // descendant cleanup as a normal user cancellation.
-          rejectPromise(spawnError);
-        }else rejectPromise(abortError(signal));
+        rejectPromise(abortError(signal));
         return;
       }
 
@@ -834,11 +837,7 @@ function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
         stdout: Buffer.concat(stdout).toString('utf8'),
         stderr: Buffer.concat(stderr).toString('utf8'),
       };
-      if(spawnError?.name==='ProcessTreeCleanupError') {
-        result.exit_code=1;
-        result.error=spawnError.message;
-      }
-      else if(shutdownRequested) {
+      if(shutdownRequested) {
         result.exit_code = 1;
         result.error = 'Command terminated while releasing its owning CLI session.';
       }
