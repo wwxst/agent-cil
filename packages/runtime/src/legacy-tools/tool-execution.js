@@ -250,7 +250,6 @@ export async function invokeToolCallAndMapResult(tool, input, {
   // enabled ONLY when the CLI has first fsynced its tool_started witness.
   // Keep standalone source Tool execution error behavior unchanged.
   let toolCallFulfilled = false;
-  let toolResultReady = false;
   try {
   if (typeof tool.call === 'function') {
     if (typeof tool.mapToolResultToToolResultBlockParam !== 'function') {
@@ -336,7 +335,6 @@ export async function invokeToolCallAndMapResult(tool, input, {
         checked, tool.name, tool.maxResultSizeChars, toolResultStorage)
     : checked;
   if (signal?.aborted) throw cancelledToolCall(signal);
-  toolResultReady = true;
   // Original toolExecution.ts runs PostToolUse after mapping and saving
   // the result. An observer receives the ORIGINAL raw tool output, not
   // the on-disk preview or the API block, and cannot remap the result.
@@ -365,10 +363,17 @@ export async function invokeToolCallAndMapResult(tool, input, {
     ? { ...processed, nativeContextModifier }
     : processed;
   } catch (error) {
+    // Even after mapping, original structured-output/newMessages attachment
+    // publication still belongs to this tool's result lifecycle. A callback
+    // that throws here must not turn an already-successful file edit into a
+    // normal provider-visible retryable tool failure.
+    // Preserve OS/output-persistence typed fatal failures unchanged.
     if (throwOnUnfinalizedToolResult && toolCallFulfilled &&
-        !toolResultReady && !signal?.aborted) {
+        !signal?.aborted &&
+        !['ProcessTreeCleanupError', 'TaskOutputPersistenceError',
+          'ToolResultFinalizationError'].includes(error?.name)) {
       const failure = new Error(
-        'Tool.call completed but its result could not be finalized; ' +
+        'Tool.call completed but its result could not be finalized/published; ' +
         'inspect side effects before retrying: ' +
         (error instanceof Error ? error.message : String(error)),
         { cause: error },
