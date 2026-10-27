@@ -45,21 +45,25 @@ test('OpenAI Chat end-to-end: Read, failing Bash test, Edit, passing Bash test, 
   const requests = [];
   const original = 'module.exports = (a, b) => a - b;\n';
   const expected = 'module.exports = (a, b) => a + b;\n';
-  const first = toolStream([
-    ['read-initial', 'Read', { file_path: 'math.cjs' }],
-    ['test-fail', 'Bash', { command: 'node test.cjs' }],
-    ['repair-code', 'Edit', { file_path: 'math.cjs',
-      old_string: 'a - b', new_string: 'a + b' }],
-    ['test-pass', 'Bash', { command: 'node test.cjs' }],
-    ['read-final', 'Read', { file_path: 'math.cjs' }],
-  ]);
-  const second = textStream('Fixed and tested successfully.');
+  // Old 2.1.88 StreamingToolExecutor aborts *siblings* after a Bash
+  // failure. The model must SEE the authenticated failed tool_result and
+  // choose Edit in the NEXT model round, never execute a batch of
+  // speculative mutations after a failed test.
+  const responses = [
+    toolStream([['read-initial', 'Read', {file_path:'math.cjs'}]]),
+    toolStream([['test-fail', 'Bash', {command:'node test.cjs'}]]),
+    toolStream([['repair-code', 'Edit', {file_path:'math.cjs',
+      old_string:'a - b',new_string:'a + b'}]]),
+    toolStream([['test-pass', 'Bash', {command:'node test.cjs'}]]),
+    toolStream([['read-final', 'Read', {file_path:'math.cjs'}]]),
+    textStream('Fixed and tested successfully.'),
+  ];
   const server = createServer(async (request, response) => {
     const buf = [];
     for await (const bytes of request) buf.push(bytes);
     requests.push(JSON.parse(Buffer.concat(buf).toString('utf8')));
     response.writeHead(200, { 'content-type': 'text/event-stream' });
-    response.end(requests.length === 1 ? first : second);
+    response.end(responses[requests.length-1] ?? textStream('Unexpected retry.'));
   });
   let child;
   let watchdog;
@@ -79,7 +83,7 @@ test('OpenAI Chat end-to-end: Read, failing Bash test, Edit, passing Bash test, 
       '-q', '-e', '-c',
       [
         process.execPath, cli, '--provider', 'openai', '--allow-edits',
-        '--model', 'gpt-5.1', '--max-retries', '0', '--max-turns', '3',
+        '--model', 'gpt-5.1', '--max-retries', '0', '--max-turns', '8',
         '--cwd', workspace, '--base-url', 'http://127.0.0.1:' + a.port + '/v1',
         'Fix the code and test it.',
       ].map(quoted).join(' '), '/dev/null',
@@ -117,19 +121,28 @@ test('OpenAI Chat end-to-end: Read, failing Bash test, Edit, passing Bash test, 
     assert.equal(exits, 1, combined + errors);
     assert.match(combined, /Fixed and tested successfully/);
     assert.equal(await readFile(join(workspace, 'math.cjs'), 'utf8'), expected);
-    assert.equal(requests.length, 2);
-    assert.equal(requests[0].model, 'gpt-5.1');
-    assert.equal(requests[0].tools.length, 8);
-    assert.deepEqual(requests[1].messages.map(m => m.role), [
-      'user', 'assistant', 'tool', 'tool', 'tool', 'tool', 'tool',
+    assert.equal(requests.length,6,'one provider continuation for each completed source tool');
+    assert.equal(requests[0].model,'gpt-5.1');
+    assert.equal(requests[0].tools.length,8);
+    assert.deepEqual(requests[5].messages.map(m=>m.role),[
+      'user','assistant','tool','assistant','tool',
+      'assistant','tool','assistant','tool','assistant','tool',
     ]);
-    const results = requests[1].messages.filter(m => m.role === 'tool');
-    assert.equal(results[0].content, original);
-    assert.equal(results[4].content, expected);
-    assert.equal(JSON.parse(results[1].content).exit_code, 1);
-    assert.equal(JSON.parse(results[3].content).exit_code, 0);
-    assert.match(JSON.parse(results[3].content).stdout, /TEST PASSED/);
-    assert.equal(JSON.parse(results[2].content).edited, true);
+    const results=requests[5].messages.filter(m=>m.role==='tool');
+    assert.deepEqual(results.map(m=>m.tool_call_id),[
+      'read-initial','test-fail','repair-code','test-pass','read-final',
+    ]);
+    assert.equal(results[0].content,original);
+    assert.match(results[1].content,/Command failed with exit code 1|ShellCommandError/);
+    assert.match(results[1].content,/AssertionError|ERR_ASSERTION/);
+    assert.equal(JSON.parse(results[2].content).edited,true);
+    assert.equal(JSON.parse(results[3].content).exit_code,0);
+    assert.match(JSON.parse(results[3].content).stdout,/TEST PASSED/);
+    assert.equal(results[4].content,expected);
+    // Source Bash failure is committed BEFORE the next model Edit decision;
+    // a failed Bash no longer silently pretends to be a successful result.
+    assert.equal(requests[2].messages.at(-1).tool_call_id,'test-fail');
+    assert.match(requests[2].messages.at(-1).content,/exit code 1/);
     assert.equal(combined.includes('local-test-key'), false);
   } finally {
     if (watchdog) clearTimeout(watchdog);
