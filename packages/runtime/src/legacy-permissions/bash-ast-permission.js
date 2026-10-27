@@ -9,6 +9,7 @@
  */
 import { bashToolCheckExactMatchPermission } from './bash-exact-permission.js';
 import { assessOriginalBashSecurity } from './bash-original-ast-security.js';
+import { matchingRulesForInput } from './bash-original-rule-filter.js';
 
 function sourceAsk(reason) {
   return {
@@ -27,6 +28,26 @@ export async function bashToolCheckAstPermission(input,context) {
 
   const parsed=await assessOriginalBashSecurity(input.command);
   if(parsed.kind!=='simple') {
+    // Verbatim source 2.1.88 bashPermissions.ts:1431-1454
+    // checkSemanticsDeny() sequence: checkEarlyExitDeny for the full
+    // command (above), then match prefix/wildcard DENY for every
+    // AST-extracted SimpleCommand even when semantic validation failed.
+    // Without this, echo harmless && eval ... with Bash(eval:*) would
+    // become an ordinary interactive ask rather than an explicit DENY.
+    for(const cmd of parsed.sourceCommands??[]) {
+      const match=matchingRulesForInput(
+        {...input,command:cmd.text},context,'prefix',
+        {skipCompoundCheck:true},
+      ).matchingDenyRules[0];
+      if(match!==undefined) {
+        return {
+          behavior:'deny',
+          message:'Permission to use Bash with command '+
+            input.command+' has been denied.',
+          decisionReason:{type:'rule',rule:match},
+        };
+      }
+    }
     return sourceAsk(parsed.reason??'Command cannot be safely parsed');
   }
   const commands=parsed.commands??[];
