@@ -388,6 +388,11 @@ export async function invokeToolCallAndMapResult(tool, input, {
         { cause: error },
       );
       failure.name = 'ToolResultFinalizationError';
+      // Only an exception thrown INSIDE the original Tool.call/execute may
+      // need the source PostToolUseFailure lifecycle. Post-mapper failures
+      // already passed the successful result phase.
+      failure.sideEffectsStarted = sideEffectsStarted;
+      failure.toolCallFulfilled = toolCallFulfilled;
       throw failure;
     }
     throw error;
