@@ -90,7 +90,7 @@ test('original AST integrates with pinned Bash deny/ask rule parser; complex com
   ]),/wildcard\/prefix/);
 });
 
-async function testActualCli({command,flags,shouldFail}) {
+async function testActualCli({command,flags,shouldFail,mustNotCreate}) {
   const root=await mkdtemp(join(tmpdir(),'agent-bash-ast-cli-'));
   const requests=[];
   const server=createServer(async(req,res)=>{
@@ -128,6 +128,10 @@ async function testActualCli({command,flags,shouldFail}) {
       x=>x.type==='tool_result'&&x.tool_use_id==='source-ast-bash');
     assert.ok(result,'real Query must retain original authenticated tool ID');
     assert.equal(result.is_error===true,shouldFail,JSON.stringify(result));
+    if(mustNotCreate) {
+      await assert.rejects(stat(join(root,mustNotCreate)),{code:'ENOENT'},
+        'unvalidated Bash redirection must not reach the shell');
+    }
     return {root,output:result.content};
   }finally{
     if(timeout)clearTimeout(timeout);
@@ -245,3 +249,32 @@ if(process.platform!=='win32'){
     assert.match(result.output,/approval|requires|permission/i);
   });
 }
+
+test('original 2.1.88 AST redirection target never inherits whole-tool Bash allow',{
+  timeout:30000,
+},async()=>{
+  const command='node --version > ./untrusted-output.txt';
+  const parsed=await parseOriginalBashForSecurity(command);
+  assert.equal(parsed.kind,'simple',JSON.stringify(parsed));
+  assert.ok(parsed.commands[0].redirects.length>0,
+    'native source AST must retain redirection path evidence');
+  const context=createCliPermissionContext({permissionRules:{
+    allow:[{toolName:'Bash'}],deny:[],ask:[],
+  }});
+  const decision=await bashToolCheckAstPermission(
+    {command},context,{workspace:process.cwd()});
+  assert.equal(decision.behavior,'ask',JSON.stringify(decision));
+  assert.match(decision.message,/checkPathConstraints/);
+});
+
+test('packed live CLI refuses output redirection even with whole Bash auto-allow',{
+  timeout:35000,
+},async()=>{
+  const result=await testActualCli({
+    command:'node --version > ./untrusted-output.txt',
+    flags:['--allowedTools','Bash'],
+    shouldFail:true,
+    mustNotCreate:'untrusted-output.txt',
+  });
+  assert.match(result.output,/requires|approval|permission/i);
+});
