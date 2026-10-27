@@ -1162,17 +1162,23 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       const handle = await openWorkspaceFile(root, target, constants.O_RDWR);
       try {
         const original = await readTextHandle(handle, target);
+        await assertOpenedFileWithinWorkspace(root, target, handle);
+        // Preserve FileEditTool.checkPermissions and call ordering:
+        // staleness/full-Read validation precedes searching old_string, so
+        // external edits are reported as conflicts, not missing matches.
+        const before=await handle.stat();
+        checkOriginalFileReadState(readFileState,target,original,before);
         const first = original.indexOf(old_string);
         if (first < 0) throw new Error('old_string was not found in ' + file_path);
         if (original.indexOf(old_string, first + old_string.length) >= 0) {
           throw new Error('old_string occurs more than once; provide a unique match.');
         }
         const updated = original.slice(0, first) + new_string + original.slice(first + old_string.length);
+        // Keep the original post-permission recheck on the opened descriptor
+        // immediately before the actual mutation. File contents were read
+        // from this same verified handle above.
         await assertOpenedFileWithinWorkspace(root, target, handle);
-        const before=await handle.stat();
-        // Original FileEditTool.call() rejects stale or partial reads even
-        // after the permission check. Never overwrite an external edit.
-        checkOriginalFileReadState(readFileState,target,original,before);
+        checkOriginalFileReadState(readFileState,target,original,await handle.stat());
         await writeTextHandle(handle, updated);
         rememberOriginalFileRead(readFileState,target,updated,await handle.stat());
         return { path: relative(root, target).split(sep).join('/'), edited: true };
