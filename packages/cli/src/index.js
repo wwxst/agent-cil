@@ -16,6 +16,7 @@ import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/per
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
 import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
+import { interpretCommandResult } from './original-bash-command-semantics.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
@@ -1245,15 +1246,41 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       required: ['command'],
       additionalProperties: false,
     },
-    execute: async ({ command, timeout_ms = 30000, run_in_background = false }, { signal } = {}) => runShellCommand(command, {
-      cwd: root,
-      signal,
-      timeoutMs: timeout_ms,
-      maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
-      taskSession,
-      runInBackground:run_in_background,
-      taskManager:manager,
-    }),
+    execute: async ({ command, timeout_ms = 30000, run_in_background = false }, { signal } = {}) => {
+      const result = await runShellCommand(command, {
+        cwd: root,
+        signal,
+        timeoutMs: timeout_ms,
+        maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
+        taskSession,
+        runInBackground:run_in_background,
+        taskManager:manager,
+      });
+      // Original 2.1.88 BashTool.call() consumes ShellCommand's result and
+      // interpretCommandResult BEFORE mapping a successful tool_result.
+      // Nonzero shell exits are NOT universally errors: grep/rg/diff/test
+      // exit 1 commonly conveys a non-error status. The completed native
+      // TaskOutput ownership/cleanup above remains unchanged.
+      if(!run_in_background) {
+        const meaning=interpretCommandResult(command,result.exit_code,
+          result.stdout??'',result.stderr??'');
+        if(result.error || meaning.isError) {
+          const reason=result.error ?? meaning.message ??
+            'Command failed with exit code '+result.exit_code;
+          const error=new Error(
+            reason + (result.stdout?'\\n'+result.stdout:'') +
+            (result.stderr?'\\n'+result.stderr:''));
+          error.name='ShellCommandError';
+          error.exitCode=result.exit_code;
+          throw error;
+        }
+        // Preserve meaningful non-error status for the model without
+        // presenting grep's empty-match exit 1 as a failed tool call.
+        if(meaning.message)result.message=meaning.message;
+        delete result.error;
+      }
+      return result;
+    },
   });
 
   tools.register({
