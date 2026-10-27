@@ -22,13 +22,23 @@ function editStream() {
     sse('content_block_delta', { index: 0,
       delta: { type: 'signature_delta', signature: 'original-signature' } }) +
     sse('content_block_stop', { index: 0 }) +
+    // Original FileReadTool must fully Read an existing file before Edit.
+    // Keep both in the SAME authenticated model tool-use batch so the
+    // completed Read and Edit results share this recovery checkpoint.
     sse('content_block_start', { index: 1, content_block: {
-      type: 'tool_use', id: 'edit-once', name: 'Edit', input: {} } }) +
+      type: 'tool_use', id: 'read-before-edit', name: 'Read', input: {} } }) +
     sse('content_block_delta', { index: 1, delta: {
+      type: 'input_json_delta', partial_json: JSON.stringify({
+        file_path: 'math.js',
+      }) } }) +
+    sse('content_block_stop', { index: 1 }) +
+    sse('content_block_start', { index: 2, content_block: {
+      type: 'tool_use', id: 'edit-once', name: 'Edit', input: {} } }) +
+    sse('content_block_delta', { index: 2, delta: {
       type: 'input_json_delta', partial_json: JSON.stringify({
         file_path: 'math.js', old_string: 'a - b', new_string: 'a + b',
       }) } }) +
-    sse('content_block_stop', { index: 1 }) + stop('tool_use');
+    sse('content_block_stop', { index: 2 }) + stop('tool_use');
 }
 function textStream(text) {
   return start() + sse('content_block_start', { index: 0,
@@ -104,10 +114,16 @@ test('TTY CLI retries after post-Edit model failure with completed tool history,
     assert.equal(requests[0].messages[0].content, 'Fix math.js once.');
     assert.equal(requests[1].messages[1].content[0].type, 'thinking');
     assert.equal(requests[1].messages[1].content[0].signature, 'original-signature');
-    assert.equal(requests[1].messages[1].content[1].id, 'edit-once');
-    assert.equal(requests[1].messages[2].content[0].tool_use_id, 'edit-once');
-    assert.equal(requests[2].messages.length, 4);
-    assert.deepEqual(requests[2].messages.slice(0, 3), requests[1].messages);
+    assert.deepEqual(requests[1].messages[1].content.filter(x=>x.type==='tool_use').map(x=>x.id),
+      ['read-before-edit','edit-once']);
+    const toolResults=requests[1].messages.flatMap(m=>
+      m.role==='user'&&Array.isArray(m.content)
+        ?m.content.filter(b=>b.type==='tool_result') : []);
+    assert.deepEqual(toolResults.map(x=>x.tool_use_id),['read-before-edit','edit-once']);
+    assert.equal(toolResults[1].is_error,undefined);
+    assert.equal(requests[2].messages.length,requests[1].messages.length+1);
+    assert.deepEqual(requests[2].messages.slice(0, requests[1].messages.length),
+      requests[1].messages);
     assert.equal(requests[2].messages.at(-1).content, 'continue');
     assert.equal((output.match(/\[tool\] Edit/g) || []).length, 1);
     assert.equal(output.includes('private reasoning'), false);
