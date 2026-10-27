@@ -714,7 +714,7 @@ export async function cleanupLiveShellCommands() {
   }
 }
 
-async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes, taskSession, runInBackground=false, taskManager }) {
+async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes, taskSession, runInBackground=false, taskManager, markSideEffectsStarted }) {
   if (signal?.aborted) throw abortError(signal);
   // Original 2.1.88 utils/Shell.ts exec() creates TaskOutput in file
   // mode BEFORE launching Bash. Both stdio fds point to the SAME file
@@ -742,6 +742,10 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
     };
     let child;
     try {
+      // A command may mutate the workspace as soon as the shell launches.
+      // The CLI has already fsynced tool_started, so a subsequent spawn/
+      // process failure must not become a retryable model tool_error.
+      markSideEffectsStarted?.();
       child = spawn(command, {
         cwd,
         shell: true,
@@ -1091,9 +1095,12 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       required: ['file_path', 'content'],
       additionalProperties: false,
     },
-    execute: async ({ file_path, content }) => {
+    execute: async ({ file_path, content }, { markSideEffectsStarted } = {}) => {
       const target = resolveWorkspacePath(root, file_path);
       await assertPathWithinWorkspace(root, target);
+      // mkdir can create some directories before a later path component
+      // fails. Mark this original Write operation before its first effect.
+      markSideEffectsStarted?.();
       await mkdir(dirname(target), { recursive: true });
       const handle = await openWorkspaceFile(root, target, constants.O_WRONLY | constants.O_CREAT, 0o666);
       try {
@@ -1121,7 +1128,7 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       required: ['file_path', 'old_string', 'new_string'],
       additionalProperties: false,
     },
-    execute: async ({ file_path, old_string, new_string }) => {
+    execute: async ({ file_path, old_string, new_string }, { markSideEffectsStarted } = {}) => {
       const target = resolveWorkspacePath(root, file_path);
       const handle = await openWorkspaceFile(root, target, constants.O_RDWR);
       try {
@@ -1133,6 +1140,9 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
         }
         const updated = original.slice(0, first) + new_string + original.slice(first + old_string.length);
         await assertOpenedFileWithinWorkspace(root, target, handle);
+        // Missing/non-unique old_string errors are recoverable; truncating
+        // and rewriting the already-validated file is not.
+        markSideEffectsStarted?.();
         await writeTextHandle(handle, updated);
         return { path: relative(root, target).split(sep).join('/'), edited: true };
       } finally {
@@ -1245,7 +1255,7 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       required: ['command'],
       additionalProperties: false,
     },
-    execute: async ({ command, timeout_ms = 30000, run_in_background = false }, { signal } = {}) => runShellCommand(command, {
+    execute: async ({ command, timeout_ms = 30000, run_in_background = false }, { signal, markSideEffectsStarted } = {}) => runShellCommand(command, {
       cwd: root,
       signal,
       timeoutMs: timeout_ms,
@@ -1253,6 +1263,7 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       taskSession,
       runInBackground:run_in_background,
       taskManager:manager,
+      markSideEffectsStarted,
     }),
   });
 
@@ -1283,7 +1294,11 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       },
       additionalProperties:false,
     },
-    execute:async({task_id,shell_id})=>manager.stopTask(task_id??shell_id),
+    execute:async({task_id,shell_id},{markSideEffectsStarted}={})=>{
+      // Stopping a session-owned task is a process-tree side effect.
+      markSideEffectsStarted?.();
+      return manager.stopTask(task_id??shell_id);
+    },
   });
 
   return tools;
