@@ -67,7 +67,14 @@ async function exerciseUncertainHookCleanup(event) {
       onMappedToolResult:args=>journal.appendMappedToolResult(args),
       maxTurns:3,
     });
-    running=loop.run({input:'Execute the selected original tool',signal:abort.signal});
+    // Exact real CLI runPrompt() boundary: fsync the initial user message
+    // BEFORE starting Query. Otherwise tool_pending cannot be attached to
+    // the source UUID/parentUuid chain and the Hook never actually starts.
+    const input='Execute the selected original tool';
+    await journal.append({
+      messages:[{role:'user',content:input}],kind:'input',
+    });
+    running=loop.run({input,signal:abort.signal});
     let runStatus={stage:'still running'};
     void running.then(result=>{
       runStatus={stage:'resolved',result:result?.stopReason,
