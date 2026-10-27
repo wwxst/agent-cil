@@ -134,44 +134,74 @@ export async function loadPreToolUseHookSettings(file) {
   return settings.PreToolUse;
 }
 
+function uncertainHookProcessTree(child, reason, cause) {
+  // Native 2.1.304 Bash/process cleanup treats a failed tree-kill as a
+  // fatal uncertainty, not as success. Hook command processes are equally
+  // capable of leaving descendants with live side effects. Do the same
+  // bounded best-effort fallback, but NEVER mistake it for proof of cleanup.
+  try { child.kill('SIGKILL'); } catch {}
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  const error = new Error(
+    'Native Hook process-tree cleanup could not be confirmed: ' + reason +
+    '. Unowned descendants may remain.',
+    { cause },
+  );
+  error.name = 'ProcessTreeCleanupError';
+  return error;
+}
+
 function abortHookProcess(child) {
-  if (!child) return Promise.resolve();
-  // The original 2.1.88 ShellCommand kill and the 2.1.304
-  // killProcessTree() helper operate on the process tree. A shell can
-  // already have exited while a grandchild still holds stdout open,
-  // so checking only child.exitCode loses the opportunity to clean up.
-  if (process.platform === 'win32' && child.pid) {
-    return new Promise(resolve => {
+  if (!child?.pid) return Promise.resolve();
+  if (process.platform === 'win32') {
+    return new Promise((resolveKill, rejectKill) => {
       let settled = false;
-      const done = successful => {
+      let watchdog;
+      const finish = (successful, reason, cause) => {
         if (settled) return;
         settled = true;
-        if (!successful) {
-          try { child.kill('SIGKILL'); } catch {}
-        }
-        resolve();
+        clearTimeout(watchdog);
+        if (successful) resolveKill();
+        else rejectKill(uncertainHookProcessTree(child, reason, cause));
       };
       try {
-        // The 2.1.304 Windows tree-kill module resolves System32 explicitly.
-        // Never execute a same-named tool from a repository cwd or PATH.
-        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+        // Exact 2.1.304 mechanism: argv-only System32 tree terminator. A
+        // repo-local taskkill executable must never be resolved from PATH.
+        const systemRoot = process.env.SystemRoot || 'C:\Windows';
         const killer = spawn(join(systemRoot, 'System32', 'taskkill.exe'),
           ['/PID', String(child.pid), '/T', '/F'],
           { cwd: undefined, shell: false, windowsHide: true, stdio: 'ignore' });
-        killer.once('error', () => done(false));
-        killer.once('close', code => done(code === 0));
-      } catch {
-        done(false);
+        killer.once('error', error =>
+          finish(false, error.code || error.message, error));
+        killer.once('close', (code, signal) =>
+          finish(code === 0, signal
+            ? 'taskkill signal ' + signal : 'taskkill exit ' + String(code)));
+        // 2.1.304 records pending kill backstops. The current Node Hook
+        // must bound a stuck taskkill worker instead of holding the session
+        // lock indefinitely while descendants may remain alive.
+        watchdog = setTimeout(() => {
+          try { killer.kill('SIGKILL'); } catch {}
+          finish(false, 'taskkill exceeded 5s');
+        }, 5000);
+      } catch (error) {
+        finish(false, error instanceof Error ? error.message : String(error), error);
       }
     });
   }
-  if (child.pid) {
-    try { process.kill(-child.pid, 'SIGKILL'); }
-    catch { try { child.kill('SIGKILL'); } catch {} }
-  } else {
-    try { child.kill('SIGKILL'); } catch {}
+  try {
+    // PreToolUse commands are spawned as POSIX process-group leaders.
+    process.kill(-child.pid, 'SIGKILL');
+    return Promise.resolve();
+  } catch (error) {
+    if (error?.code === 'ESRCH') {
+      // No group is left to signal (normal exit-vs-abort race).
+      return Promise.resolve();
+    }
+    // A direct-child kill is not equivalent to a process-group kill.
+    return Promise.reject(uncertainHookProcessTree(
+      child, error?.code || (error instanceof Error ? error.message : String(error)), error));
   }
-  return Promise.resolve();
 }
 
 /**
@@ -199,8 +229,19 @@ export async function execCommandHook(command, hookInput, workspace, signal, tim
   });
   let out = '', err = '', overflow = false, timedOut = false;
   let killTask;
+  let cleanupFailure;
+  let rejectCleanupFailure;
+  const cleanupFailed = new Promise((_, reject) => { rejectCleanupFailure = reject; });
+  // Observe the fatal branch immediately: a timeout/AbortSignal may start
+  // termination well before the main ChildProcess 'close' listener settles.
+  void cleanupFailed.catch(() => {});
   const terminate = () => {
-    if (!killTask) killTask = abortHookProcess(child);
+    if (!killTask) {
+      killTask = abortHookProcess(child).catch(error => {
+        cleanupFailure = error;
+        rejectCleanupFailure(error);
+      });
+    }
     return killTask;
   };
   const append = (value, key) => {
@@ -220,10 +261,13 @@ export async function execCommandHook(command, hookInput, workspace, signal, tim
   const watchdog = setTimeout(() => { timedOut = true; void terminate(); }, timeoutMs);
   try {
     child.stdin.end(JSON.stringify(hookInput) + '\n');
-    const status = await new Promise((done, fail) => {
-      child.once('error', fail);
-      child.once('close', (code, termSignal) => done({ code, termSignal }));
-    });
+    const status = await Promise.race([
+      new Promise((done, fail) => {
+        child.once('error', fail);
+        child.once('close', (code, termSignal) => done({ code, termSignal }));
+      }),
+      cleanupFailed,
+    ]);
     if (signal?.aborted) throw signal.reason ?? new Error('Hook aborted.');
     if (overflow) throw new RangeError('Hook output exceeds 128 KiB.');
     if (timedOut) throw new Error('Hook command timed out.');
@@ -236,6 +280,9 @@ export async function execCommandHook(command, hookInput, workspace, signal, tim
     // the Windows taskkill /T worker before the Hook's turn is released.
     if (child.exitCode === null && child.signalCode === null) void terminate();
     if (killTask) await killTask;
+    // If POSIX group-kill or Windows taskkill /T failed, do not downgrade
+    // the uncertainty to an ordinary Hook timeout/cancellation attachment.
+    if (cleanupFailure) throw cleanupFailure;
   }
 }
 
