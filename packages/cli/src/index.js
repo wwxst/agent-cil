@@ -16,6 +16,7 @@ import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/per
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
 import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
+import { rememberOriginalFileRead, checkOriginalFileReadState } from './original-file-read-state.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
@@ -1026,6 +1027,10 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
   const root = resolve(workspace);
   const tools = new ToolRegistry();
   const manager=taskManager??createLocalShellTaskManager({sessionId:taskSession?.sessionId});
+  // Original 2.1.88 ToolUseContext.readFileState: one active CLI session,
+  // shared across successful Read → Edit/Write and subsequent model rounds.
+  // A fresh --resume process must read again; never trust stale disk state.
+  const readFileState = new Map();
 
   // Preserve the original workspace-safe Read implementation and its direct
   // execute() API, but route actual AgentLoop execution through the 2.1.88
@@ -1049,7 +1054,26 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
     const target = resolveWorkspacePath(root, file_path);
     await assertPathWithinWorkspace(root, target);
     if (signal?.aborted) throw abortError(signal);
-    return readTextFile(root, target,options,signal);
+    const handle=await openWorkspaceFile(root,target,constants.O_RDONLY);
+    try {
+      const before=await handle.stat();
+      const text=options===undefined
+        ? await readTextHandle(handle,target,signal)
+        : await readTextLinesHandle(handle,target,options,signal);
+      const after=await handle.stat();
+      if(signal?.aborted)throw abortError(signal);
+      // Only a verified stable descriptor read may authorize a later edit.
+      // The underlying file could be truncated/replaced while Read awaits.
+      if(before.dev!==after.dev || before.ino!==after.ino ||
+         before.size!==after.size || before.mtimeMs!==after.mtimeMs ||
+         before.ctimeMs!==after.ctimeMs) {
+        throw new Error('File changed during Read. Read it again before writing to it.');
+      }
+      rememberOriginalFileRead(readFileState,target,text,after,{
+        offset,limit,
+      });
+      return text;
+    }finally{await handle.close();}
   };
 
   tools.register({
@@ -1095,12 +1119,24 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       const target = resolveWorkspacePath(root, file_path);
       await assertPathWithinWorkspace(root, target);
       await mkdir(dirname(target), { recursive: true });
-      const handle = await openWorkspaceFile(root, target, constants.O_WRONLY | constants.O_CREAT, 0o666);
+      // The original FileWriteTool.checkPermissions requires a previous
+      // full Read of an existing file. The actual FileWriteTool.call() repeats
+      // that check immediately before the first write. Preserve both in the
+      // real CLI, after the existing workspace and descriptor safety checks.
+      let existed=false;
+      try { await lstat(target); existed=true; }
+      catch(error){ if(error?.code!=='ENOENT')throw error; }
+      const handle = await openWorkspaceFile(root, target, constants.O_RDWR | constants.O_CREAT, 0o666);
       try {
-        // Verify the opened inode immediately before modifying it. The descriptor pins
-        // the final file even if the pathname is subsequently replaced.
-        await assertOpenedFileWithinWorkspace(root, target, handle);
+        await assertOpenedFileWithinWorkspace(root,target,handle);
+        if(existed) {
+          const current=await readTextHandle(handle,target);
+          const currentStat=await handle.stat();
+          checkOriginalFileReadState(readFileState,target,current,currentStat);
+        }
         await writeTextHandle(handle, content);
+        const after=await handle.stat();
+        rememberOriginalFileRead(readFileState,target,content,after);
       } finally {
         await handle.close();
       }
@@ -1133,7 +1169,12 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
         }
         const updated = original.slice(0, first) + new_string + original.slice(first + old_string.length);
         await assertOpenedFileWithinWorkspace(root, target, handle);
+        const before=await handle.stat();
+        // Original FileEditTool.call() rejects stale or partial reads even
+        // after the permission check. Never overwrite an external edit.
+        checkOriginalFileReadState(readFileState,target,original,before);
         await writeTextHandle(handle, updated);
+        rememberOriginalFileRead(readFileState,target,updated,await handle.stat());
         return { path: relative(root, target).split(sep).join('/'), edited: true };
       } finally {
         await handle.close();
