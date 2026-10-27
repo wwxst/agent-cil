@@ -1264,8 +1264,15 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       if(!run_in_background) {
         const meaning=interpretCommandResult(command,result.exit_code,
           result.stdout??'',result.stderr??'');
-        if(result.error || meaning.isError) {
-          const reason=result.error ?? meaning.message ??
+        // runShellCommand currently adds a generic nonzero exit error;
+        // original BashTool instead delegates exit semantics to
+        // interpretCommandResult. Only *lifecycle* errors (timeout,
+        // unexpected descendant, spawn failure) take precedence here.
+        const genericExitError='Command exited with status '+result.exit_code+'.';
+        const lifecycleError=result.error &&
+          result.error!==genericExitError ? result.error : undefined;
+        if(lifecycleError || meaning.isError) {
+          const reason=lifecycleError ?? meaning.message ??
             'Command failed with exit code '+result.exit_code;
           const error=new Error(
             reason + (result.stdout?'\\n'+result.stdout:'') +
