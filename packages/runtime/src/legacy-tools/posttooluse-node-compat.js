@@ -101,10 +101,15 @@ async function* executeConfiguredPostHooks(
         }) };
         return parsePostToolHookOutput(result.stdout, event);
       })
-      .catch(error => ({ message: createAttachmentMessage({
-        type: signal?.aborted ? 'hook_cancelled' : 'hook_error_during_execution',
-        content: formatError(error), hookEvent: event,
-      }) }))
+      .catch(error => {
+        if (error?.name === 'ProcessTreeCleanupError') {
+          toolUseContext.onProcessTreeCleanupFailure?.(error);
+        }
+        return { message: createAttachmentMessage({
+          type: signal?.aborted ? 'hook_cancelled' : 'hook_error_during_execution',
+          content: formatError(error), hookEvent: event,
+        }) };
+      })
   );
   for (const pending of outcomes) {
     const outcome = await pending;
