@@ -97,6 +97,7 @@ export class AgentLoop extends EventEmitter {
   #onTaskNotificationsCommitted;
   #mappedWitnessFailure;
   #requireCanUseTool;
+  #permissionMode;
   // Original REPL passes updatedToolUseContext and committed history into
   // each next query() invocation of the same interactive session.
   #committedSessionMessages;
@@ -121,6 +122,7 @@ export class AgentLoop extends EventEmitter {
     getPendingTaskNotifications,
     onTaskNotificationsCommitted,
     requireCanUseTool = false,
+    permissionMode = 'default',
   } = {}) {
     super();
     if (!model || typeof model.stream !== 'function') {
@@ -182,6 +184,13 @@ export class AgentLoop extends EventEmitter {
       throw new TypeError('requireCanUseTool must be a boolean.');
     }
     this.#requireCanUseTool = requireCanUseTool;
+    // Original ToolUseContext.getAppState() exposes the active permission
+    // mode to PreToolUse/PostToolUse hooks; never fabricate "default" when
+    // the CLI is running in acceptEdits.
+    if (!['default', 'acceptEdits', 'plan', 'bypassPermissions'].includes(permissionMode)) {
+      throw new TypeError('Invalid source permission mode for Tool Hooks.');
+    }
+    this.#permissionMode = permissionMode;
     this.#maxTurns = maxTurns;
     this.#compactContext = compactContext;
   }
@@ -474,7 +483,7 @@ export class AgentLoop extends EventEmitter {
         preToolUseHooks: this.#preToolUseHooks,
         trustedCliDefaultPermission: this.#permissionPolicy.isBuiltinCliPolicy === true,
         requireCanUseTool: this.#requireCanUseTool,
-        getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
+        getAppState: () => ({ toolPermissionContext: { mode: this.#permissionMode } }),
         checkRuleBasedPermissions: async (_tool, checkedInput) => {
           const check = await requestPermissionDecision(checkedInput, 'hook-rule-check');
           if (check.result) return { behavior: 'deny', reason: 'Permission check failed.' };
@@ -892,7 +901,7 @@ export class AgentLoop extends EventEmitter {
     return {
       abortController: { signal },
       workspace: this.#hookWorkspace,
-      getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
+      getAppState: () => ({ toolPermissionContext: { mode: this.#permissionMode } }),
       toolHooks: {
         PostToolUse: this.#postToolUseHooks,
         PostToolUseFailure: this.#postToolUseFailureHooks,
