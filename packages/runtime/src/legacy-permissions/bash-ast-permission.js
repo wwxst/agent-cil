@@ -65,6 +65,16 @@ export async function bashToolCheckAstPermission(input,context,{workspace=proces
       if(dangerous.behavior!=='passthrough')return dangerous;
     }
   }
+  // Source 2.1.88 checkPathConstraints() validates each AST redirect
+  // target BEFORE allowing a Bash rule. That full filesystem/sandbox
+  // context is still being transplanted. Until its original validatePath()
+  // dependency closure is connected, do not accept a whole-tool or exact
+  // allow as authorization for unverified shell input/output redirection.
+  // The original parser's Redirect[] is authoritative; never match raw
+  // command strings or improvise a permissive shell grammar here.
+  if(commands.some(command=>(command.redirects??[]).length>0)) {
+    return sourceAsk('Shell redirection needs original checkPathConstraints target validation');
+  }
   // Compound commands are still not automatically allowed. The original
   // security walker exposes EACH verified subcommand, allowing source
   // restrictive rules to match node/rm hidden behind harmless commands,
