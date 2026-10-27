@@ -118,7 +118,11 @@ async function checkMode({allowEdits,failTool=false}){
       assert.equal(row.transcript_path,join(canonical,'.agent-cil',
         'sessions',session[1],'transcript.jsonl'),
         'Hook must reference the same locked journal as Query');
-      assert.equal(row.cwd,canonical);
+      // Windows runner may launch from the legitimate 8.3 short-name path
+      // (RUNNER~1), while SessionJournal realpath canonicalizes to the
+      // long-name path (runneradmin). Assert directory identity, not
+      // spelling: both are the same real workspace.
+      assert.equal(await realpath(row.cwd),canonical);
       assert.ok(row.checkpointKinds.includes('tool_pending'),
         'Hook must see the durably committed source assistant tool_use');
     }
