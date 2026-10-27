@@ -230,6 +230,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
   toolUseId, signal, messages = [], assistantMessage, onProgress,
   toolResultStorage, onToolResult, onToolAttachment, onToolNewMessages,
   nativeToolUseContext, canUseNestedTool, userModified = false,
+  throwOnUnfinalizedToolResult = false,
 } = {}) {
   if (typeof toolUseId !== 'string' || !toolUseId) {
     throw new TypeError('An authenticated toolUseId is required.');
@@ -243,6 +244,14 @@ export async function invokeToolCallAndMapResult(tool, input, {
   let extraNativeMessages;
   let normalizedNativeMessageBlocks;
   let nativeContextModifier;
+  // A successful Tool.call()/execute() may already have modified files.
+  // The original mapper/newMessages/storage steps must produce a durable
+  // tool_result before the Query may ask the model to retry. This guard is
+  // enabled ONLY when the CLI has first fsynced its tool_started witness.
+  // Keep standalone source Tool execution error behavior unchanged.
+  let toolCallFulfilled = false;
+  let toolResultReady = false;
+  try {
   if (typeof tool.call === 'function') {
     if (typeof tool.mapToolResultToToolResultBlockParam !== 'function') {
       throw new TypeError('Legacy tool is missing its result mapper.');
@@ -268,6 +277,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
       structuredClone(assistantMessage),
       onProgress,
     );
+    toolCallFulfilled = true;
     if (signal?.aborted) throw cancelledToolCall(signal);
     if (!toolResult || typeof toolResult !== 'object' ||
       Array.isArray(toolResult) || !Object.hasOwn(toolResult, 'data')) {
@@ -304,6 +314,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
     const output = await tool.execute(structuredClone(input), {
       toolUseId, signal, messages: structuredClone(messages),
     });
+    toolCallFulfilled = true;
     if (signal?.aborted) throw cancelledToolCall(signal);
     toolOutput = output;
     mapped = {
@@ -325,6 +336,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
         checked, tool.name, tool.maxResultSizeChars, toolResultStorage)
     : checked;
   if (signal?.aborted) throw cancelledToolCall(signal);
+  toolResultReady = true;
   // Original toolExecution.ts runs PostToolUse after mapping and saving
   // the result. An observer receives the ORIGINAL raw tool output, not
   // the on-disk preview or the API block, and cannot remap the result.
@@ -352,6 +364,21 @@ export async function invokeToolCallAndMapResult(tool, input, {
   return nativeContextModifier
     ? { ...processed, nativeContextModifier }
     : processed;
+  } catch (error) {
+    if (throwOnUnfinalizedToolResult && toolCallFulfilled &&
+        !toolResultReady && !signal?.aborted) {
+      const failure = new Error(
+        'Tool.call completed but its result could not be finalized; ' +
+        'inspect side effects before retrying: ' +
+        (error instanceof Error ? error.message : String(error)),
+        { cause: error },
+      );
+      failure.name = 'ToolResultFinalizationError';
+      throw failure;
+    }
+    throw error;
+  }
+
 }
 
 function cancelledToolCall(signal) {
