@@ -1235,7 +1235,7 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
     // Original BashTool.checkPermissions delegates to bashToolHasPermission.
     // Until AST, wrapper, wildcard and sandbox matching are transplanted, this
     // is restricted to exact command rule decisions only (fail closed).
-    checkPermissions: async input => bashToolCheckAstPermission(input, permissionContext),
+    checkPermissions: async input => bashToolCheckAstPermission(input, permissionContext, {workspace:root}),
     inputSchema: {
       type: 'object',
       properties: {
