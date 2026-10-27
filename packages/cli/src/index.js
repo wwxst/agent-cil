@@ -1510,6 +1510,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     postToolUseHooks: toolHooks.PostToolUse,
     postToolUseFailureHooks: toolHooks.PostToolUseFailure,
     hookWorkspace: workspace,
+    permissionMode: permissionContext.mode,
     compactContext: context => autoCompact.compact(context),
     // The old sessionStorage.ts enqueues JSONL transcript commits. The
     // portable Node journal implements only completed checkpoint records.
