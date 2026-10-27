@@ -168,7 +168,7 @@ function abortHookProcess(child) {
       try {
         // Exact 2.1.304 mechanism: argv-only System32 tree terminator. A
         // repo-local taskkill executable must never be resolved from PATH.
-        const systemRoot = process.env.SystemRoot || 'C:\Windows';
+        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
         const killer = spawn(join(systemRoot, 'System32', 'taskkill.exe'),
           ['/PID', String(child.pid), '/T', '/F'],
           { cwd: undefined, shell: false, windowsHide: true, stdio: 'ignore' });
