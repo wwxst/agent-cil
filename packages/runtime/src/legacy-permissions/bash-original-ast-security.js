@@ -20,7 +20,14 @@ export async function assessOriginalBashSecurity(command) {
     if(parsed.kind!=='simple')return parsed;
     const semantics=checkSemantics(parsed.commands);
     return semantics.ok?parsed:{
-      kind:'too-complex',reason:semantics.reason,
+      kind:'too-complex',
+      reason:semantics.reason,
+      // The original bashToolHasPermission() preserves the successfully
+      // parsed SimpleCommand[] across checkSemantics failure and executes
+      // checkSemanticsDeny() on EVERY subcommand before returning ask.
+      // Never discard the AST evidence merely because semantic checks fail.
+      sourceCommands:parsed.commands,
+      semanticFailure:true,
     };
   }catch(error){
     cachedSourceAst=undefined;
