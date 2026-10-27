@@ -497,6 +497,14 @@ export class AgentLoop extends EventEmitter {
         preToolUseHooks: this.#preToolUseHooks,
         sessionId: this.#hookSessionId,
         transcriptPath: this.#hookTranscriptPath,
+        onProcessTreeCleanupFailure: error => {
+          // Source Hook generators convert ordinary command failures into
+          // messages; OS cleanup uncertainty must use the existing fatal
+          // AgentLoop fence instead of being downgraded to a Hook error.
+          if (error?.name === 'ProcessTreeCleanupError') {
+            this.#mappedWitnessFailure = error;
+          }
+        },
         trustedCliDefaultPermission: this.#permissionPolicy.isBuiltinCliPolicy === true,
         requireCanUseTool: this.#requireCanUseTool,
         getAppState: () => ({ toolPermissionContext: { mode: this.#permissionMode } }),
@@ -538,6 +546,7 @@ export class AgentLoop extends EventEmitter {
           break;
         }
       }
+      if (this.#mappedWitnessFailure) throw this.#mappedWitnessFailure;
       abortIfNeeded(signal);
       if (hookStopped) {
         const result = toolError(toolUse, 'PreToolUse hook stopped tool execution.');
@@ -823,6 +832,7 @@ export class AgentLoop extends EventEmitter {
           await this.#emitPostToolUseHooks({
             tool, toolUse, turn, signal, executionInput, toolOutput,
           });
+          if (this.#mappedWitnessFailure) throw this.#mappedWitnessFailure;
         },
       });
       abortIfNeeded(signal);
@@ -876,6 +886,7 @@ export class AgentLoop extends EventEmitter {
               tool, toolUse, turn, signal, executionInput,
               error: errorText(error), isInterrupt: true,
             });
+            if (this.#mappedWitnessFailure) throw this.#mappedWitnessFailure;
           }
         } finally {
           this.emit('toolCallFinished', {
@@ -890,6 +901,7 @@ export class AgentLoop extends EventEmitter {
           tool, toolUse, turn, signal, executionInput,
           error: errorText(error), isInterrupt: false,
         });
+        if (this.#mappedWitnessFailure) throw this.#mappedWitnessFailure;
       }
       const result = toolError(toolUse, 'Tool execution failed: ' + errorText(error));
       this.emit('toolCallFinished', { turn, toolUseId: toolUse.id, toolName: tool.name, isError: true });
@@ -919,6 +931,11 @@ export class AgentLoop extends EventEmitter {
       workspace: this.#hookWorkspace,
       sessionId: this.#hookSessionId,
       transcriptPath: this.#hookTranscriptPath,
+      onProcessTreeCleanupFailure: error => {
+        if (error?.name === 'ProcessTreeCleanupError') {
+          this.#mappedWitnessFailure = error;
+        }
+      },
       getAppState: () => ({ toolPermissionContext: { mode: this.#permissionMode } }),
       toolHooks: {
         PostToolUse: this.#postToolUseHooks,
