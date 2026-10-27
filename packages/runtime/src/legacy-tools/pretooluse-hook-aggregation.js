@@ -9,7 +9,8 @@
  */
 export async function* aggregateHookResults(outcomes, signal) {
   let permissionBehavior;
-  for (const pending of outcomes) {
+  try {
+    for (const pending of outcomes) {
     if (signal?.aborted) {
       // All matching Hook commands were started in parallel by the source
       // dispatcher. Aborting the generator must JOIN their process-tree
@@ -74,5 +75,12 @@ export async function* aggregateHookResults(outcomes, signal) {
         !result.blockingError) {
       yield { updatedInput: result.updatedInput };
     }
+    }
+  } finally {
+    // Original executeHooks launched all matching commands before yielding.
+    // Source PreToolUse may terminate early after a stop/parse failure; it
+    // must not release its synchronous Hook boundary with sibling commands
+    // still running, even if the tool-level AbortSignal was not tripped.
+    await Promise.allSettled(outcomes);
   }
 }
