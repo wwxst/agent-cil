@@ -10,6 +10,8 @@
 import { bashToolCheckExactMatchPermission } from './bash-exact-permission.js';
 import { assessOriginalBashSecurity } from './bash-original-ast-security.js';
 import { matchingRulesForInput } from './bash-original-rule-filter.js';
+import {checkDangerousRemovalPaths} from './bash-original-dangerous-path.js';
+import {stripWrappersFromArgv} from './generated/stripWrappers.js';
 
 function sourceAsk(reason) {
   return {
@@ -18,7 +20,7 @@ function sourceAsk(reason) {
     decisionReason:{type:'safetyCheck',reason:'Original Bash AST: '+reason},
   };
 }
-export async function bashToolCheckAstPermission(input,context) {
+export async function bashToolCheckAstPermission(input,context,{workspace=process.cwd()}={}) {
   // Preserve original exact deny > exact ask > prefix deny/ask and
   // wrapper/env fixed-point matcher. AST parsing must never override deny.
   const original=bashToolCheckExactMatchPermission(input,context);
@@ -51,6 +53,18 @@ export async function bashToolCheckAstPermission(input,context) {
     return sourceAsk(parsed.reason??'Command cannot be safely parsed');
   }
   const commands=parsed.commands??[];
+  // Original BashTool/pathValidation.ts: validateSinglePathCommandArgv()
+  // → stripWrappersFromArgv() → createPathChecker(rm/rmdir)
+  // → checkDangerousRemovalPaths(). The mature source intentionally runs
+  // this even when exact or whole-tool permission rules would allow Bash.
+  // Never auto-allow removal of /, home, root children or drive roots.
+  for(const command of commands){
+    const argv=stripWrappersFromArgv(command.argv);
+    if(argv[0]==='rm'||argv[0]==='rmdir'){
+      const dangerous=checkDangerousRemovalPaths(argv[0],argv.slice(1),workspace);
+      if(dangerous.behavior!=='passthrough')return dangerous;
+    }
+  }
   // Compound commands are still not automatically allowed. The original
   // security walker exposes EACH verified subcommand, allowing source
   // restrictive rules to match node/rm hidden behind harmless commands,
