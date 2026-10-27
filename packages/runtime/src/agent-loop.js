@@ -874,11 +874,30 @@ export class AgentLoop extends EventEmitter {
           error?.name==='TaskOutputPersistenceError' ||
           error?.name==='ToolResultFinalizationError') {
         this.#mappedWitnessFailure=error;
-        this.emit('toolCallFinished',{
-          turn,toolUseId:toolUse.id,toolName:tool.name,
-          isError:true,interrupted:signal?.aborted===true,
-        });
-        throw error;
+        try {
+          // Pinned 2.1.88 checkPermissionsAndCallTool() invokes
+          // PostToolUseFailure when Tool.call itself throws. A partial
+          // file/process effect must NOT erase that failure-Hook lifecycle,
+          // but it cannot be turned into a retryable model tool_result either.
+          // Output-mapping errors occur after Tool.call completed and do
+          // not start a second failure Hook.
+          if(error?.name==='ToolResultFinalizationError' &&
+              error.sideEffectsStarted === true &&
+              error.toolCallFulfilled === false &&
+              this.#postToolUseFailureHooks.length) {
+            await this.#emitPostToolUseFailureHooks({
+              tool, toolUse, turn, signal, executionInput,
+              error: errorText(error.cause ?? error),
+              isInterrupt: signal?.aborted === true,
+            });
+          }
+        } finally {
+          this.emit('toolCallFinished',{
+            turn,toolUseId:toolUse.id,toolName:tool.name,
+            isError:true,interrupted:signal?.aborted===true,
+          });
+        }
+        throw this.#mappedWitnessFailure;
       }
       // Original 2.1.88 checkPermissionsAndCallTool() catches AbortError
       // and dispatches PostToolUseFailure with isInterrupt=true BEFORE
