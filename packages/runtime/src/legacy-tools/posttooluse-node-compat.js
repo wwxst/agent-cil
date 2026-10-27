@@ -122,7 +122,13 @@ async function* executeConfiguredPostHooks(
     // When cancellation stops the result generator, all already-launched
     // commands must finish their process-tree abort/close before the CLI
     // can release the session lock or begin another user prompt.
-    if (signal?.aborted) await Promise.allSettled(outcomes);
+    // Source utils/hooks.ts executeHooks() starts ALL matches in parallel
+    // and waits for their work. The 2.1.88 PostToolUse generator can return
+    // early on {continue:false} even WITHOUT an AbortSignal. Its iterator
+    // return() must still wait for already-started Hook commands; otherwise
+    // the agent reports hook_stopped and releases the session before a
+    // sibling Hook has finished its side effects.
+    await Promise.allSettled(outcomes);
   }
 }
 
