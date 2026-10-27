@@ -750,8 +750,22 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
         stdio: ['ignore', outputHandle.fd, outputHandle.fd],
       });
     } catch(error) {
-      void outputHandle.close().then(()=>taskOutput.deleteOutputFile()).catch(()=>{});
-      rejectPromise(error);
+      // TaskOutput file-mode allocates a real FD BEFORE spawning Bash.
+      // A synchronous spawn failure must not release the tool boundary
+      // before closing/discarding that descriptor (2.1.88 Shell.ts exec).
+      void (async()=>{
+        try {
+          await outputHandle.close();
+          await taskOutput.deleteOutputFile();
+          rejectPromise(error);
+        } catch(cleanupError) {
+          const failure=new Error('Bash TaskOutput spawn cleanup failed: '+
+            (cleanupError instanceof Error?cleanupError.message:String(cleanupError)),
+            {cause:cleanupError});
+          failure.name='TaskOutputPersistenceError';
+          rejectPromise(failure);
+        }
+      })();
       return;
     }
     let timedOut = false;
@@ -865,6 +879,7 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
       exitDrainTimer.unref?.();
     });
     child.once('close', async code => {
+      try {
       clearTimeout(timeout);
       clearTimeout(exitDrainTimer);
       // A POSIX group with ignored/closed stdout can emit 'close' before
@@ -949,6 +964,19 @@ async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes
         await taskOutput.deleteOutputFile();
       }
       finishResult(result);
+      } catch(error) {
+        // EventEmitter does not observe a Promise returned by an async
+        // 'close' listener. If final output retention, registration or
+        // cleanup fails, never leave Bash's completion Promise unresolved
+        // or emit an unhandled rejection. The original TaskOutput finish
+        // is an owning lifecycle boundary, not fire-and-forget work.
+        const failure=(error?.name==='ProcessTreeCleanupError' ||
+            error?.name==='TaskOutputPersistenceError')?error:
+          new Error('Bash TaskOutput finalization failed: '+
+            (error instanceof Error?error.message:String(error)),{cause:error});
+        failure.name='TaskOutputPersistenceError';
+        finishError(failure);
+      }
     });
     if(runInBackground) {
       let registeredTaskId;
