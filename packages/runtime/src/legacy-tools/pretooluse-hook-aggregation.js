@@ -10,9 +10,18 @@
 export async function* aggregateHookResults(outcomes, signal) {
   let permissionBehavior;
   for (const pending of outcomes) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) {
+      // All matching Hook commands were started in parallel by the source
+      // dispatcher. Aborting the generator must JOIN their process-tree
+      // cleanup; a later REPL prompt cannot race abandoned shell children.
+      await Promise.allSettled(outcomes);
+      return;
+    }
     const result = await pending;
-    if (signal?.aborted) return;
+    if (signal?.aborted) {
+      await Promise.allSettled(outcomes);
+      return;
+    }
 
     // Port of executeHooks() after "for await (const result of all(...))".
     if (result.preventContinuation) {
