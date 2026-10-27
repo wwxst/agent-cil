@@ -38,7 +38,16 @@ test('real installed CLI invokes original PostToolUse after Write and failure Ho
       const chunks=[];for await(const chunk of req)chunks.push(chunk);
       incoming.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       res.writeHead(200,{'content-type':'text/event-stream'});
-      res.end(incoming.length===1 ? toolStream(name,'hook-result-'+name,input):finalStream());
+      // Existing target files require the original full FileReadTool state
+      // before Edit, even in a PostToolUseFailure test. This preliminary
+      // Read occurs in this same real CLI process; only Edit has failure Hooks.
+      const firstRead=name==='Edit' && incoming.length===1;
+      const toolRound=name==='Edit'?2:1;
+      res.end(firstRead
+        ? toolStream('Read','hook-read-before-edit',{file_path:input.file_path})
+        : incoming.length===toolRound
+          ? toolStream(name,'hook-result-'+name,input)
+          : finalStream());
     });
     let child,watchdog;
     try {
@@ -62,11 +71,11 @@ test('real installed CLI invokes original PostToolUse after Write and failure Ho
       assert.equal(signal,null,errors);
       assert.equal(code,0,errors);
       assert.match(output,/Post-Hook verified/);
-      assert.equal(incoming.length,2);
-      const result=incoming[1].messages.at(-1).content[0];
+      assert.equal(incoming.length,name==='Edit'?3:2);
+      const result=incoming.at(-1).messages.at(-1).content[0];
       assert.equal(result.tool_use_id,'hook-result-'+name);
       assert.equal(result.is_error===true,expectedFailure);
-      const afterToolResults=incoming[1].messages.at(-1).content.slice(1);
+      const afterToolResults=incoming.at(-1).messages.at(-1).content.slice(1);
       assert.equal(afterToolResults.length,1,
         'source normalizeAttachmentForAPI must include exactly one meta Hook context');
       assert.equal(afterToolResults[0].type,'text');
