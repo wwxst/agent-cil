@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {AgentLoop} from '../src/agent-loop.js';
 import {ToolRegistry} from '../src/tool-registry.js';
 import {openSessionJournal} from '../src/legacy-session/session-storage.js';
+import {createLocalShellTaskManager} from '../../cli/src/local-shell-task.js';
 
 async function actualSessionCase(task) {
   const root=await mkdtemp(join(tmpdir(),'agent-partial-native-tool-'));
@@ -197,4 +198,32 @@ test('real Query: abort after a native mutation does not make session safe to re
       name:'ToolResultFinalizationError',
     });
   });
+});
+
+test('native TaskStop only marks effects at live process-tree kill, not unknown or completed IDs',async()=>{
+  const manager=createLocalShellTaskManager({sessionId:'source-task-stop-fence'});
+  let marks=0,kills=0,completeTask;
+  await assert.rejects(manager.stopTask('nonexistent',{
+    markSideEffectsStarted:()=>{marks++;},
+  }),/No task found/);
+  assert.equal(marks,0);
+  const completion=new Promise(resolve=>{completeTask=resolve;});
+  manager.spawnShellTask({
+    taskOutput:{taskId:'running-task',path:'owned-output'},
+    command:'sleep 10',
+    completion,
+    kill:async()=>{
+      kills++;
+      completeTask({exit_code:1,stdout:'',stderr:''});
+    },
+  });
+  await manager.stopTask('running-task',{
+    markSideEffectsStarted:()=>{marks++;},
+  });
+  assert.equal(marks,1,'mark exactly once before native task.kill()');
+  assert.equal(kills,1);
+  await assert.rejects(manager.stopTask('running-task',{
+    markSideEffectsStarted:()=>{marks++;},
+  }),/not running/);
+  assert.equal(marks,1,'completed task must remain a recoverable tool error');
 });
