@@ -7,7 +7,7 @@ import {AgentLoop} from '../src/agent-loop.js';
 import {ToolRegistry} from '../src/tool-registry.js';
 import {openSessionJournal} from '../src/legacy-session/session-storage.js';
 
-async function waitForHookPid(file) {
+async function waitForHookPid(file, getRunStatus) {
   for(let attempt=0;attempt<150;attempt++) {
     try {
       const pid=Number(await readFile(file,'utf8'));
@@ -15,7 +15,7 @@ async function waitForHookPid(file) {
     }catch(error){if(error?.code!=='ENOENT')throw error;}
     await new Promise(resolve=>setTimeout(resolve,25));
   }
-  throw new Error('Real Hook subprocess never started.');
+  throw new Error('Real Hook subprocess never started: '+JSON.stringify(getRunStatus()));
 }
 
 async function exerciseUncertainHookCleanup(event) {
@@ -68,8 +68,21 @@ async function exerciseUncertainHookCleanup(event) {
       maxTurns:3,
     });
     running=loop.run({input:'Execute the selected original tool',signal:abort.signal});
-    void running.catch(()=>{});
-    hookPid=await waitForHookPid(pidFile);
+    let runStatus={stage:'still running'};
+    void running.then(result=>{
+      runStatus={stage:'resolved',result:result?.stopReason,
+        lastResult:result?.messages?.at(-1)};
+    },error=>{
+      runStatus={stage:'rejected',name:error?.name,message:error?.message,
+        stack:error?.stack};
+    });
+    hookPid=await waitForHookPid(pidFile,()=>({
+      event,modelCalls,toolCalls,toolStarts,
+      journalStatus:journal.needsToolReconciliation,
+      started:journal.startedToolExecutions,
+      mapped:journal.mappedToolResults,
+      run:runStatus,
+    }));
     // The child is really alive. Refuse just the OS tree-kill primitive
     // while preserving its direct-child fallback. A silent fallback was the
     // bug: original Hook generator would turn this into an ordinary message.
