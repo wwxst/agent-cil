@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
-import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,readFile,writeFile,rm,realpath} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
@@ -49,8 +49,12 @@ async function checkMode({allowEdits}){
       "const fs=require('fs');let data='';"+
       "process.stdin.on('data',x=>data+=x);"+
       "process.stdin.on('end',()=>{const input=JSON.parse(data);"+
+      "const path=input.transcript_path;"+
+      "const journal=path&&fs.existsSync(path)?fs.readFileSync(path,'utf8'):'';"+
+      "const checkpointKinds=journal.trim().split('\\n').filter(Boolean).map(line=>JSON.parse(line).kind);"+
       "fs.appendFileSync('hook-modes.jsonl',JSON.stringify({event:input.hook_event_name,"+
-      "mode:input.permission_mode})+'\\n');"+
+      "mode:input.permission_mode,session_id:input.session_id,"+
+      "transcript_path:path,cwd:input.cwd,checkpointKinds})+'\\n');"+
       "process.stdout.write(JSON.stringify({hookSpecificOutput:{"+
       "hookEventName:input.hook_event_name,"+
       "permissionDecision:input.hook_event_name==='PreToolUse'?'allow':undefined}}));});"
@@ -93,10 +97,29 @@ async function checkMode({allowEdits}){
       'written by CLI');
     const rows=(await readFile(join(root,'hook-modes.jsonl'),'utf8'))
       .trim().split('\n').map(JSON.parse);
-    assert.deepEqual(rows,[
-      {event:'PreToolUse',mode:allowEdits?'acceptEdits':'default'},
-      {event:'PostToolUse',mode:allowEdits?'acceptEdits':'default'},
-    ],'old CLI 2.1.88 getAppState permission mode must reach both native Hooks');
+    assert.equal(rows.length,2,'both PreToolUse and PostToolUse must actually run');
+    const session=output.match(/\\[session\\] ([0-9a-f-]{36}) created/);
+    assert.ok(session,'CLI must announce an actual created SessionJournal');
+    const canonical=await realpath(root);
+    for(const [index,event] of ['PreToolUse','PostToolUse'].entries()) {
+      const row=rows[index];
+      assert.equal(row.event,event);
+      assert.equal(row.mode,allowEdits?'acceptEdits':'default');
+      assert.equal(row.session_id,session[1],
+        'native Hook must observe real source session identity, not empty string');
+      assert.equal(row.transcript_path,join(canonical,'.agent-cil',
+        'sessions',session[1],'transcript.jsonl'),
+        'Hook must reference the same locked journal as Query');
+      assert.equal(row.cwd,canonical);
+      assert.ok(row.checkpointKinds.includes('tool_pending'),
+        'Hook must see the durably committed source assistant tool_use');
+    }
+    assert.equal(rows[0].checkpointKinds.includes('tool_started'),false,
+      'PreToolUse fires before starting the actual tool');
+    assert.ok(rows[1].checkpointKinds.includes('tool_started'),
+      'PostToolUse fires after the tool started witness was committed');
+    assert.ok(rows[1].checkpointKinds.includes('tool_mapped'),
+      'PostToolUse must see its mapped result recovery witness before it runs');
   }finally{
     if(timer)clearTimeout(timer);
     if(child&&child.exitCode===null&&!child.killed)child.kill('SIGKILL');
