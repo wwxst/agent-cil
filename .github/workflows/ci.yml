@@ -16,8 +16,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Verify .js CLI startup and Read/Edit acceptance on Windows
-        run: node --test packages/cli/test/live-provider-launch.test.js
+      - name: Verify integrated original stream, tokens, tool results, permission and Hook chain on Windows
+        run: |
+          node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/pretooluse-hooks-cli.test.js packages/cli/test/posttooluse-hooks-cli.test.js packages/cli/test/native-hook-permission-mode-cli.test.js packages/cli/test/permission-rules-cli.test.js packages/cli/test/tool-result-storage-cli.test.js packages/cli/test/usage-context-compact-cli.test.js packages/cli/test/streaming-readonly-cli.test.js packages/cli/test/session-resume-cli.test.js packages/cli/test/bash-process-tree.test.js packages/cli/test/task-output.test.js packages/cli/test/trusted-task-output-read.test.js packages/cli/test/session-bash-output-resume-cli.test.js packages/cli/test/local-shell-background.test.js packages/cli/test/background-registration-cleanup.test.js packages/cli/test/bash-taskoutput-finalization-fence.test.js packages/cli/test/background-cli-model.test.js packages/runtime/test/pretooluse-hook-cancellation.test.js packages/runtime/test/original-native-hook-tree-fatal-fence.test.js packages/runtime/test/original-parallel-hook-early-stop-join.test.js
+
+      - name: Verify original execution input, PreToolUse checkpoint, permission and interruption contracts on Windows
+        run: |
+          node --test packages/runtime/test/original-pretooluse-execution-contract.test.js packages/runtime/test/original-tool-call-observable-input.test.js packages/runtime/test/original-posttool-failure-interruption.test.js packages/runtime/test/original-tool-call-user-modified.test.js packages/runtime/test/original-permission-result-content.test.js packages/runtime/test/original-structured-tool-result.test.js packages/runtime/test/original-tool-new-messages.test.js packages/runtime/test/original-context-modifier-lifecycle.test.js packages/runtime/test/original-nested-can-use-tool.test.js packages/runtime/test/original-query-tool-context-lifecycle.test.js packages/runtime/test/original-repl-session-context.test.js packages/runtime/test/original-require-can-use-tool.test.js packages/runtime/test/original-session-journal.test.js packages/runtime/test/original-process-tree-cleanup-fence.test.js packages/runtime/test/original-native-task-notification.test.js packages/runtime/test/original-speculative-cleanup-join.test.js
 
   runtime-tests:
     runs-on: ubuntu-latest
@@ -26,7 +31,33 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm test
+      - name: Run original parallel suite with bounded failure diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Preserve the original npm test concurrency coverage. An
+          # unchecked CLI fixture server previously leaked on assertion
+          # failure and left this job in_progress for hours.
+          if timeout --signal=TERM --kill-after=10s 180s npm test; then
+            echo 'All original parallel Node tests passed.'
+          else
+            original_status=$?
+            echo "::error::Parallel npm test failed or exceeded 180s (exit $original_status)"
+            # Narrow any test-worker leak or failure to an actual file.
+            # Diagnostics cannot convert a failing parallel suite to pass.
+            while IFS= read -r -d '' file; do
+              echo "::group::Diagnose $file"
+              if timeout --signal=TERM --kill-after=10s 110s node --test "$file"; then
+                echo "::endgroup::"
+              else
+                file_status=$?
+                echo "::error file=$file::Node test failed or timed out (exit $file_status)"
+                echo "::endgroup::"
+                break
+              fi
+            done < <(find packages -path '*/test/*.test.js' -type f -print0 | sort -z)
+            exit "$original_status"
+          fi
       - name: Syntax-check source, tests, and optional live-provider harness
         run: |
           find packages -name '*.js' -print0 | xargs -0 -n1 node --check
@@ -67,6 +98,24 @@ jobs:
           # A typed prompt-too-long HTTP 400 after successful Edit must
           # trigger one tool-free summary then continue without redoing Edit.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-reactive-recovery-cli.test.js
+          # Original PreToolUse hook decision and input rewriting through installed CLI.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/pretooluse-hooks-cli.test.js
+          # Verify full integrated original 2.1.88 mechanisms on packed entry point.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/usage-context-compact-cli.test.js packages/cli/test/tool-result-storage-cli.test.js packages/cli/test/permission-rules-cli.test.js
+          # Source PostToolUse and PostToolUseFailure must survive npm packing.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/posttooluse-hooks-cli.test.js
+          # Verify source session JSONL persists a completed Write and resumes in a new packed CLI process.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/session-resume-cli.test.js
+          # Verify real Bash foreground-exit, unowned descendant result,
+          # AbortSignal and timeout cleanup through the packed CLI entry point.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/bash-process-tree.test.js
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/session-bash-output-resume-cli.test.js
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/local-shell-background.test.js
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/background-cli-model.test.js
+          # The source Query may durably append a LocalShellTask completion
+          # notice after its last turnFinished event. A failed provider call
+          # must not discard the notice when the SAME TTY resumes on next input.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/interactive-native-notice-recovery.test.js
           # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
 

@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 // The old 2.1.88 withRetry.ts and client.ts transport logic is now used
 // directly. A successful HTTP response / started SSE body is NEVER replayed.
+import { normalizeMessagesForAPI } from './legacy-query/normalize-messages-for-api.js';
 import {
   getBoundedRetryDelay,
   isRetryablePreStreamConnectionError,
@@ -259,6 +260,8 @@ export class AnthropicMessagesAdapter {
       return { role: message.role, content: structuredClone(message.content) };
     });
 
+    const mergedMessages=normalizeMessagesForAPI(requestMessages);
+
     const requestTools = tools.map((tool, index) => {
       if (!isRecord(tool) || typeof tool.name !== 'string' || typeof tool.description !== 'string'
         || !isRecord(tool.input_schema)) {
@@ -274,7 +277,7 @@ export class AnthropicMessagesAdapter {
     const body = {
       model: this.#model,
       max_tokens: this.#maxTokens,
-      messages: requestMessages,
+      messages: mergedMessages,
       stream: true,
     };
     if (this.#system !== undefined) body.system = this.#system;

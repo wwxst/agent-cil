@@ -2,17 +2,26 @@
 import { stat, readdir, mkdir, realpath, lstat, open } from 'node:fs/promises';
 import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { killPosixProcessTree } from './kill-process-tree.js';
+import { createLocalShellTaskManager } from './local-shell-task.js';
+import {
+  TaskOutput, isReadableInternalTaskOutputPath,
+  openReadableInternalTaskOutput, restoreCompletedTaskOutputs,
+} from './legacy-task-output.js';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
+import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
+import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
 const MAX_TOOL_OUTPUT_BYTES = 1024 * 1024;
 const MAX_WALK_FILES = 5000;
-const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.cache']);
+const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.cache', '.agent-cil']);
 const BACKSLASH = String.fromCharCode(92);
 const REGEX_META = new Set(['.', '+', '^', '$', '(', ')', '|', '[', ']', '{', '}', BACKSLASH]);
 
@@ -36,6 +45,12 @@ export const HELP = [
   '      --compact-threshold <n>  Auto-compact above approximate input tokens (0 disables)',
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
   '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
+  '      --allowedTools <name>    Allow tool or literal Bash(command), repeatable',
+  '      --disallowedTools <name> Deny tool or Bash(command/prefix/wildcard), repeatable',
+  '      --askTools <name>        Ask tool or Bash(command/prefix/wildcard), repeatable',
+  '      --hooks-file <path> Explicitly trust a tool-hook settings JSON file (Pre/Post/Failure)',
+  '      --session-id <uuid> Start a fresh, named persisted CLI session',
+  '      --resume <uuid>     Resume a session; omit prompt to finish a committed tool round',
   '      --system <text>     System prompt',
   '      --cwd <path>        Workspace directory (default: current directory)',
   '',
@@ -54,7 +69,8 @@ export const HELP = [
   '  Write, Edit, Bash      Require interactive approval before execution',
   '',
   'This first CLI slice uses the repository AgentLoop and Messages API adapter.',
-  'It does not yet implement the full official CLI configuration, OAuth, MCP, or resume contract.',
+  'Resume uses a versioned committed-checkpoint JSONL subset; full original sessionStorage is pending.',
+  'The full official CLI configuration, OAuth and MCP contract is not implemented.',
 ].join('\n') + '\n';
 
 export class CliArgumentError extends Error {
@@ -84,6 +100,10 @@ export function parseArgs(argv) {
     compactThreshold: undefined,
     maxRetries: 2,
     allowEdits: false,
+    permissionRules: { allow: [], deny: [], ask: [] },
+    hooksFile: undefined,
+    sessionId: undefined,
+    resume: undefined,
     system: undefined,
     cwd: process.cwd(),
     positional: [],
@@ -107,6 +127,48 @@ export function parseArgs(argv) {
       options.print = true;
     } else if (arg === '--allow-edits') {
       options.allowEdits = true;
+    } else if (['--allowedTools', '--disallowedTools', '--askTools'].some(
+      flag => arg === flag || arg.startsWith(flag + '=')
+    )) {
+      const [flag, ...inlineValue] = arg.split('=');
+      const behavior = flag === '--allowedTools' ? 'allow'
+        : flag === '--disallowedTools' ? 'deny' : 'ask';
+      const raw = inlineValue.length ? inlineValue.join('=') : takeValue(flag, i++);
+      const parsed = permissionRuleValueFromString(raw);
+      const wholeTool = parsed.ruleContent === undefined && raw === parsed.toolName;
+      // The original Bash exact-command checkPermissions method is now
+      // connected. Wildcard/prefix/compound rule matching still needs the
+      // original bashPermissions.ts AST dependency closure, so reject such
+      // rules instead of approximating them with a dangerous regex.
+      const bashContent = parsed.toolName === 'Bash' &&
+        typeof parsed.ruleContent === 'string' &&
+        parsed.ruleContent.length > 0 &&
+        parsed.ruleContent.trim() === parsed.ruleContent &&
+        raw === permissionRuleValueToString(parsed);
+      // Literal exact Bash allow remains narrowly permitted. Original
+      // prefix/wildcard shell matching is connected for restrictive deny/ask
+      // rules only: an unrestricted allow would require original AST checks.
+      const bashRule = bashContent && (behavior !== 'allow' ||
+        !parsed.ruleContent.includes('*'));
+      if (!['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'].includes(parsed.toolName) ||
+          !(wholeTool || bashRule)) {
+        throw new CliArgumentError(flag +
+          ' accepts whole built-in names or Bash(command);' +
+          ' wildcard/prefix Bash allow, other content-specific rules and MCP require original AST security checks.');
+      }
+      options.permissionRules[behavior].push(parsed);
+    } else if (arg === '--hooks-file' || arg.startsWith('--hooks-file=')) {
+      options.hooksFile = arg === '--hooks-file' ? takeValue(arg, i++) : arg.slice('--hooks-file='.length);
+      if (!options.hooksFile) throw new CliArgumentError('--hooks-file requires a path.');
+    } else if (arg === '--session-id' || arg.startsWith('--session-id=') ||
+               arg === '--resume' || arg.startsWith('--resume=')) {
+      const flag = arg.split('=')[0];
+      const id = arg === flag ? takeValue(flag, i++) : arg.slice(flag.length+1);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+        throw new CliArgumentError(flag + ' requires a valid UUID.');
+      }
+      if (flag === '--session-id') options.sessionId = id;
+      else options.resume = id;
     } else if (arg === '--provider' || arg.startsWith('--provider=')) {
       const provider = arg === '--provider' ? takeValue(arg, i++) : arg.slice('--provider='.length);
       if (!['anthropic', 'deepseek', 'openai'].includes(provider)) {
@@ -165,6 +227,9 @@ export function parseArgs(argv) {
     }
   }
 
+  if (options.sessionId && options.resume) {
+    throw new CliArgumentError('--session-id and --resume cannot be used together.');
+  }
   options.cwd = resolve(options.cwd);
   options.prompt = options.positional.join(' ').trim();
   return options;
@@ -224,19 +289,26 @@ async function assertPathWithinWorkspace(workspace, target) {
  * Additional rule persistence stays disabled until the original dependency
  * closure is runnable and independently verified.
  */
-export function createCliPermissionContext({ allowEdits = false } = {}) {
+export function createCliPermissionContext({ allowEdits = false, permissionRules = {} } = {}) {
+  const updates = allowEdits ? [{ type: 'setMode', destination: 'cliArg', mode: 'acceptEdits' }] : [];
+  for (const behavior of ['allow', 'deny', 'ask']) {
+    const rules = permissionRules[behavior] || [];
+    if (rules.length) updates.push({ type: 'addRules', destination: 'cliArg', behavior, rules });
+  }
   return applyPermissionUpdates({
     mode: 'default',
     alwaysAllowRules: {},
     alwaysDenyRules: {},
     alwaysAskRules: {},
     additionalWorkingDirectories: new Map(),
-  }, allowEdits ? [{ type: 'setMode', destination: 'cliArg', mode: 'acceptEdits' }] : []);
+  }, updates);
 }
 
 export function createCliPermissionPolicy({
   workspace = process.cwd(),
   permissionContext = createCliPermissionContext(),
+  sessionId = null,
+  taskManager = null,
 } = {}) {
   const root = resolve(workspace);
   const policy = async ({ name, input } = {}) => {
@@ -251,6 +323,14 @@ export function createCliPermissionPolicy({
 
     if (['Read', 'Write', 'Edit', 'Grep'].includes(name)) {
       const candidate = name === 'Grep' ? (input?.path ?? '.') : input?.file_path;
+      // Legacy checkReadableInternalPath() can authorize project task
+      // output files. Until session-specific task ownership is ported,
+      // only an exact, completed in-process Bash output is permitted.
+      // Explicit deny/ask tool rules still take precedence.
+      if(name==='Read' && isReadableInternalTaskOutputPath(root,candidate,sessionId)) {
+        return checkWholeToolPermissionRules(permissionContext,{name}) ||
+          {behavior:'allow',reason:'Verified completed Bash output file.'};
+      }
       try {
         const target = resolveWorkspacePath(root, candidate);
         await assertPathWithinWorkspace(root, target);
@@ -274,9 +354,18 @@ export function createCliPermissionPolicy({
         : { behavior: 'ask', reason: 'This tool modifies workspace files.' };
     }
 
+    if (name === 'TaskOutput' || name === 'TaskStop') {
+      const taskId=input?.task_id??input?.shell_id;
+      if(!taskManager?.has(taskId) ||
+          (name==='TaskStop' && taskManager.status(taskId)?.status!=='running'))
+        return {behavior:'deny',reason:'No active owned Bash task with that ID.'};
+      return checkWholeToolPermissionRules(permissionContext,{name}) ||
+        {behavior:'allow',reason:'Operate on this CLI session-owned background Bash task.'};
+    }
     if (name === 'Bash') {
       return checkWholeToolPermissionRules(permissionContext, { name }) ||
-        { behavior: 'ask', reason: 'This command executes a shell process.' };
+        { behavior: 'ask', reason: 'This command executes a shell process.',
+          decisionReason: { type: 'mode', mode: 'default' } };
     }
 
     return { behavior: 'deny', reason: 'No CLI permission rule exists for tool ' + String(name) + '.' };
@@ -285,6 +374,7 @@ export function createCliPermissionPolicy({
   // the immutable workspace/rule context, never the evolving assistant text.
   // Custom policies do not receive this opt-in and are always deferred.
   Object.defineProperty(policy, 'supportsStreamingPreflight', { value: true });
+  Object.defineProperty(policy, 'isBuiltinCliPolicy', { value: true });
   return policy;
 }
 
@@ -523,126 +613,453 @@ function abortError(signal) {
 }
 
 function signalProcessTree(child, signalName) {
-  if (!child.pid) return;
-  if (process.platform !== 'win32') {
-    try {
-      // detached=true gives the shell and its descendants a private process group.
-      process.kill(-child.pid, signalName);
-      return;
-    } catch {
-      // Fall back to signaling the direct child if the process group is unavailable.
-    }
+  if (!child.pid) return Promise.resolve();
+  if (process.platform === 'win32') {
+    // Node child.kill() terminates only cmd.exe, not the shell's children.
+    // The original Bash lifecycle owns the whole launched process tree.
+    // Windows has no POSIX process groups: use the OS tree terminator with
+    // argv (never interpolate a tool command or PID into a shell command).
+    return new Promise((resolveKill,rejectKill) => {
+      let killer;
+      let settled=false;
+      let watchdog;
+      const finish=(ok,reason)=>{
+        if(settled)return;
+        settled=true;
+        clearTimeout(watchdog);
+        if(ok){
+          resolveKill();
+          return;
+        }
+        // Original 2.1.304 killProcessTree logs taskkill failures and
+        // falls back to the direct child. Node lacks Bun.ant.windowsProcessPin:
+        // fallback is NOT proof the entire descendant tree was reaped.
+        try{child.kill('SIGKILL');}catch{}
+        // ChildProcess 'close' waits for descendants which inherited these
+        // handles. After OS tree termination FAILED, never await those
+        // unowned descendants indefinitely: close our own pipe handles
+        // so the fatal uncertainty can reach Session/CLI cleanup.
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        const error=new Error('Windows Bash process-tree cleanup could not be confirmed'+
+          (reason?': '+reason:'')+'. Unowned descendants may remain.');
+        error.name='ProcessTreeCleanupError';
+        rejectKill(error);
+      };
+      try{
+        // Never resolve taskkill.exe from the current project directory or
+        // PATH: a repository-local executable could otherwise replace the
+        // trusted Windows process-tree terminator.
+        const systemRoot=process.env.SystemRoot || 'C:\\Windows';
+        killer=spawn(join(systemRoot,'System32','taskkill.exe'),
+          ['/PID',String(child.pid),'/T','/F'],
+          {windowsHide:true,stdio:'ignore',shell:false});
+        killer.once('error',error=>finish(false,error.code||error.message));
+        killer.once('close',(code,signal)=>
+          finish(code===0,signal?'taskkill signal '+signal:'taskkill exit '+String(code)));
+        // The 2.1.304 source uses a bounded post-kill backstop; do not let
+        // a stuck OS taskkill worker hold the CLI/session lock forever.
+        watchdog=setTimeout(()=>{
+          try{killer.kill('SIGKILL');}catch{}
+          finish(false,'taskkill exceeded 5s');
+        },5000);
+      }catch(error){
+        finish(false,error instanceof Error?error.message:String(error));
+      }
+    });
   }
-  try {
-    child.kill(signalName);
-  } catch {
-    // The process may have exited between the state check and signal delivery.
+  // 2.1.304 killProcessTree() enumerates the descendant PID tree before
+  // signaling the POSIX group: a detached child can escape the shell PGID.
+  // The shell's ChildProcess exit status is the only proof that root PID
+  // still belongs to this invocation; after exit, only signal its PGID.
+  return killPosixProcessTree(child.pid, signalName, {
+    captureDescendants: child.exitCode === null && child.signalCode === null,
+  }).then(() => {});
+}
+
+// Port of the 2.1.304 ShellCommand state shape (liveShellCommands and
+// pendingKillBackstops), retained as a headless adapter. The mature 2.1.88
+// LocalShellTask/killShellTasks.ts exits also kill outstanding owned tasks.
+// This is NOT a Windows Job Object nor a native persistent task registry.
+const shellLifecycle = {
+  liveShellCommands: new Set(),
+  pendingKillBackstops: new Set(),
+};
+
+export function getShellLifecycleStatus() {
+  return {
+    liveShellCommands: shellLifecycle.liveShellCommands.size,
+    pendingKillBackstops: shellLifecycle.pendingKillBackstops.size,
+  };
+}
+
+export async function cleanupLiveShellCommands() {
+  // Like 2.1.304's live-shell shutdown + await of pendingKillBackstops:
+  // release every currently owned Bash, not just the last active tool.
+  const owned = [...shellLifecycle.liveShellCommands];
+  const outcomes=await Promise.allSettled(owned.map(shell => shell.kill()));
+  // A kill task may have already been started by a signal/timeout.
+  // Await the snapshot repeatedly in case the tracked set changed while
+  // shell 'close' callbacks were still completing.
+  const failures=outcomes.filter(item=>item.status==='rejected').map(item=>item.reason);
+  while (shellLifecycle.pendingKillBackstops.size) {
+    const ended=await Promise.allSettled([...shellLifecycle.pendingKillBackstops]);
+    failures.push(...ended.filter(item=>item.status==='rejected').map(item=>item.reason));
+  }
+  if(failures.length) {
+    // Failed taskkill /T is not a successfully cleaned-up shell. Surface
+    // uncertainty to CLI exit and preserve the prior session journal.
+    throw new AggregateError(failures,
+      'One or more Bash process trees could not be confirmed terminated.');
   }
 }
 
-function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes }) {
-  if (signal?.aborted) return Promise.reject(abortError(signal));
+async function runShellCommand(command, { cwd, signal, timeoutMs, maxOutputBytes, taskSession, runInBackground=false, taskManager }) {
+  if (signal?.aborted) throw abortError(signal);
+  // Original 2.1.88 utils/Shell.ts exec() creates TaskOutput in file
+  // mode BEFORE launching Bash. Both stdio fds point to the SAME file
+  // handle so even multi-GB output never enters the Node heap.
+  const taskOutput = new TaskOutput(undefined,null,true,maxOutputBytes,taskSession);
+  const outputHandle = await taskOutput.initFileOutput();
+  if(signal?.aborted) {
+    await outputHandle.close();
+    await taskOutput.deleteOutputFile();
+    throw abortError(signal);
+  }
 
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, {
-      cwd,
-      shell: true,
-      detached: process.platform !== 'win32',
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const stdout = [];
-    const stderr = [];
-    let outputBytes = 0;
+    let settleCompletion, failCompletion;
+    const completion=runInBackground?new Promise((resolve,reject)=>{
+      settleCompletion=resolve;failCompletion=reject;
+    }):null;
+    const finishResult=result=>{
+      if(runInBackground)settleCompletion(result);
+      else resolvePromise(result);
+    };
+    const finishError=error=>{
+      if(runInBackground)failCompletion(error);
+      else rejectPromise(error);
+    };
+    let child;
+    try {
+      child = spawn(command, {
+        cwd,
+        shell: true,
+        detached: process.platform !== 'win32',
+        windowsHide: true,
+        stdio: ['ignore', outputHandle.fd, outputHandle.fd],
+      });
+    } catch(error) {
+      // TaskOutput file-mode allocates a real FD BEFORE spawning Bash.
+      // A synchronous spawn failure must not release the tool boundary
+      // before closing/discarding that descriptor (2.1.88 Shell.ts exec).
+      void (async()=>{
+        try {
+          await outputHandle.close();
+          await taskOutput.deleteOutputFile();
+          rejectPromise(error);
+        } catch(cleanupError) {
+          const failure=new Error('Bash TaskOutput spawn cleanup failed: '+
+            (cleanupError instanceof Error?cleanupError.message:String(cleanupError)),
+            {cause:cleanupError});
+          failure.name='TaskOutputPersistenceError';
+          rejectPromise(failure);
+        }
+      })();
+      return;
+    }
     let timedOut = false;
-    let outputLimitHit = false;
     let spawnError;
-    let forceKillTimer;
+    let terminationTask;
+    let exitDrainTimer;
+    let unsupportedBackground = false;
+    let shutdownRequested = false;
+    let backgroundAdmissionFailed = false;
 
     const terminate = () => {
-      signalProcessTree(child, 'SIGTERM');
-      if (!forceKillTimer) {
-        forceKillTimer = setTimeout(() => {
-          try {
-            signalProcessTree(child, 'SIGKILL');
-          } catch {
-            // Best-effort escalation; close/error handling reports the command outcome.
-          }
-        }, 250);
-      }
+      if(terminationTask)return terminationTask;
+      // Pinned 2.1.88 utils/ShellCommand.ts #doKill() uses
+      // treeKill(pid,'SIGKILL') immediately on abort/timeout. The headless
+      // shell owns an isolated POSIX process group; Windows uses taskkill /T
+      // /F. Await the entire tree termination before settling Bash output.
+      terminationTask=signalProcessTree(child,'SIGKILL');
+      shellLifecycle.pendingKillBackstops.add(terminationTask);
+      // Task completion must remove the same promise instance and may not
+      // escape as an unhandled rejection during a normal tool shutdown.
+      void terminationTask.finally(() => {
+        shellLifecycle.pendingKillBackstops.delete(terminationTask);
+      }).catch(() => {});
+      return terminationTask;
     };
+    const ownedShell = {
+      kill() {
+        shutdownRequested = true;
+        return terminate();
+      },
+    };
+    shellLifecycle.liveShellCommands.add(ownedShell);
 
     const timeout = setTimeout(() => {
       timedOut = true;
-      terminate();
+      void terminate().catch(() => {});
     }, timeoutMs);
     timeout.unref?.();
 
-    const onAbort = () => terminate();
+    // EventTarget does not await Promise-returning event listeners. Never
+    // allow a failed Windows taskkill to become an uncaught exception; the
+    // close handler awaits and propagates the same owned terminationTask.
+    const onAbort = () => { void terminate().catch(() => {}); };
     signal?.addEventListener('abort', onAbort, { once: true });
 
-    const collect = (target, chunk) => {
-      const remaining = Math.max(0, maxOutputBytes - outputBytes);
-      if (remaining > 0) target.push(chunk.subarray(0, remaining));
-      outputBytes += chunk.length;
-      if (outputBytes > maxOutputBytes && !outputLimitHit) {
-        outputLimitHit = true;
-        terminate();
-      }
-    };
-
-    child.stdout.on('data', chunk => collect(stdout, chunk));
-    child.stderr.on('data', chunk => collect(stderr, chunk));
+    // File-FD mode: source Shell.ts closes the parent's duplicate AFTER
+    // spawn attaches the error/exit listeners. The child retains its dup.
+    // Unlike pipe mode, stdout/stderr are null and cannot hold JS memory.
+    void outputHandle.close().catch(error=>{
+      const failure=new Error('Bash TaskOutput descriptor close failed: '+error.message,{cause:error});
+      failure.name='TaskOutputPersistenceError';
+      spawnError ??= failure;
+      void terminate().catch(()=>{});
+    });
     child.once('error', error => {
       spawnError = error;
     });
-    child.once('close', code => {
+    // The mature 2.1.88 ShellCommandImpl and 2.1.304 ShellCommand both
+    // use 'exit' for the foreground result. 'close' can wait indefinitely
+    // for grandchildren inheriting the shell's stdout/stderr pipes.
+    // This headless CLI has no original LocalShellTask background registry
+    // yet: give foreground pipe data a short drain window, then terminate
+    // any unowned descendant tree instead of hanging the tool round or
+    // silently leaving a background process with write access.
+    child.once('exit', () => {
+      if (terminationTask) return;
+      if(process.platform !== 'win32' && child.pid) {
+        // 2.1.304 ShellCommand reports leftRunningPgid if the foreground
+        // shell exited but its process group still exists. This CLI has no
+        // LocalShellTask background owner yet: fail closed and reap that
+        // group, including descendants that discarded both stdio pipes.
+        // A reaped shell with no descendants has no remaining process group.
+        try {
+          process.kill(-child.pid,0);
+          unsupportedBackground = true;
+        } catch(error) {
+          // EPERM means the group exists but cannot be inspected. Treat it
+          // as unsafe rather than reporting a successful command.
+          if(error?.code !== 'ESRCH') unsupportedBackground = true;
+        }
+        if(unsupportedBackground) {
+          exitDrainTimer = setTimeout(() => {
+            if(!terminationTask)void terminate().catch(() => {});
+            void terminationTask?.then(() => {
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+            }, () => {
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+            });
+          },100);
+          exitDrainTimer.unref?.();
+          return;
+        }
+      }
+      exitDrainTimer = setTimeout(() => {
+        if (terminationTask) return;
+        unsupportedBackground = true;
+        void terminate().catch(() => {});
+        // Node 'close' waits for all inherited pipe handles. After the
+        // process-group kill has been dispatched, release inherited fds
+        // regardless of whether a descendant ignores the group signal.
+        void terminationTask.then(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+        }, () => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+        });
+      }, 250);
+      exitDrainTimer.unref?.();
+    });
+    child.once('close', async code => {
+      try {
       clearTimeout(timeout);
+      clearTimeout(exitDrainTimer);
+      // A POSIX group with ignored/closed stdout can emit 'close' before
+      // the delayed cleanup timer. Reap its surviving descendants anyway.
+      if(unsupportedBackground && !terminationTask)void terminate().catch(() => {});
       signal?.removeEventListener('abort', onAbort);
-
-      if (signal?.aborted) {
-        rejectPromise(abortError(signal));
-        return;
+      // Do not report cancellation as cleaned up while Windows taskkill
+      // is still terminating grandchildren of cmd.exe.
+      try {
+        if(terminationTask)await terminationTask;
+      } catch(error) {
+        spawnError ??= error;
+      } finally {
+        shellLifecycle.liveShellCommands.delete(ownedShell);
       }
 
+      if (spawnError?.name==='ProcessTreeCleanupError' ||
+          spawnError?.name==='TaskOutputPersistenceError') {
+        // The process-tree owner could not confirm that side effects
+        // stopped. Throw into AgentLoop's fatal checkpoint fence rather
+        // than mapping an ordinary tool_error and continuing the model.
+        finishError(spawnError);
+        return;
+      }
+      // In original file mode the kernel has already written output. Read
+      // only the original bounded 30k prefix and retain the whole file
+      // when it exceeds inline capacity. A lost/unreadable file is fatal.
+      let capturedStdout;
+      try {
+        await taskOutput.flush();
+        capturedStdout=await taskOutput.getStdout();
+      } catch(error) {
+        const failure=new Error('Bash TaskOutput persistence failed: '+error.message,{cause:error});
+        failure.name='TaskOutputPersistenceError';
+        finishError(failure);
+        return;
+      }
+      if (signal?.aborted) {
+        finishError(abortError(signal));
+        return;
+      }
       const result = {
         exit_code: Number.isInteger(code) && code >= 0 ? code : 1,
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
+        stdout: capturedStdout,
+        stderr: taskOutput.getStderr(),
       };
-      if (timedOut) result.error = 'Command was killed or timed out.';
-      else if (outputLimitHit) result.error = 'Command output exceeded the 1 MiB limit.';
+      if(shutdownRequested) {
+        result.exit_code = 1;
+        result.error = 'Command terminated while releasing its owning CLI session.';
+      }
+      else if (timedOut) result.error = 'Command was killed or timed out.';
       else if (spawnError) result.error = spawnError.message;
-      else if (code !== 0) result.error = 'Command exited with status ' + String(code) + '.';
-      resolvePromise(result);
+      else if (unsupportedBackground) {
+        // Do not report a successful foreground tool round for a detached
+        // descendant we cannot yet register/clean up as LocalShellTask.
+        result.exit_code = 1;
+        result.error = 'Command left inherited-pipe background processes after the shell exited; unsupported background task was terminated.';
+      } else if (code !== 0) result.error = 'Command exited with status ' + String(code) + '.';
+      if(backgroundAdmissionFailed) {
+        // A Bash tool whose background admission failed never returned a
+        // trusted output path. Do not register an orphaned file as readable
+        // task output; after confirmed cleanup discard that native file.
+        await taskOutput.deleteOutputFile();
+      } else if(taskOutput.isOverflowed) {
+        // Original ExecResult.outputFilePath/Size/TaskId contract. Full
+        // output is retained on disk, not truncated or silently discarded.
+        result.outputFilePath=taskOutput.path;
+        result.outputFileSize=taskOutput.outputFileSize;
+        result.outputTaskId=taskOutput.taskId;
+        // Register only after the native shell is finished, its output
+        // identity has been checked and a real mapped tool result exists.
+        // Read authorization never trusts a string returned by the model.
+        taskOutput.registerCompletedOutput(cwd,{background:runInBackground});
+      } else if(runInBackground) {
+        // The original TaskOutput retains a background task file even
+        // when its entire output fits the foreground inline preview.
+        taskOutput.registerCompletedOutput(cwd,{background:true});
+      } else if(!runInBackground) {
+        // Source LocalShellTask MUST retain background output even when
+        // small: TaskOutput/Read may be called after completion. Only
+        // unregistered foreground results can delete redundant files.
+        await taskOutput.deleteOutputFile();
+      }
+      finishResult(result);
+      } catch(error) {
+        // EventEmitter does not observe a Promise returned by an async
+        // 'close' listener. If final output retention, registration or
+        // cleanup fails, never leave Bash's completion Promise unresolved
+        // or emit an unhandled rejection. The original TaskOutput finish
+        // is an owning lifecycle boundary, not fire-and-forget work.
+        const failure=(error?.name==='ProcessTreeCleanupError' ||
+            error?.name==='TaskOutputPersistenceError')?error:
+          new Error('Bash TaskOutput finalization failed: '+
+            (error instanceof Error?error.message:String(error)),{cause:error});
+        failure.name='TaskOutputPersistenceError';
+        finishError(failure);
+      }
     });
+    if(runInBackground) {
+      let registeredTaskId;
+      try {
+        if(!taskManager)throw new Error('Background Bash requires session task ownership.');
+        if(signal?.aborted)throw abortError(signal);
+        registeredTaskId=taskManager.spawnShellTask({
+          taskOutput,command,completion,kill:()=>ownedShell.kill(),
+        });
+        taskOutput.registerRunningOutput(cwd);
+        resolvePromise({
+          exit_code:0,stdout:'',stderr:'',
+          backgroundTaskId:registeredTaskId,
+          outputTaskId:registeredTaskId,outputFilePath:taskOutput.path,
+          message:'Command running in background with ID: '+registeredTaskId+
+            '. Output is being written to: '+taskOutput.path,
+        });
+      }catch(error){
+        backgroundAdmissionFailed = true;
+        // This failure happens AFTER spawn(). The 2.1.88 LocalShellTask
+        // owner must finish killing the actual shell/process tree before
+        // returning any tool result or allowing the next model round.
+        // Otherwise a rejected background Bash may keep changing files.
+        // Suppress a ghost completion notice if registration succeeded but
+        // the live output-path registration failed immediately afterward.
+        if(registeredTaskId)taskManager.markTaskNotified(registeredTaskId);
+        void (async()=>{
+          try {
+            await terminate();
+            // 'close' also flushes/retains or disposes the native TaskOutput
+            // FD. Its failure must not be hidden behind the registration
+            // error; ProcessTreeCleanupError and TaskOutputPersistenceError
+            // are fatal execution fences in the active AgentLoop.
+            await completion;
+            rejectPromise(error);
+          }catch(cleanupError){
+            rejectPromise(cleanupError);
+          }
+        })();
+      }
+    }
   });
 }
 
-export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
+export async function createBuiltinTools({ workspace = process.cwd(), permissionContext = createCliPermissionContext(), taskSession = null, taskManager = null } = {}) {
   const { ToolRegistry } = await import('../../runtime/src/tool-registry.js');
   const root = resolve(workspace);
   const tools = new ToolRegistry();
+  const manager=taskManager??createLocalShellTaskManager({sessionId:taskSession?.sessionId});
 
   // Preserve the original workspace-safe Read implementation and its direct
   // execute() API, but route actual AgentLoop execution through the 2.1.88
   // Tool.call + result mapper contract. No duplicate read implementation.
   const executeRead = async ({ file_path, offset, limit }, { signal } = {}) => {
     if (signal?.aborted) throw abortError(signal);
+    const options=offset===undefined && limit===undefined
+      ? undefined : {offset,limit};
+    if(isReadableInternalTaskOutputPath(root,file_path,taskSession?.sessionId??null)) {
+      const fh=await openReadableInternalTaskOutput(root,file_path,taskSession?.sessionId??null);
+      try {
+        const text=options===undefined
+          ? await readTextHandle(fh,file_path,signal)
+          : await readTextLinesHandle(fh,file_path,options,signal);
+        if(signal?.aborted)throw abortError(signal);
+        return text;
+      }finally {
+        await fh.close();
+      }
+    }
     const target = resolveWorkspacePath(root, file_path);
     await assertPathWithinWorkspace(root, target);
     if (signal?.aborted) throw abortError(signal);
-    return readTextFile(root, target,
-      offset === undefined && limit === undefined ? undefined : { offset, limit }, signal);
+    return readTextFile(root, target,options,signal);
   };
 
   tools.register({
     name: 'Read',
+    maxResultSizeChars: Infinity,
     isConcurrencySafe: () => true,
     // Built-in workspace-only read/search operations may start at tool_use
     // block_stop, before the model has finished streaming.
     canRunDuringStream: true,
-    description: 'Read a UTF-8 text file within the workspace. Use zero-based offset and limit to read sections of large files.',
+    description: 'Read a UTF-8 workspace file or a verified completed Bash output file. Use zero-based offset and limit for large files.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -813,22 +1230,60 @@ export async function createBuiltinTools({ workspace = process.cwd() } = {}) {
 
   tools.register({
     name: 'Bash',
-    description: 'Run a shell command in the workspace. Each command requires explicit interactive approval.',
+    description: 'Run a shell command in the workspace. Requires approval unless permitted by an exact command rule.',
+    // Original BashTool.checkPermissions delegates to bashToolHasPermission.
+    // Until AST, wrapper, wildcard and sandbox matching are transplanted, this
+    // is restricted to exact command rule decisions only (fail closed).
+    checkPermissions: async input => bashToolCheckExactMatchPermission(input, permissionContext),
     inputSchema: {
       type: 'object',
       properties: {
         command: { type: 'string', minLength: 1 },
         timeout_ms: { type: 'integer', minimum: 1000, maximum: 120000 },
+        run_in_background: {type:'boolean'},
       },
       required: ['command'],
       additionalProperties: false,
     },
-    execute: async ({ command, timeout_ms = 30000 }, { signal } = {}) => runShellCommand(command, {
+    execute: async ({ command, timeout_ms = 30000, run_in_background = false }, { signal } = {}) => runShellCommand(command, {
       cwd: root,
       signal,
       timeoutMs: timeout_ms,
       maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
+      taskSession,
+      runInBackground:run_in_background,
+      taskManager:manager,
     }),
+  });
+
+  tools.register({
+    name:'TaskOutput',
+    description:'Read output and status from a background Bash task. Prefer Read on the output file for completed tasks.',
+    isConcurrencySafe:()=>true,
+    inputSchema:{
+      type:'object',
+      properties:{
+        task_id:{type:'string'},
+        block:{type:'boolean'},
+        timeout:{type:'integer',minimum:0,maximum:600000},
+      },
+      required:['task_id'],additionalProperties:false,
+    },
+    execute:async(input,{signal}={})=>manager.getTaskOutput(input,signal),
+    maxResultSizeChars:100000,
+  });
+  tools.register({
+    name:'TaskStop',
+    description:'Stop a session-owned running background Bash task by ID.',
+    inputSchema:{
+      type:'object',
+      properties:{
+        task_id:{type:'string'},
+        shell_id:{type:'string'},
+      },
+      additionalProperties:false,
+    },
+    execute:async({task_id,shell_id})=>manager.stopTask(task_id??shell_id),
   });
 
   return tools;
@@ -883,11 +1338,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // A positional first prompt should start the interactive session on a TTY,
   // not silently force one-shot mode. --print remains explicitly one-shot.
   const interactiveInput = process.stdin.isTTY && process.stdout.isTTY && !options.print;
-  if (options.print && prompt.length === 0 && process.stdin.isTTY) {
+  if (options.print && prompt.length === 0 && process.stdin.isTTY && !options.resume) {
     printError('No prompt provided. Pass a prompt or pipe stdin.');
     return 2;
   }
-  if (!interactiveInput && prompt.length === 0) {
+  if (!interactiveInput && prompt.length === 0 &&
+      (!options.resume || !process.stdin.isTTY)) {
+    // An explicit --resume can continue a durable tool checkpoint without
+    // another user message, but a piped prompt still takes precedence.
+    // readStdin() reaches EOF for an empty pipe; it does not invent content.
     try {
       prompt = await readStdin();
     } catch (error) {
@@ -895,7 +1354,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return 2;
     }
   }
-  if (!interactiveInput && prompt.length === 0) {
+  if (!interactiveInput && prompt.length === 0 && !options.resume) {
     printError('No prompt provided. Pass a prompt, pipe stdin, or start an interactive session.');
     return 2;
   }
@@ -945,7 +1404,24 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       system: options.system,
     });
   }
-  const tools = await createBuiltinTools({ workspace });
+  const permissionContext = createCliPermissionContext({
+    allowEdits: options.allowEdits, permissionRules: options.permissionRules,
+  });
+  let toolHooks = { PreToolUse: [], PostToolUse: [], PostToolUseFailure: [] };
+  if (options.hooksFile) {
+    try {
+      const { loadToolHookSettings } = await import(
+        '../../runtime/src/legacy-tools/pretooluse-node-compat.js'
+      );
+      // Explicit CLI flag is the trust boundary. Never auto-execute commands
+      // from an untrusted repository's settings on startup.
+      toolHooks = await loadToolHookSettings(options.hooksFile);
+    } catch (error) {
+      printError('Tool Hook configuration failed: ' +
+        (error instanceof Error ? error.message : String(error)));
+      return 2;
+    }
+  }
   // DeepSeek V4.1 Flash advertises a 1M-token context window; reserve ample
   // headroom for system/tools/output. Other providers remain opt-in until
   // their model-specific context windows can be determined accurately.
@@ -961,13 +1437,105 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   compactThreshold ??= provider === 'deepseek' ? 850000 : 0;
   const { createAutoCompact } = await import('../../runtime/src/legacy-compact/auto-compact.js');
   const autoCompact = createAutoCompact({ thresholdTokens: compactThreshold });
+  const { openSessionJournal } = await import('../../runtime/src/legacy-session/session-storage.js');
+  let journal;
+  try {
+    journal = await openSessionJournal({
+      workspace,
+      ...(options.sessionId || options.resume
+        ? { sessionId: options.sessionId || options.resume } : {}),
+      resume: !!options.resume,
+    });
+  } catch(error) {
+    printError('Session initialization failed: ' +
+      (error instanceof Error ? error.message : String(error)));
+    return 2;
+  }
+  process.stderr.write('[session] ' + journal.id + (options.resume ? ' resumed' : ' created') + '\n');
+  if(journal.needsToolReconciliation) {
+    if(journal.startedToolExecutions.length) {
+      process.stderr.write('[session] ' + journal.startedToolExecutions.length +
+        ' started tool call(s) recorded; verify side effects before resuming.\n');
+    }
+    if(journal.mappedToolResults.length) {
+      process.stderr.write('[session] ' + journal.mappedToolResults.length +
+        ' mapped tool result(s) saved before PostToolUse; Hook completion still requires reconciliation.\n');
+    }
+    // Original Session retains an assistant tool_use even when the process
+    // dies before its matching tool_result. Never replay that assistant
+    // request through the model: Write/Bash may already have taken effect.
+    printError(journal.needsToolContextReview
+      ? 'Session contains completed tool results but failed Hook/native context normalization. Inspect the preserved results and Hook side effects before continuing; automatic replay is unsafe.'
+      : 'Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
+    await journal.close();
+    return 2;
+  }
+  if (!interactiveInput && prompt.length === 0 && !journal.canContinueWithoutPrompt) {
+    // Source insertMessageChain() saves initial user messages before the
+    // provider responds. Resume either an unanswered prompt or a fully
+    // committed tool batch, never a previously completed answer.
+    printError('Session has no committed pending user prompt or tool result. Supply a new prompt to continue.');
+    await journal.close();
+    return 2;
+  }
+  // Source Session task ownership: only committed Bash tool_result records
+  // can restore output permissions in a fresh CLI process, and the path
+  // itself is independently derived from canonical workspace + session UUID.
+  // Never allow arbitrary transcript text to become a global /tmp grant.
+  try {
+    if(options.resume) {
+      await restoreCompletedTaskOutputs({
+        workspace,sessionId:journal.id,messages:journal.messages,
+      });
+    }
+  }catch(error) {
+    printError('Task output recovery failed: '+
+      (error instanceof Error?error.message:String(error)));
+    await journal.close();
+    return 2;
+  }
+  const taskManager=createLocalShellTaskManager({sessionId:journal.id});
+  const tools = await createBuiltinTools({
+    workspace,permissionContext,taskSession:{workspace,sessionId:journal.id},
+    taskManager,
+  });
   const loop = new AgentLoop({
     model,
     tools,
+    toolResultStorage: {
+      workspace,
+      directory: join(workspace, '.agent-cil', 'sessions', journal.id, 'tool-results'),
+    },
+    preToolUseHooks: toolHooks.PreToolUse,
+    postToolUseHooks: toolHooks.PostToolUse,
+    postToolUseFailureHooks: toolHooks.PostToolUseFailure,
+    hookWorkspace: workspace,
+    permissionMode: permissionContext.mode,
+    // Source createBaseHookInput() identifies the actual session transcript.
+    // Use the already-locked, fsynced SessionJournal, not a second file.
+    hookSessionId: journal.id,
+    hookTranscriptPath: journal.path,
     compactContext: context => autoCompact.compact(context),
+    // The old sessionStorage.ts enqueues JSONL transcript commits. The
+    // portable Node journal implements only completed checkpoint records.
+    // Await it in Query before any subsequent provider request.
+    onSessionCheckpoint: checkpoint => journal.append(checkpoint),
+    // The source non-MCP mapped result exists before PostToolUse. Preserve
+    // it in the same fsynced, locked journal while the command Hook runs.
+    onMappedToolResult: result => journal.appendMappedToolResult(result),
+    // Original StreamingToolExecutor executing transition, durably linked
+    // only after final permission and before invoking a side-effecting tool.
+    onToolExecutionStart: result => journal.appendToolExecutionStart(result),
+    // Native 2.1.88 LocalShellTask.enqueueShellNotification is a pending
+    // user-side message, durably committed in Query before provider delivery.
+    // A TaskOutput/TaskStop result suppresses duplicate completion notices.
+    getPendingTaskNotifications:()=>taskManager.pendingNotifications(),
+    onTaskNotificationsCommitted:taskIds=>taskManager.acknowledgeNotifications(taskIds),
     permissionPolicy: createCliPermissionPolicy({
       workspace,
-      permissionContext: createCliPermissionContext({ allowEdits: options.allowEdits }),
+      permissionContext,
+      sessionId:journal.id,
+      taskManager,
     }),
     maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
@@ -986,8 +1554,23 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     rl = createInterface({ input: process.stdin, output: process.stdout });
   }
 
-  let history = [];
+  let history = journal.messages;
   let activeController;
+  let sigtermRequested = false;
+  const onSigterm = () => {
+    // Pinned original ShellCommandImpl delegates cancellation to the active
+    // abort signal, whose Bash process owner kills its entire process tree.
+    // Do not let Node's default SIGTERM exit orphan a still-running Bash.
+    sigtermRequested = true;
+    process.exitCode = 143;
+    if(activeController && !activeController.signal.aborted) {
+      const error = new Error('Terminated by SIGTERM.');
+      error.name = 'AbortError';
+      activeController.abort(error);
+    }
+    // Closing readline also exits an idle interactive shell.
+    rl?.close();
+  };
   const onSigint = () => {
     if (activeController && !activeController.signal.aborted) {
       const error = new Error('Interrupted by user.');
@@ -999,6 +1582,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     }
   };
   process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
   loop.on('toolCallStarted', ({ toolName }) => {
     if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
       process.stderr.write('[permission] auto-approved ' + toolName + ' (--allow-edits)\n');
@@ -1010,6 +1594,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   });
 
   const runPrompt = async (text, { plain = false } = {}) => {
+    if(sigtermRequested)return 143;
+    if(journal.needsToolReconciliation) {
+      printError(journal.needsToolContextReview
+      ? 'Session contains completed tool results but failed Hook/native context normalization. Inspect the preserved results and Hook side effects before continuing; automatic replay is unsafe.'
+      : 'Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
+      return 2;
+    }
     activeController = new AbortController();
     if (!plain) process.stdout.write('assistant> ');
     const onTextDelta = ({ text: delta }) => process.stdout.write(delta);
@@ -1029,9 +1620,23 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     loop.on('turnFinished', onTurnFinished);
     loop.on('contextCompacted', onContextCompacted);
     try {
-      const result = await loop.run({ messages: history, input: text, signal: activeController.signal });
+      if (text !== undefined) {
+        // The old sessionStorage.ts insertMessageChain() persists a user
+        // message before model streaming, even when the provider later
+        // fails. Commit this exact model input first, without inventing
+        // another message or altering AgentLoop's ToolUseContext handoff.
+        await journal.append({
+          messages: [...history, {role:'user',content:text}], kind:'input',
+        });
+      }
+      const result = await loop.run({
+        messages: history,
+        ...(text === undefined ? {} : { input: text }),
+        signal: activeController.signal,
+      });
       history = result.messages;
       process.stdout.write('\n');
+      if(sigtermRequested)return 143;
       if (result.stopReason === 'max_tokens') {
         printError('Model output reached --max-tokens before finishing. Increase --max-tokens or continue the conversation.');
         return 1;
@@ -1043,17 +1648,40 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return 0;
     } catch (error) {
       process.stdout.write('\n');
-      if (committedHistory) {
-        // The erroring model response is NOT committed. Only the preceding
-        // completed tool rounds (including the original user request) survive.
-        history = committedHistory;
+      // 2.1.88 sessionStorage.ts commits the actual message chain, not the
+      // last Query turnFinished event. Query can fsync a LocalShellTask
+      // <task_notification> AFTER emitting turnFinished and BEFORE a failed
+      // provider request. Reverting to committedHistory here drops that
+      // durable message and makes the next interactive input a non-prefix
+      // session rewrite. The journal is the authoritative last committed
+      // history for ALL errors, including compact roots and abort races.
+      const priorHistoryLength=history.length;
+      history=journal.messages;
+      if(journal.needsToolContextReview) {
+        // Tool mapping completed, but Hook/native context normalization
+        // failed. Preserve the confirmed final tool result without pretending
+        // that the failed post-tool context can be safely replayed.
+        if(interactiveInput) {
+          process.stderr.write('[recovery] Completed tool results were saved, but post-tool context needs manual review. Automatic replay is blocked.\n');
+        }
+      } else if (committedHistory) {
+        // The erroring model response is NOT committed. Keep every preceding
+        // durable transition, including task notifications since the last
+        // completed tool batch. Never reconstruct history from an older event.
         if (interactiveInput) {
           process.stderr.write('[recovery] Completed tool results were retained. ' +
             'Continue the conversation without re-running previous tools.\n');
         }
+      } else if (history.length > priorHistoryLength) {
+        // A provider failure before its first complete response must not
+        // strand a durable user prompt outside the interactive history.
+        if (interactiveInput) {
+          process.stderr.write('[recovery] The unanswered prompt was saved. ' +
+            'It can be retried with --resume after restart.\n');
+        }
       }
       printError(error instanceof Error ? error.message : String(error));
-      return activeController.signal.aborted ? 130 : 1;
+      return sigtermRequested ? 143 : activeController.signal.aborted ? 130 : 1;
     } finally {
       loop.off('textDelta', onTextDelta);
       loop.off('turnFinished', onTurnFinished);
@@ -1064,7 +1692,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   try {
     if (!interactiveInput) {
-      return await runPrompt(prompt, { plain: options.print });
+      return await runPrompt(prompt.length ? prompt : undefined, { plain: options.print });
     }
     process.stderr.write('agent-cil interactive mode. Type /exit to quit.\n');
     if (prompt) {
@@ -1074,7 +1702,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // tool-result checkpoint is retained when a later model turn fails, so
       // the interactive shell can safely continue without replaying tools.
     }
-    while (rl && !rl.closed) {
+    while (rl && !rl.closed && !sigtermRequested) {
       let text;
       try {
         text = await rl.question('you> ');
@@ -1087,10 +1715,21 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       const status = await runPrompt(trimmed);
       if (status === 130) process.stderr.write('Interrupted.\n');
     }
-    return 0;
+    return sigtermRequested ? 143 : 0;
   } finally {
     process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
     rl?.close();
+    try {
+      // 2.1.88 LocalShellTask kills agent-owned shells on exit, and
+      // 2.1.304 waits for pendingKillBackstops during shutdown. Do this
+      // BEFORE releasing the durable session lock, including exceptional
+      // and SIGTERM paths.
+      try {await taskManager.killShellTasksForAgent();}
+      finally {await cleanupLiveShellCommands();}
+    } finally {
+      await journal.close();
+    }
   }
 }
 

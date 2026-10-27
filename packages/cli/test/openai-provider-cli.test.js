@@ -119,7 +119,7 @@ test('OpenAI Chat end-to-end: Read, failing Bash test, Edit, passing Bash test, 
     assert.equal(await readFile(join(workspace, 'math.cjs'), 'utf8'), expected);
     assert.equal(requests.length, 2);
     assert.equal(requests[0].model, 'gpt-5.1');
-    assert.equal(requests[0].tools.length, 6);
+    assert.equal(requests[0].tools.length, 8);
     assert.deepEqual(requests[1].messages.map(m => m.role), [
       'user', 'assistant', 'tool', 'tool', 'tool', 'tool', 'tool',
     ]);

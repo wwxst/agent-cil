@@ -49,9 +49,26 @@ export async function resolveToolSpecificPermission({
     };
   }
 
-  // A tool's allow/passthrough never promotes an existing global ask to
-  // allow. In 2.1.88 the tool method contributes to the permission pipeline,
-  // not an unrestricted capability. Any rewritten input is rechecked.
+  // Original permissions.ts:hasPermissionsToUseToolInner(): the whole-tool
+  // deny/ask rules are checked first, but an ordinary tool-specific allow
+  // is final in default mode (step 3). Do NOT conflate the CLI's fallback
+  // "ask" with a configured whole-tool ask rule, an external policy ask,
+  // or Hook-mandated approval. Only the explicitly tagged default fallback
+  // may be promoted, and only by an affirmative tool-specific allow.
+  const defaultModeAsk = baseDecision.behavior === 'ask' &&
+    baseDecision.decisionReason?.type === 'mode' &&
+    baseDecision.decisionReason?.mode === 'default';
+  if (defaultModeAsk && toolDecision.behavior === 'allow') {
+    return {
+      behavior: 'allow',
+      reason: reason || 'Allowed by tool-specific permission rule.',
+      ...(toolDecision.decisionReason ? { decisionReason: toolDecision.decisionReason } : {}),
+      ...(toolDecision.updatedInput !== undefined
+        ? { updatedInput: toolDecision.updatedInput } : {}),
+    };
+  }
+  // Passthrough remains ask in default mode; an explicit global ask/deny or
+  // external/custom policy cannot be overridden by tool-specific allow.
   return {
     ...baseDecision,
     ...(toolDecision.updatedInput !== undefined

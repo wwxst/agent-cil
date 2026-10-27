@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { AgentLoop, ModelProtocolError } from '../src/agent-loop.js';
 import { ToolRegistry } from '../src/tool-registry.js';
+import { normalizeMessagesForAPI } from '../src/legacy-query/normalize-messages-for-api.js';
 import { query } from '../src/legacy-query/query.js';
 
 function registry() {
@@ -87,8 +88,11 @@ test('ported query persists complete multi-tool results and obeys maximum-turn b
   assert.equal(result.stopReason, 'max_turns');
   assert.equal(result.turns, 1);
   assert.equal(executions, 2);
-  assert.deepEqual(result.messages.at(-1).content.map(b => b.tool_use_id).sort(), ['a', 'b']);
-  assert.deepEqual(result.messages.at(-1).content.map(b => b.content).sort(), ['value:A', 'value:B']);
+  assert.deepEqual(result.messages.slice(-2).flatMap(m=>m.content)
+    .map(b=>b.tool_use_id), ['a','b'],
+    'original Query keeps one UUID-linked source result per tool');
+  assert.deepEqual(normalizeMessagesForAPI(result.messages).at(-1).content
+    .map(b=>b.content),['value:A','value:B']);
 });
 
 test('ported query preserves strict malformed message protections', async () => {

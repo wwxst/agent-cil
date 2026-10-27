@@ -13,8 +13,10 @@
  * treats received tool_use blocks, not stop_reason, as follow-up authority.
  */
 import { StreamingToolExecutor } from '../legacy-tools/streaming-tool-executor.js';
+import { hasCompleteApiUsage } from '../legacy-compact/legacy-token-adapter.js';
 import { runToolUse } from '../legacy-tools/tool-execution.js';
 import { ModelContextLengthError } from '../anthropic-messages-adapter.js';
+import { normalizeMessagesForAPI } from './normalize-messages-for-api.js';
 
 const STOP_REASONS = new Set(['end_turn', 'tool_use', 'max_tokens']);
 
@@ -50,7 +52,10 @@ function abortIfNeeded(signal) {
  */
 export async function query({
   messages = [], input, signal, model, tools, maxTurns,
-  executeTool, emit, canStartToolDuringStream, compactContext,
+  executeTool, emit, canStartToolDuringStream, compactContext, getPostToolStop,
+  getToolHookContext, getToolNativeMessages,
+  getPendingTaskNotifications, onTaskNotificationsCommitted,
+  initialToolUseContext, onCommittedToolUseContext, onSessionCheckpoint,
 } = {}) {
   if (!Array.isArray(messages)) throw new TypeError('messages must be an array.');
   if (messages.some(message => !isRecord(message))) {
@@ -74,6 +79,28 @@ export async function query({
   if (compactContext !== undefined && typeof compactContext !== 'function') {
     throw new TypeError('compactContext must be a function.');
   }
+  if (getToolHookContext !== undefined && typeof getToolHookContext !== 'function') {
+    throw new TypeError('getToolHookContext must be a function.');
+  }
+  if (getToolNativeMessages !== undefined && typeof getToolNativeMessages !== 'function') {
+    throw new TypeError('getToolNativeMessages must be a function.');
+  }
+  if (getPendingTaskNotifications !== undefined &&
+      typeof getPendingTaskNotifications !== 'function')
+    throw new TypeError('getPendingTaskNotifications must be a function.');
+  if (onTaskNotificationsCommitted !== undefined &&
+      typeof onTaskNotificationsCommitted !== 'function')
+    throw new TypeError('onTaskNotificationsCommitted must be a function.');
+  if (getPostToolStop !== undefined && typeof getPostToolStop !== 'function') {
+    throw new TypeError('getPostToolStop must be a function.');
+  }
+  if (onSessionCheckpoint !== undefined && typeof onSessionCheckpoint !== 'function') {
+    throw new TypeError('onSessionCheckpoint must be a function.');
+  }
+  if (onCommittedToolUseContext !== undefined &&
+      typeof onCommittedToolUseContext !== 'function') {
+    throw new TypeError('onCommittedToolUseContext must be a function.');
+  }
   if (!Number.isSafeInteger(maxTurns) || maxTurns < 1) {
     throw new RangeError('maxTurns must be a positive safe integer.');
   }
@@ -89,9 +116,46 @@ export async function query({
       // A single error cannot recursively start an unbounded model/compact
       // retry chain. A new successful tool turn may have one fresh chance.
       let recoveredTurn = 0;
+      // Original query.ts ~1402 propagates update.newContext back into the
+      // next query iteration. The source tool scheduler already owns the
+      // modifier; retain its resulting state across model rounds rather than
+      // reinitializing an empty ToolUseContext for every assistant turn.
+      let sourceToolUseContext = initialToolUseContext;
       while (true) {
         let { messages: history, turnCount: turn } = state;
         abortIfNeeded(signal);
+        // Original enqueuePendingNotification(mode:'task-notification') is
+        // drained into the NEXT provider request, never injected into an
+        // already-running SSE response. Commit the genuine native message
+        // before telling LocalShellTask it has been delivered: a later
+        // model transport failure must not lose the completed task notice.
+        if (getPendingTaskNotifications) {
+          const pending=await getPendingTaskNotifications();
+          abortIfNeeded(signal);
+          if(!Array.isArray(pending) || pending.some(item=>
+            !item || typeof item.taskId!=='string' ||
+            typeof item.text!=='string' ||
+            !item.text.startsWith('<task_notification>\n'))) {
+            throw new ModelProtocolError('LocalShellTask returned malformed notifications.');
+          }
+          if(pending.length) {
+            const notification={
+              role:'user',content:pending.map(item=>({type:'text',text:item.text})),
+            };
+            const nextHistory=[...history,notification];
+            await onSessionCheckpoint?.({
+              messages:structuredClone(nextHistory),kind:'task_notification',
+            });
+            // Once fsync succeeds, acknowledge this EXACT notification
+            // before inspecting a racing AbortSignal. Otherwise the
+            // in-memory task queue could deliver the already committed
+            // notice a second time during the next interactive prompt.
+            history=nextHistory;
+            state.messages=history;
+            await onTaskNotificationsCommitted?.(pending.map(item=>item.taskId));
+            abortIfNeeded(signal);
+          }
+        }
         // Original 2.1.88 query.ts performs microcompact/autocompact before
         // each model call. Our Node subset only summarizes fully completed
         // API rounds. No tool starts until this transaction has succeeded.
@@ -106,6 +170,9 @@ export async function query({
             if (result.compacted) {
               history = structuredClone(result.messages);
               state.messages = history;
+              // Old Session persists a completed context transition before
+              // another model request. A failed disk write stops the query.
+              await onSessionCheckpoint?.({ messages: structuredClone(history), kind: 'compact' });
               emit('contextCompacted', {
                 turn, beforeCount: before.length, afterCount: history.length,
                 estimatedTokens: result.estimatedTokens,
@@ -125,6 +192,7 @@ export async function query({
         const content = [];
         const toolUses = [];
         let stopReason;
+        let lastUsage;
         let messageEnded = false;
         let sawStreamEvent = false;
         // Original 2.1.88 query.ts starts its StreamingToolExecutor before
@@ -135,9 +203,16 @@ export async function query({
         let scheduledCount = 0;
         let deferredBarrier = false;
         const executor = new StreamingToolExecutor({
+          initialContext: sourceToolUseContext,
           getTool: name => tools.get(name),
           signal,
-          execute: (block, { signal: toolSignal }) =>
+          // Original executor handles unknown tools before runToolUse dispatch.
+          onUnknownTool: unknown => {
+            emit('toolCallFinished', {
+              turn, toolUseId: unknown.id, toolName: unknown.name, isError: true,
+            });
+          },
+          execute: (block, { signal: toolSignal, toolUseContext: sourceToolUseContext }) =>
             runToolUse(
               block,
               assistantMessage,
@@ -146,6 +221,7 @@ export async function query({
                   history, turn, signal: verifiedSignal,
                   validatedTool, validatorContext: toolUseContext,
                   assistantMessage, onToolProgress,
+                  sourceToolUseContext,
                   speculative: earlyIds.has(block.id),
                 }),
               {
@@ -168,7 +244,7 @@ export async function query({
 
         try {
           const stream = model.stream({
-            messages: structuredClone(history),
+            messages: normalizeMessagesForAPI(history),
             tools: tools.describe(),
             signal,
             turn,
@@ -249,6 +325,11 @@ export async function query({
               stopReason = reason;
               messageEnded = true;
             } else if (event.type === 'usage') {
+              if (event.usage && typeof event.usage === 'object' && !Array.isArray(event.usage)) {
+                // The SSE adapter emits evolving snapshots. Keep only the
+                // last complete response snapshot; never add deltas together.
+                lastUsage = structuredClone(event.usage);
+              }
               emit('usage', { turn, usage: event.usage });
             } else {
               throw new ModelProtocolError('Unsupported model stream event: ' + event.type);
@@ -262,6 +343,11 @@ export async function query({
           // Discard speculative results and abort in-flight read/search tasks.
           // No Write/Edit/Bash has been admitted before message_end.
           executor.discard();
+          // Discard prevents new speculative tools and aborts their signal,
+          // but original running generators still own real file handles.
+          // Do not report the model failure until those already-started
+          // tools have finished their abort/close cleanup.
+          await executor.awaitInFlightCleanup();
           // Preserve the old Query observable cancellation contract: emit
           // modelError exactly once before propagating AbortError.
           if (signal?.aborted) {
@@ -282,6 +368,7 @@ export async function query({
               abortIfNeeded(signal);
               if (compacted?.compacted && Array.isArray(compacted.messages)) {
                 const recovered = structuredClone(compacted.messages);
+                await onSessionCheckpoint?.({ messages: structuredClone(recovered), kind: 'compact' });
                 state.messages = recovered;
                 emit('contextCompacted', {
                   turn, reason: 'prompt_too_long',
@@ -312,15 +399,36 @@ export async function query({
         const needsFollowUp = toolUses.length > 0;
 
         assistantMessage.stop_reason = stopReason;
+        if (hasCompleteApiUsage(lastUsage)) {
+          assistantMessage.usage = lastUsage;
+        }
         history.push(assistantMessage);
         emit('assistantMessage', { turn, message: structuredClone(assistantMessage) });
 
+        if (needsFollowUp) {
+          // Original 2.1.88 Query yields its complete assistant tool_use
+          // message before tool_result; insertMessageChain persists that
+          // assistant UUID independently. Do this before admitting deferred
+          // side-effecting tools so a crash cannot silently replay them.
+          try {
+            await onSessionCheckpoint?.({
+              messages:structuredClone(history),kind:'tool_pending',
+            });
+          } catch(error) {
+            executor.discard();
+            await executor.awaitInFlightCleanup();
+            throw error;
+          }
+        }
         if (!needsFollowUp) {
           const result = {
             messages: history, turns: turn,
             stopReason: stopReason === 'tool_use' ? 'end_turn' : stopReason,
             finalMessage: assistantMessage,
           };
+          // Fully completed text turns also advance the resumable transcript.
+          // Incomplete SSE text never reaches this commit boundary.
+          await onSessionCheckpoint?.({ messages: structuredClone(history), kind: 'finished' });
           emit('turnFinished', { turn, stopReason, toolResultCount: 0 });
           emit('finished', result);
           return result;
@@ -333,6 +441,7 @@ export async function query({
           executor.addTool(toolUse);
         }
         const toolResults = [];
+        let finalToolBlocks;
         try {
           for await (const update of executor.getRemainingResults()) {
             abortIfNeeded(signal);
@@ -340,32 +449,144 @@ export async function query({
             if (update.message) {
               const blocks = update.message.content;
               if (!Array.isArray(blocks)) throw new ModelProtocolError('Legacy scheduler emitted an invalid tool result.');
+              // Original toolExecution.ts adds permission acceptFeedback and
+              // contentBlocks to the same user message after its tool_result.
+              // Keep tool IDs authenticated and keep all result blocks
+              // together before ancillary user content for Anthropic/OpenAI.
+              let sawToolResult = false;
+              const completeBlocks = [];
               for (const block of blocks) {
-                if (block?.type !== 'tool_result') {
+                if (block?.type === 'tool_result') {
+                  if (sawToolResult) throw new ModelProtocolError(
+                    'Tool execution emitted multiple results for one tool_use.');
+                  sawToolResult = true;
+                  const expected=toolUses[toolResults.length];
+                  if(!expected || block.tool_use_id!==expected.id) {
+                    throw new ModelProtocolError('Tool result does not match the ordered assistant tool_use.');
+                  }
+                  toolResults.push(block);
+                } else if ((block?.type === 'text' && typeof block.text === 'string') ||
+                           (block?.type === 'image' && block.source?.type === 'base64')) {
+                  if (!sawToolResult) throw new ModelProtocolError(
+                    'Permission content must follow its tool_result.');
+                } else {
                   throw new ModelProtocolError('Legacy scheduler emitted an unexpected message.');
                 }
-                toolResults.push(block);
+                completeBlocks.push(block);
+              }
+              if(!sawToolResult)throw new ModelProtocolError('Tool update has no tool_result.');
+              if(toolResults.length<toolUses.length) {
+                // Original 2.1.88 Query yields each complete tool_result;
+                // sessionStorage.insertMessageChain() enqueues it before
+                // waiting for the next sibling. Never lose a successful
+                // Write/Bash result because a later tool hangs or aborts.
+                history.push({role:'user',content:structuredClone(completeBlocks)});
+                await onSessionCheckpoint?.({
+                  messages:structuredClone(history),kind:'tool_partial',
+                });
+              } else {
+                // Wait until original Hook/native attachment normalization
+                // finishes before closing the last tool user message.
+                finalToolBlocks=completeBlocks;
               }
             }
           }
         } catch (error) {
           executor.discard();
+          await executor.awaitInFlightCleanup();
           throw error;
         }
         abortIfNeeded(signal);
         if (toolResults.length !== toolUses.length) {
           throw new ModelProtocolError('Legacy scheduler returned a mismatched number of tool results.');
         }
-        history.push({ role: 'user', content: toolResults });
+        // Original query.ts consumes update.newContext after tool execution,
+        // not at the start of the next model stream. Do this only after the
+        // entire authenticated tool batch is complete; aborted or discarded
+        // rounds cannot commit a partial tool-owned context transition.
+        sourceToolUseContext = executor.getUpdatedContext();
+        // 2.1.88 query.ts: after toolUpdates have all finished, normalize
+        // Hook attachments for API and merge with the tool-result user turn.
+        // Never interleave user messages with a partially collected batch.
+        // The source-normalized transport merges adjacent tool_result user
+        // messages and moves results before ancillary text/image blocks.
+        if(!finalToolBlocks) {
+          throw new ModelProtocolError('Legacy scheduler omitted its final tool result.');
+        }
+        let hookContext, nativeNewBlocks;
+        try {
+          hookContext = getToolHookContext
+            ? await getToolHookContext({ toolUses, turn, signal })
+            : [];
+          abortIfNeeded(signal);
+          if (!Array.isArray(hookContext) ||
+              hookContext.some(block =>
+                !block || block.type !== 'text' || typeof block.text !== 'string')) {
+            throw new ModelProtocolError('Original Hook normalization returned invalid API blocks.');
+          }
+          // Old 2.1.88 checkPermissionsAndCallTool() emits tool_result before
+          // the following Hook / native newMessages. The normal success path
+          // retains the original API projection and attachment order.
+          nativeNewBlocks = getToolNativeMessages
+            ? await getToolNativeMessages({ toolUses, turn, signal }) : [];
+          abortIfNeeded(signal);
+          if (!Array.isArray(nativeNewBlocks) || nativeNewBlocks.some(b =>
+            !b || !(b.type === 'text' && typeof b.text === 'string') &&
+            !(b.type === 'image' && b.source?.type === 'base64'))) {
+            throw new ModelProtocolError('Original tool newMessages normalization returned invalid API blocks.');
+          }
+        } catch(error) {
+          // Result mapping and original PostToolUse execution have already
+          // completed at this point. A failed AFTER-TOOL attachment
+          // normalization must not erase the final result of a Write/Bash.
+          // Preserve the fully paired result using the ordinary incremental
+          // source UUID chain. The tool_uncertain fence deliberately blocks
+          // automatic resume: failed Hook/native context must be reviewed,
+          // not silently dropped from a live model continuation.
+          history.push({role:'user',content:structuredClone(finalToolBlocks)});
+          await onSessionCheckpoint?.({
+            messages:structuredClone(history),kind:'tool_uncertain',
+          });
+          throw error;
+        }
+        history.push({role:'user',content:[
+          ...finalToolBlocks,...hookContext,...nativeNewBlocks,
+        ]});
         // A complete assistant tool call and all matching tool_result blocks
         // form a resumable checkpoint. This is the headless CLI equivalent of
         // the 2.1.88 query.ts stream exposing committed messages before a
         // later API failure. Never checkpoint partial streams or tool batches.
+        // Durable tool result checkpoint must finish BEFORE the next model
+        // request. This prevents replaying a completed Write/Bash on a later
+        // model transport failure or process restart.
+        await onSessionCheckpoint?.({ messages: structuredClone(history), kind: 'tool' });
         emit('turnFinished', {
           turn, stopReason, toolResultCount: toolResults.length,
           committedMessages: structuredClone(history),
         });
+        // The original REPL owns ToolUseContext across calls to query().
+        // This callback belongs to the same completed tool transaction;
+        // never transfer state from a partial/failed tool batch.
+        onCommittedToolUseContext?.({
+          messages: history,
+          toolUseContext: sourceToolUseContext,
+          turn,
+        });
 
+        // The original PostToolUse generator emits hook_stopped_continuation
+        // when JSON {continue:false} is returned. The Node headless Query
+        // must honor it after the completed tool_result checkpoint, rather
+        // than accidentally requesting another model round.
+        const postToolStop = getPostToolStop?.();
+        if (typeof postToolStop === 'string' && postToolStop) {
+          const result = {
+            messages: history, turns: turn, stopReason: 'hook_stopped',
+            stopMessage: postToolStop, finalMessage: assistantMessage,
+          };
+          emit('hookStopped', { turn, reason: postToolStop });
+          emit('finished', result);
+          return result;
+        }
         if (turn === maxTurns) {
           const result = { messages: history, turns: turn, stopReason: 'max_turns', finalMessage: assistantMessage };
           emit('finished', result);
