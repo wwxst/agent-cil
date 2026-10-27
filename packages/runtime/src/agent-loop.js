@@ -794,6 +794,11 @@ export class AgentLoop extends EventEmitter {
         nativeToolUseContext: sourceToolUseContext,
         canUseNestedTool,
         userModified: userModified || decision?.userModified === true,
+        // Only the real CLI's durably recorded tool_started transition
+        // can assert that a fulfilled call with no usable result is unsafe
+        // to replay. Standalone Runtime keeps the 2.1.88 error-result flow.
+        throwOnUnfinalizedToolResult: !speculative &&
+          typeof this.#onToolExecutionStart === 'function',
         onToolNewMessages: async ({sourceMessages, blocks}) => {
           const event = {
             turn, toolUseId: toolUse.id, toolName: tool.name,
@@ -866,7 +871,8 @@ export class AgentLoop extends EventEmitter {
       // Preserve the source assistant/tool_started journal and fence model
       // continuation even when AbortSignal was set during the OS cleanup.
       if(error?.name==='ProcessTreeCleanupError' ||
-          error?.name==='TaskOutputPersistenceError') {
+          error?.name==='TaskOutputPersistenceError' ||
+          error?.name==='ToolResultFinalizationError') {
         this.#mappedWitnessFailure=error;
         this.emit('toolCallFinished',{
           turn,toolUseId:toolUse.id,toolName:tool.name,
