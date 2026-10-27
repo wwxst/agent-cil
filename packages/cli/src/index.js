@@ -44,7 +44,8 @@ export const HELP = [
   '      --max-turns <n>     Maximum model rounds per prompt (default: 8)',
   '      --compact-threshold <n>  Auto-compact above approximate input tokens (0 disables)',
   '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
-  '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
+  '      --allow-edits       Alias for --permission-mode acceptEdits',
+  '      --permission-mode <mode>  default, acceptEdits, or plan (read-only)',
   '      --allowedTools <name>    Allow tool or literal Bash(command), repeatable',
   '      --disallowedTools <name> Deny tool or Bash(command/prefix/wildcard), repeatable',
   '      --askTools <name>        Ask tool or Bash(command/prefix/wildcard), repeatable',
@@ -100,6 +101,7 @@ export function parseArgs(argv) {
     compactThreshold: undefined,
     maxRetries: 2,
     allowEdits: false,
+    permissionMode: undefined,
     permissionRules: { allow: [], deny: [], ask: [] },
     hooksFile: undefined,
     sessionId: undefined,
@@ -127,6 +129,15 @@ export function parseArgs(argv) {
       options.print = true;
     } else if (arg === '--allow-edits') {
       options.allowEdits = true;
+    } else if (arg === '--permission-mode' || arg.startsWith('--permission-mode=')) {
+      const mode = arg === '--permission-mode' ? takeValue(arg, i++) : arg.slice('--permission-mode='.length);
+      // Match the original PermissionMode / PermissionUpdate vocabulary.
+      // This headless CLI intentionally does not expose bypassPermissions,
+      // auto or dontAsk until the corresponding source security flow exists.
+      if (!['default','acceptEdits','plan'].includes(mode)) {
+        throw new CliArgumentError('--permission-mode must be default, acceptEdits, or plan.');
+      }
+      options.permissionMode = mode;
     } else if (['--allowedTools', '--disallowedTools', '--askTools'].some(
       flag => arg === flag || arg.startsWith(flag + '=')
     )) {
@@ -227,6 +238,11 @@ export function parseArgs(argv) {
     }
   }
 
+  if (options.allowEdits && options.permissionMode !== undefined &&
+      options.permissionMode !== 'acceptEdits') {
+    throw new CliArgumentError('--allow-edits cannot be combined with a different --permission-mode.');
+  }
+  options.permissionMode ??= options.allowEdits ? 'acceptEdits' : 'default';
   if (options.sessionId && options.resume) {
     throw new CliArgumentError('--session-id and --resume cannot be used together.');
   }
@@ -289,8 +305,15 @@ async function assertPathWithinWorkspace(workspace, target) {
  * Additional rule persistence stays disabled until the original dependency
  * closure is runnable and independently verified.
  */
-export function createCliPermissionContext({ allowEdits = false, permissionRules = {} } = {}) {
-  const updates = allowEdits ? [{ type: 'setMode', destination: 'cliArg', mode: 'acceptEdits' }] : [];
+export function createCliPermissionContext({ allowEdits = false, permissionMode, permissionRules = {} } = {}) {
+  const mode = permissionMode ?? (allowEdits ? 'acceptEdits' : 'default');
+  if (!['default','acceptEdits','plan'].includes(mode) ||
+      (allowEdits && mode !== 'acceptEdits')) {
+    throw new TypeError('Unsupported or conflicting original CLI permission mode.');
+  }
+  // Reuse the original 2.1.88 PermissionUpdate setMode path rather than a
+  // second allow/edit policy flag or a self-built permission engine.
+  const updates = [{ type: 'setMode', destination: 'cliArg', mode }];
   for (const behavior of ['allow', 'deny', 'ask']) {
     const rules = permissionRules[behavior] || [];
     if (rules.length) updates.push({ type: 'addRules', destination: 'cliArg', behavior, rules });
@@ -312,6 +335,15 @@ export function createCliPermissionPolicy({
 } = {}) {
   const root = resolve(workspace);
   const policy = async ({ name, input } = {}) => {
+    // Original plan mode is non-mutating. Until the 2.1.88 Bash AST and
+    // Plan/ExitPlan tools are ported, reject *all* shell commands: we
+    // cannot safely guess which commands or wrappers are read-only.
+    // A whole-tool --allowedTools rule or a PreToolUse allow is not a
+    // license to mutate the workspace while plan mode is selected.
+    if (permissionContext.mode === 'plan' &&
+        ['Write','Edit','Bash','TaskStop'].includes(name)) {
+      return {behavior:'deny',reason:'Plan mode does not authorize workspace or process mutations.'};
+    }
     if (name === 'Glob') {
       const pattern = typeof input?.pattern === 'string' ? input.pattern.replaceAll(BACKSLASH, '/') : '';
       if (!pattern || pattern.startsWith('/') || pattern.split('/').includes('..')) {
@@ -1405,7 +1437,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     });
   }
   const permissionContext = createCliPermissionContext({
-    allowEdits: options.allowEdits, permissionRules: options.permissionRules,
+    allowEdits: options.allowEdits,
+    permissionMode: options.permissionMode,
+    permissionRules: options.permissionRules,
   });
   let toolHooks = { PreToolUse: [], PostToolUse: [], PostToolUseFailure: [] };
   if (options.hooksFile) {
