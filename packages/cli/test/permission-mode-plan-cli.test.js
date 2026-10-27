@@ -10,8 +10,9 @@ import {parseArgs,createCliPermissionContext,createCliPermissionPolicy} from '..
 
 const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js',import.meta.url));
-const frame=(type,data={})=>'event: '+type+'\\ndata: '+
-  JSON.stringify({type,...data})+'\\n\\n';
+const LF=String.fromCharCode(10);
+const frame=(type,data={})=>'event: '+type+LF+'data: '+
+  JSON.stringify({type,...data})+LF+LF;
 function toolStream(id,name,input){
   return frame('message_start',{message:{usage:{input_tokens:13}}})+
     frame('content_block_start',{index:0,content_block:{
@@ -60,7 +61,7 @@ test('source PermissionUpdate CLI option selects all three modes, rejects contra
 async function runRealCliMode(mode){
   const root=await mkdtemp(join(tmpdir(),'agent-source-mode-real-'));
   const requests=[];
-  const command='node -e "require(\\'node:fs\\').writeFileSync(\\'shell-effect.txt\\',\\'bad\\')"';
+  const command='node should-never-execute.cjs';
   const steps=mode==='plan'
     ? [
       ['source-read','Read',{file_path:'existing.txt'}],
@@ -79,6 +80,8 @@ async function runRealCliMode(mode){
   let child,watchdog;
   try{
     await writeFile(join(root,'existing.txt'),'original never replaced');
+    await writeFile(join(root,'should-never-execute.cjs'),
+      "require('node:fs').writeFileSync('shell-effect.txt','should never run');");
     await writeFile(join(root,'allow-hook.cjs'),
       "let data='';process.stdin.on('data',x=>data+=x);"+
       "process.stdin.on('end',()=>{const input=JSON.parse(data);"+
