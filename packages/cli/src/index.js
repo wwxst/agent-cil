@@ -1311,11 +1311,8 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       },
       additionalProperties:false,
     },
-    execute:async({task_id,shell_id},{markSideEffectsStarted}={})=>{
-      // Stopping a session-owned task is a process-tree side effect.
-      markSideEffectsStarted?.();
-      return manager.stopTask(task_id??shell_id);
-    },
+    execute:async({task_id,shell_id},{markSideEffectsStarted}={})=>
+      manager.stopTask(task_id??shell_id,{markSideEffectsStarted}),
   });
 
   return tools;
