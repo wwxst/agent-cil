@@ -156,13 +156,16 @@ export class LocalShellTaskManager {
     };
   }
 
-  async stopTask(taskId) {
+  async stopTask(taskId, {markSideEffectsStarted}={}) {
     const task=this.#tasks.get(taskId);
     if(!task)throw new Error('No task found with ID: '+taskId);
     if(task.status!=='running')
       throw new Error('Task '+taskId+' is not running (status: '+task.status+').');
     // Preserve the original killTask state transition while awaiting the
     // existing ShellCommand process-tree cleanup (important on Windows).
+    // An unknown/already-stopped ID is a recoverable tool error; only an
+    // actual request to kill a live process crosses the mutation boundary.
+    markSideEffectsStarted?.();
     await task.kill();
     try{await task.completion;}catch{}
     task.status='killed';
