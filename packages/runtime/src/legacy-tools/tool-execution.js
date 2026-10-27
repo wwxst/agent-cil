@@ -250,6 +250,11 @@ export async function invokeToolCallAndMapResult(tool, input, {
   // enabled ONLY when the CLI has first fsynced its tool_started witness.
   // Keep standalone source Tool execution error behavior unchanged.
   let toolCallFulfilled = false;
+  let sideEffectsStarted = false;
+  // The owning CLI already fsynced tool_started. A tool can now signal the
+  // precise start of a potentially partial workspace/process mutation; this
+  // is NOT another permission grant, scheduler, or on-disk checkpoint.
+  const markSideEffectsStarted = () => { sideEffectsStarted = true; };
   try {
   if (typeof tool.call === 'function') {
     if (typeof tool.mapToolResultToToolResultBlockParam !== 'function') {
@@ -270,6 +275,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
         // by the previous exclusive tool's original contextModifier.
         ...(nativeToolUseContext || {}),
         toolUseId, signal, messages: structuredClone(messages),
+        markSideEffectsStarted,
         userModified: userModified === true,
       },
       nestedCanUseTool,
@@ -312,6 +318,7 @@ export async function invokeToolCallAndMapResult(tool, input, {
     }
     const output = await tool.execute(structuredClone(input), {
       toolUseId, signal, messages: structuredClone(messages),
+      markSideEffectsStarted,
     });
     toolCallFulfilled = true;
     if (signal?.aborted) throw cancelledToolCall(signal);
@@ -368,12 +375,14 @@ export async function invokeToolCallAndMapResult(tool, input, {
     // that throws here must not turn an already-successful file edit into a
     // normal provider-visible retryable tool failure.
     // Preserve OS/output-persistence typed fatal failures unchanged.
-    if (throwOnUnfinalizedToolResult && toolCallFulfilled &&
-        !signal?.aborted &&
+    if (throwOnUnfinalizedToolResult &&
+        (toolCallFulfilled || sideEffectsStarted) &&
         !['ProcessTreeCleanupError', 'TaskOutputPersistenceError',
           'ToolResultFinalizationError'].includes(error?.name)) {
       const failure = new Error(
-        'Tool.call completed but its result could not be finalized/published; ' +
+        (toolCallFulfilled
+          ? 'Tool.call completed but its result could not be finalized/published; '
+          : 'Tool execution entered a side-effecting operation before failing; ') +
         'inspect side effects before retrying: ' +
         (error instanceof Error ? error.message : String(error)),
         { cause: error },
