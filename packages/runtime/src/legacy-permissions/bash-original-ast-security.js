@@ -48,11 +48,17 @@ async function loadSourceAst() {
   const security=moduleUrl(stripTypeScriptTypes(ast,{mode:'strip'}));
   return import(security);
 }
-export async function parseOriginalBashForSecurity(command) {
+export async function assessOriginalBashSecurity(command) {
   try {
     cachedSourceAst??=loadSourceAst();
-    const { parseForSecurity }=await cachedSourceAst;
-    return await parseForSecurity(command);
+    const { parseForSecurity, checkSemantics }=await cachedSourceAst;
+    const parsed=await parseForSecurity(command);
+    if(parsed.kind!=='simple')return parsed;
+    const semantics=checkSemantics(parsed.commands);
+    return semantics.ok?parsed:{
+      kind:'too-complex',
+      reason:semantics.reason,
+    };
   }catch(error){
     // The ORIGINAL too-complex result is a hard stop for automatic
     // authorization; a loader/parsing fault must never be an allow.
@@ -64,3 +70,5 @@ export async function parseOriginalBashForSecurity(command) {
     };
   }
 }
+
+export const parseOriginalBashForSecurity=assessOriginalBashSecurity;
