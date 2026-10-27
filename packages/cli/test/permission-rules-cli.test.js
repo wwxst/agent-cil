@@ -410,8 +410,8 @@ test('packed CLI Bash permission chain: exact allow, deny, ask, whole ask, unmat
       '--allowedTools','Bash', '--disallowedTools','Bash(node:*)',
     ], 'echo harmless && ' + forbidden);
     assert.equal(compounded.is_error,true);
-    assert.match(compounded.content, /Interactive approval is unavailable/,
-      'compound with unported AST must fall back to ask, not pretend to match a deny');
+    assert.match(compounded.content, /has been denied/,
+      'source 2.1.88 AST now finds denied node:* in each verified compound subcommand');
     await assert.rejects(stat(join(root,'blocked.txt')), /ENOENT/);
 
     const interleaved = await scenario([
