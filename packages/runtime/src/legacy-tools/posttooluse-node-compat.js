@@ -111,10 +111,18 @@ async function* executeConfiguredPostHooks(
         }) };
       })
   );
-  for (const pending of outcomes) {
-    const outcome = await pending;
-    yield outcome;
-    if (signal?.aborted) return;
+  try {
+    for (const pending of outcomes) {
+      const outcome = await pending;
+      yield outcome;
+      if (signal?.aborted) return;
+    }
+  } finally {
+    // The old executor launches matching Hook commands concurrently.
+    // When cancellation stops the result generator, all already-launched
+    // commands must finish their process-tree abort/close before the CLI
+    // can release the session lock or begin another user prompt.
+    if (signal?.aborted) await Promise.allSettled(outcomes);
   }
 }
 
