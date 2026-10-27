@@ -343,6 +343,11 @@ export async function query({
           // Discard speculative results and abort in-flight read/search tasks.
           // No Write/Edit/Bash has been admitted before message_end.
           executor.discard();
+          // Discard prevents new speculative tools and aborts their signal,
+          // but original running generators still own real file handles.
+          // Do not report the model failure until those already-started
+          // tools have finished their abort/close cleanup.
+          await executor.awaitInFlightCleanup();
           // Preserve the old Query observable cancellation contract: emit
           // modelError exactly once before propagating AbortError.
           if (signal?.aborted) {
@@ -411,6 +416,7 @@ export async function query({
             });
           } catch(error) {
             executor.discard();
+            await executor.awaitInFlightCleanup();
             throw error;
           }
         }
@@ -487,6 +493,7 @@ export async function query({
           }
         } catch (error) {
           executor.discard();
+          await executor.awaitInFlightCleanup();
           throw error;
         }
         abortIfNeeded(signal);
