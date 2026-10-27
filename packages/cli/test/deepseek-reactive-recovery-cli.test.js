@@ -21,7 +21,7 @@ function toolStream(n) {
   const useEdit = n === 3, id = (useEdit ? 'edit-' : 'read-') + n;
   const input = useEdit
     ? { file_path: 'math.cjs', old_string: 'a - b', new_string: 'a + b' }
-    : { file_path: 'notes.txt' };
+    : { file_path: n === 2 ? 'math.cjs' : 'notes.txt' };
   return start() +
     frame('content_block_start', { index: 0,
       content_block: { type: 'thinking', thinking: '', signature: '' } }) +
@@ -102,6 +102,9 @@ test('installed DeepSeek CLI: 3 tools incl Edit, context 400, summary and one sa
     assert.deepEqual(requests[3].tools?.map(t => t.name), requests[0].tools?.map(t => t.name));
     assert.equal(requests[4].tools, undefined, 'compaction never grants model tools');
     assert.match(requests[5].messages[0].content, /Earlier project Read was completed/);
+    // The second source Read now opens the actual file being edited,
+    // satisfying FileEditTool's original pre-edit readFileState contract.
+    assert.equal(requests[2].messages.at(-1).content[0].tool_use_id,'read-2');
     assert.equal(requests[5].messages[1].content[0].signature, 'sig-2');
     assert.equal(requests[5].messages[3].content[0].signature, 'sig-3');
     assert.equal(requests[5].messages[3].content[1].id, 'edit-3');
