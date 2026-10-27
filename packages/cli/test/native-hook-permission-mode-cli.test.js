@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
-import {mkdtemp,readFile,writeFile,rm,realpath} from 'node:fs/promises';
+import {mkdtemp,readFile,writeFile,rm,realpath,mkdir,stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
@@ -33,7 +33,7 @@ function answerStream(){
     frame('message_stop');
 }
 
-async function checkMode({allowEdits}){
+async function checkMode({allowEdits,failTool=false}){
   const root=await mkdtemp(join(tmpdir(),'agent-cil-hook-mode-'));
   const requests=[];
   const server=createServer(async(req,res)=>{
@@ -67,7 +67,13 @@ async function checkMode({allowEdits}){
       PostToolUse:[{matcher:'Write',hooks:[{
         type:'command',command:'node mode-hook.cjs',timeout:8,
       }]}],
+      PostToolUseFailure:[{matcher:'Write',hooks:[{
+        type:'command',command:'node mode-hook.cjs',timeout:8,
+      }]}],
     }}));
+    // A directory instead of the target file guarantees a real native Write
+    // error AFTER tool_started and exercises source PostToolUseFailure.
+    if(failTool)await mkdir(join(root,'mode-probe.txt'));
     await new Promise((resolve,reject)=>{
       server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
     });
@@ -93,15 +99,17 @@ async function checkMode({allowEdits}){
     assert.equal(signal,null,output);
     assert.equal(code,0,output);
     assert.equal(requests.length,2,output);
-    assert.equal(await readFile(join(root,'mode-probe.txt'),'utf8'),
+    if(failTool)assert.equal((await stat(join(root,'mode-probe.txt'))).isDirectory(),true);
+    else assert.equal(await readFile(join(root,'mode-probe.txt'),'utf8'),
       'written by CLI');
     const rows=(await readFile(join(root,'hook-modes.jsonl'),'utf8'))
       .trim().split('\n').map(JSON.parse);
-    assert.equal(rows.length,2,'both PreToolUse and PostToolUse must actually run');
+    assert.equal(rows.length,2,'PreToolUse and terminal original Hook must actually run');
     const session=output.match(/\\[session\\] ([0-9a-f-]{36}) created/);
     assert.ok(session,'CLI must announce an actual created SessionJournal');
     const canonical=await realpath(root);
-    for(const [index,event] of ['PreToolUse','PostToolUse'].entries()) {
+    const expectedEvents=['PreToolUse',failTool?'PostToolUseFailure':'PostToolUse'];
+    for(const [index,event] of expectedEvents.entries()) {
       const row=rows[index];
       assert.equal(row.event,event);
       assert.equal(row.mode,allowEdits?'acceptEdits':'default');
@@ -118,8 +126,16 @@ async function checkMode({allowEdits}){
       'PreToolUse fires before starting the actual tool');
     assert.ok(rows[1].checkpointKinds.includes('tool_started'),
       'PostToolUse fires after the tool started witness was committed');
-    assert.ok(rows[1].checkpointKinds.includes('tool_mapped'),
-      'PostToolUse must see its mapped result recovery witness before it runs');
+    if(failTool) {
+      assert.equal(rows[1].checkpointKinds.includes('tool_mapped'),false,
+        'native execution errors have no successful mapped-result witness');
+      const returned=requests[1].messages.at(-1).content[0];
+      assert.equal(returned.is_error,true,
+        'failed tool result must remain error in real provider continuation');
+    }else{
+      assert.ok(rows[1].checkpointKinds.includes('tool_mapped'),
+        'PostToolUse must see its mapped result recovery witness before it runs');
+    }
   }finally{
     if(timer)clearTimeout(timer);
     if(child&&child.exitCode===null&&!child.killed)child.kill('SIGKILL');
@@ -132,3 +148,5 @@ test('real CLI default permission mode is supplied to both original tool Hooks',
   {timeout:30000},async()=>checkMode({allowEdits:false}));
 test('real CLI acceptEdits mode reaches PreToolUse and PostToolUse without hardcoded default',
   {timeout:30000},async()=>checkMode({allowEdits:true}));
+test('real CLI native PostToolUseFailure sees same session and transcript on Write error',
+  {timeout:30000},async()=>checkMode({allowEdits:true,failTool:true}));
