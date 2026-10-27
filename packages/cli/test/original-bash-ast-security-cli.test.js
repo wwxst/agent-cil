@@ -133,6 +133,32 @@ async function testActualCli({command,flags,shouldFail}) {
     await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
   }
 }
+test('source checkSemanticsDeny keeps explicit subcommand DENY instead of downgrading it to ask',{
+  timeout:30000,
+},async()=>{
+  // 2.1.88 bashPermissions.ts:1774-1795 -> checkSemanticsDeny().
+  // Bash(echo:*) allow must not hide a denied eval/exec under the AST
+  // semantic rejection. This is a rule-denial contract, not a shell parser
+  // substitute or permission classifier.
+  const invalid=await parseOriginalBashForSecurity(
+    'echo harmless && eval "echo forbidden"');
+  assert.equal(invalid.kind,'too-complex',JSON.stringify(invalid));
+  assert.equal(invalid.semanticFailure,true,JSON.stringify(invalid));
+  assert.deepEqual(invalid.sourceCommands.map(x=>x.argv[0]),
+    ['echo','eval']);
+  const ctx=createCliPermissionContext({permissionRules:{
+    allow:[{toolName:'Bash'}],
+    deny:[{toolName:'Bash',ruleContent:'eval:*'}],
+    ask:[],
+  }});
+  const decision=await bashToolCheckAstPermission({
+    command:'echo harmless && eval "echo forbidden"',
+  },ctx);
+  assert.equal(decision.behavior,'deny',JSON.stringify(decision));
+  assert.equal(decision.decisionReason?.type,'rule');
+  assert.equal(decision.decisionReason?.rule?.ruleValue?.ruleContent,'eval:*');
+});
+
 test('packed real CLI: exact permitted Bash still executes with original AST preflight',{
   timeout:35000,
 },async()=>{
@@ -152,4 +178,16 @@ test('packed real CLI: whole Bash allow cannot bypass AST subcommand deny in com
     shouldFail:true,
   });
   assert.match(result.output,/denied|approval|requires/i);
+});
+
+test('packed real CLI: original semantic rejection still honors explicit eval prefix DENY',{
+  timeout:35000,
+},async()=>{
+  const result=await testActualCli({
+    command:'echo harmless && eval "echo forbidden"',
+    flags:['--allowedTools','Bash','--disallowedTools','Bash(eval:*)'],
+    shouldFail:true,
+  });
+  assert.match(result.output,/has been denied/,
+    'original semantic-deny rule must not downgrade to generic ask');
 });
