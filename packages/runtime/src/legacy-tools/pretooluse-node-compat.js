@@ -353,10 +353,15 @@ export async function* executePreToolHooks(toolName, toolUseID, toolInput,
       }) };
       const output = parseOriginalHookJSON(commandResult.stdout);
       return output || {};
-    }).catch(error => ({
-      blockingError: { blockingError: formatError(error) },
-      ...(signal?.aborted ? { preventContinuation: true } : {}),
-    })));
+    }).catch(error => {
+      if (error?.name === 'ProcessTreeCleanupError') {
+        toolUseContext.onProcessTreeCleanupFailure?.(error);
+      }
+      return {
+        blockingError: { blockingError: formatError(error) },
+        ...(signal?.aborted ? { preventContinuation: true } : {}),
+      };
+    }));
   // Original hooks.ts executeHooks aggregates all command decisions with
   // deny > ask > allow before emitting each permissionBehavior update.
   // The previous Node adapter yielded each raw hook result and incorrectly
