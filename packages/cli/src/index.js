@@ -1098,10 +1098,27 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
     execute: async ({ file_path, content }, { markSideEffectsStarted } = {}) => {
       const target = resolveWorkspacePath(root, file_path);
       await assertPathWithinWorkspace(root, target);
-      // mkdir can create some directories before a later path component
-      // fails. Mark this original Write operation before its first effect.
-      markSideEffectsStarted?.();
+      // Unlike a successful write, an already-existing directory cannot
+      // be opened as a regular file. The original CLI reports that as a
+      // recoverable PostToolUseFailure, not a poisoned user session.
+      // Probe before each actual mutation boundary. A missing parent can
+      // cause recursive mkdir to create some ancestors before failing.
+      try {
+        await stat(dirname(target));
+      } catch(error) {
+        if(error?.code !== 'ENOENT')throw error;
+        markSideEffectsStarted?.();
+      }
       await mkdir(dirname(target), { recursive: true });
+      let targetInfo;
+      try {
+        targetInfo=await lstat(target);
+      }catch(error){
+        if(error?.code !== 'ENOENT')throw error;
+      }
+      // O_CREAT may create the output file immediately; an existing
+      // directory instead fails before any bytes are written.
+      if(!targetInfo?.isDirectory())markSideEffectsStarted?.();
       const handle = await openWorkspaceFile(root, target, constants.O_WRONLY | constants.O_CREAT, 0o666);
       try {
         // Verify the opened inode immediately before modifying it. The descriptor pins
