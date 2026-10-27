@@ -11,6 +11,10 @@ import {parseOriginalBashForSecurity} from
 import {bashToolCheckAstPermission} from
   '../../runtime/src/legacy-permissions/bash-ast-permission.js';
 import {createCliPermissionContext,parseArgs} from '../src/index.js';
+import {isDangerousRemovalPath,filterOutFlags,checkDangerousRemovalPaths} from
+  '../../runtime/src/legacy-permissions/bash-original-dangerous-path.js';
+import {stripWrappersFromArgv} from
+  '../../runtime/src/legacy-permissions/generated/stripWrappers.js';
 
 const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js',import.meta.url));
@@ -159,6 +163,41 @@ test('source checkSemanticsDeny keeps explicit subcommand DENY instead of downgr
   assert.equal(decision.decisionReason?.rule?.ruleValue?.ruleContent,'eval:*');
 });
 
+
+test('pinned 2.1.88 BashTool pathValidation: rm/rmdir dangerous roots and -- flag paths',{
+  timeout:30000,
+},async()=>{
+  // Never actually execute destructive paths in tests.
+  for(const path of ['/', '/tmp', '/etc','C:\\\\','C:\\\\Windows']){
+    assert.equal(isDangerousRemovalPath(path),true,path);
+  }
+  assert.deepEqual(filterOutFlags(['-rf','--','-/../../etc','./a']),
+    ['-/../../etc','./a']);
+  assert.equal(checkDangerousRemovalPaths('rm',['-rf','/'],process.cwd()).behavior,'ask');
+  assert.equal(checkDangerousRemovalPaths('rm',['-rf','./safe'],process.cwd()).behavior,'passthrough');
+  assert.deepEqual(stripWrappersFromArgv(
+    ['timeout','5','env','KEY=ok','rm','-rf','/']),
+    ['rm','-rf','/']);
+  assert.deepEqual(stripWrappersFromArgv(
+    ['stdbuf','-o0','-eL','rm','-rf','/']),
+    ['rm','-rf','/']);
+  const context=createCliPermissionContext({permissionRules:{
+    allow:[{toolName:'Bash'},{toolName:'Bash',ruleContent:'rm -rf /'}],
+    deny:[],ask:[],
+  }});
+  for(const command of [
+    'rm -rf /','rmdir /','env KEY=ok rm -rf /',
+    'timeout 5 rm -rf /','echo ok && rm -rf /',
+  ]){
+    const result=await bashToolCheckAstPermission(
+      {command},context,{workspace:process.cwd()});
+    assert.notEqual(result.behavior,'allow',
+      'original path checks may not be bypassed by Bash allow: '+command);
+    assert.equal(result.behavior,'ask',
+      'dangerous removal requires manual approval: '+command);
+  }
+});
+
 test('packed real CLI: exact permitted Bash still executes with original AST preflight',{
   timeout:35000,
 },async()=>{
@@ -191,3 +230,18 @@ test('packed real CLI: original semantic rejection still honors explicit eval pr
   assert.match(result.output,/has been denied/,
     'original semantic-deny rule must not downgrade to generic ask');
 });
+
+if(process.platform!=='win32'){
+  test('packed CLI keeps Bash whole-tool allow but refuses original dangerous removal target',{
+    timeout:35000,
+  },async()=>{
+    // Real rm would see a nonexistent intermediate path even if the
+    // permission check regressed; the test must never risk a real deletion.
+    const result=await testActualCli({
+      command:'rm -rf ./missing-agent-cil-path/../..',
+      flags:['--allowedTools','Bash'],
+      shouldFail:true,
+    });
+    assert.match(result.output,/approval|requires|permission/i);
+  });
+}
