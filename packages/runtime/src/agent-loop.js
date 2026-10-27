@@ -98,6 +98,8 @@ export class AgentLoop extends EventEmitter {
   #mappedWitnessFailure;
   #requireCanUseTool;
   #permissionMode;
+  #hookSessionId;
+  #hookTranscriptPath;
   // Original REPL passes updatedToolUseContext and committed history into
   // each next query() invocation of the same interactive session.
   #committedSessionMessages;
@@ -123,6 +125,8 @@ export class AgentLoop extends EventEmitter {
     onTaskNotificationsCommitted,
     requireCanUseTool = false,
     permissionMode = 'default',
+    hookSessionId = '',
+    hookTranscriptPath = '',
   } = {}) {
     super();
     if (!model || typeof model.stream !== 'function') {
@@ -191,6 +195,16 @@ export class AgentLoop extends EventEmitter {
       throw new TypeError('Invalid source permission mode for Tool Hooks.');
     }
     this.#permissionMode = permissionMode;
+    // Original 2.1.88 createBaseHookInput() includes the authenticated
+    // session_id and the transcript path. These refer to the SAME journal
+    // as the active Query, not an invented second hook transcript.
+    if (typeof hookSessionId !== 'string' ||
+        typeof hookTranscriptPath !== 'string' ||
+        Boolean(hookSessionId) !== Boolean(hookTranscriptPath)) {
+      throw new TypeError('Hook session ID and transcript path must be paired strings.');
+    }
+    this.#hookSessionId = hookSessionId;
+    this.#hookTranscriptPath = hookTranscriptPath;
     this.#maxTurns = maxTurns;
     this.#compactContext = compactContext;
   }
@@ -481,6 +495,8 @@ export class AgentLoop extends EventEmitter {
         abortController: { signal },
         workspace: this.#hookWorkspace,
         preToolUseHooks: this.#preToolUseHooks,
+        sessionId: this.#hookSessionId,
+        transcriptPath: this.#hookTranscriptPath,
         trustedCliDefaultPermission: this.#permissionPolicy.isBuiltinCliPolicy === true,
         requireCanUseTool: this.#requireCanUseTool,
         getAppState: () => ({ toolPermissionContext: { mode: this.#permissionMode } }),
@@ -901,6 +917,8 @@ export class AgentLoop extends EventEmitter {
     return {
       abortController: { signal },
       workspace: this.#hookWorkspace,
+      sessionId: this.#hookSessionId,
+      transcriptPath: this.#hookTranscriptPath,
       getAppState: () => ({ toolPermissionContext: { mode: this.#permissionMode } }),
       toolHooks: {
         PostToolUse: this.#postToolUseHooks,
