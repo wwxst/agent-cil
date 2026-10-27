@@ -1246,48 +1246,56 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
       required: ['command'],
       additionalProperties: false,
     },
-    execute: async ({ command, timeout_ms = 30000, run_in_background = false }, { signal } = {}) => {
-      const result = await runShellCommand(command, {
-        cwd: root,
-        signal,
-        timeoutMs: timeout_ms,
-        maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
-        taskSession,
-        runInBackground:run_in_background,
+    execute: async ({ command, timeout_ms = 30000, run_in_background = false }, { signal } = {}) => runShellCommand(command, {
+      cwd: root,
+      signal,
+      timeoutMs: timeout_ms,
+      maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
+      taskSession,
+      runInBackground:run_in_background,
+      taskManager:manager,
+    }),
+    // 2.1.88 Tool.call() (not the lower-level ShellCommand.execute) owns
+    // interpretCommandResult and the ShellError -> PostToolUseFailure path.
+    // Keep execute()'s original raw exit_code/timeout/cleanup result contract
+    // for direct callers and OS-process cleanup tests.
+    call: async (input, context) => {
+      const result=await runShellCommand(input.command,{
+        cwd:root,signal:context?.signal,timeoutMs:input.timeout_ms??30000,
+        maxOutputBytes:MAX_TOOL_OUTPUT_BYTES,
+        taskSession,runInBackground:input.run_in_background??false,
         taskManager:manager,
       });
-      // Original 2.1.88 BashTool.call() consumes ShellCommand's result and
-      // interpretCommandResult BEFORE mapping a successful tool_result.
-      // Nonzero shell exits are NOT universally errors: grep/rg/diff/test
-      // exit 1 commonly conveys a non-error status. The completed native
-      // TaskOutput ownership/cleanup above remains unchanged.
-      if(!run_in_background) {
-        const meaning=interpretCommandResult(command,result.exit_code,
+      if(!input.run_in_background) {
+        const meaning=interpretCommandResult(input.command,result.exit_code,
           result.stdout??'',result.stderr??'');
-        // runShellCommand currently adds a generic nonzero exit error;
-        // original BashTool instead delegates exit semantics to
-        // interpretCommandResult. Only *lifecycle* errors (timeout,
-        // unexpected descendant, spawn failure) take precedence here.
-        const genericExitError='Command exited with status '+result.exit_code+'.';
-        const lifecycleError=result.error &&
-          result.error!==genericExitError ? result.error : undefined;
+        // The lower-level shell adds a generic nonzero error even for the
+        // source grep/diff/test exit-1 normal statuses. Only fatal
+        // lifecycle failures may supersede the source semantic table.
+        const genericExit='Command exited with status '+result.exit_code+'.';
+        const lifecycleError=result.error && result.error!==genericExit
+          ?result.error:undefined;
         if(lifecycleError || meaning.isError) {
-          const reason=lifecycleError ?? meaning.message ??
+          const reason=lifecycleError??meaning.message??
             'Command failed with exit code '+result.exit_code;
-          const error=new Error(
-            reason + (result.stdout?'\\n'+result.stdout:'') +
-            (result.stderr?'\\n'+result.stderr:''));
-          error.name='ShellCommandError';
-          error.exitCode=result.exit_code;
-          throw error;
+          const failure=new Error([
+            reason,result.stdout,result.stderr,
+          ].filter(Boolean).join(String.fromCharCode(10)));
+          failure.name='ShellCommandError';
+          failure.exitCode=result.exit_code;
+          throw failure;
         }
-        // Preserve meaningful non-error status for the model without
-        // presenting grep's empty-match exit 1 as a failed tool call.
-        if(meaning.message)result.message=meaning.message;
         delete result.error;
+        if(meaning.message)result.message=meaning.message;
       }
-      return result;
+      return {data:result};
     },
+    // The original tool contracts map the already-completed call result,
+    // then PostToolUse runs only on a genuine successful execution.
+    mapToolResultToToolResultBlockParam:(data,toolUseId)=>({
+      type:'tool_result',tool_use_id:toolUseId,
+      content:JSON.stringify(data),
+    }),
   });
 
   tools.register({
