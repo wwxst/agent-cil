@@ -49,4 +49,28 @@ parser=requireReplacement(parser,
 await writeFile(join(generated,'parser.js'),checked(parser,'parser'));
 const ast=await read('ast');
 await writeFile(join(generated,'ast.js'),checked(ast,'ast'));
+// Direct 2.1.88 BashTool/pathValidation.ts:1176–1304. Preserve the
+// mature wrapper stripping call chain (timeout/nice/stdbuf/env/time/nohup)
+// and strip only erasable TypeScript annotations. Fail if source changes.
+const sourcePathValidation=await read('pathValidation');
+const wrapperAnchor='const TIMEOUT_FLAG_VALUE_RE =';
+if(sourcePathValidation.split(wrapperAnchor).length!==2){
+  throw new Error('Original BashTool.pathValidation wrapper region changed');
+}
+let wrappers=wrapperAnchor+sourcePathValidation.split(wrapperAnchor)[1];
+const wrapperForms=[
+  ['a: readonly string[]','a'],
+  ['argv: string[]','argv'],
+  ['): number',')'],
+  ['): string[]',')'],
+];
+for(const [typed,plain] of wrapperForms){
+  if(!wrappers.includes(typed)) {
+    throw new Error('Original Bash wrapper TS type annotation changed: '+typed);
+  }
+  wrappers=wrappers.replaceAll(typed,plain);
+}
+wrappers=wrappers.replaceAll(']!',']');
+await writeFile(join(generated,'stripWrappers.js'),
+  '/* GENERATED from pinned 2.1.88 BashTool/pathValidation.ts wrapper dependency. Do not edit. */\n'+wrappers);
 process.stdout.write('Generated the three ORIGINAL Bash AST source modules into '+generated+'\n');
