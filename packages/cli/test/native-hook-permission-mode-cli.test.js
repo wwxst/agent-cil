@@ -105,7 +105,7 @@ async function checkMode({allowEdits,failTool=false}){
     const rows=(await readFile(join(root,'hook-modes.jsonl'),'utf8'))
       .trim().split('\n').map(JSON.parse);
     assert.equal(rows.length,2,'PreToolUse and terminal original Hook must actually run');
-    const session=output.match(/\\[session\\] ([0-9a-f-]{36}) created/);
+    const session=output.match(/\[session\] ([0-9a-f-]{36}) created/);
     assert.ok(session,'CLI must announce an actual created SessionJournal');
     const canonical=await realpath(root);
     const expectedEvents=['PreToolUse',failTool?'PostToolUseFailure':'PostToolUse'];
