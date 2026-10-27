@@ -16,6 +16,7 @@ import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/per
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
 import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
+import { bashToolCheckAstPermission } from '../../runtime/src/legacy-permissions/bash-ast-permission.js';
 
 const VERSION = '0.1.0';
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
@@ -1234,7 +1235,7 @@ export async function createBuiltinTools({ workspace = process.cwd(), permission
     // Original BashTool.checkPermissions delegates to bashToolHasPermission.
     // Until AST, wrapper, wildcard and sandbox matching are transplanted, this
     // is restricted to exact command rule decisions only (fail closed).
-    checkPermissions: async input => bashToolCheckExactMatchPermission(input, permissionContext),
+    checkPermissions: async input => bashToolCheckAstPermission(input, permissionContext),
     inputSchema: {
       type: 'object',
       properties: {
