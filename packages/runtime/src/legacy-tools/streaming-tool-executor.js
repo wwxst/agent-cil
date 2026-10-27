@@ -86,6 +86,19 @@ export class StreamingToolExecutor extends OriginalStreamingToolExecutor {
     this.#abortController.abort('streaming_fallback');
     this.#detachAbort();
   }
+  async awaitInFlightCleanup() {
+    // Original StreamingToolExecutor owns every started generator promise.
+    // Node Query can discard an incomplete model stream while speculative
+    // Read/Glob/Grep is still unwinding its AbortSignal and closing file
+    // descriptors. Merely setting discarded=true tombstones its results; it
+    // does NOT mean its existing async execution has finished. Join those
+    // same original promises instead of creating a second tool scheduler.
+    // Query must not begin another prompt or release the session lock before
+    // all already-started execution has actually settled.
+    const running=this.tools.filter(tool =>
+      tool.status==='executing' && tool.promise);
+    await Promise.allSettled(running.map(tool=>tool.promise));
+  }
   addTool(block) {
     // Original addTool() handles unknown tools before runToolUse. Preserve
     // Query's existing completion event on this adapter seam.
