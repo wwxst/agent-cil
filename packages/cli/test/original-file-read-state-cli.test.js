@@ -109,10 +109,10 @@ const cases=[
       /File has not been read yet/,
     ]}},
   {name:'partial Read does not authorize Edit',
-    initial:'alpha\\nsecond',steps:[
+    initial:'alpha\nsecond',steps:[
       R('partial-read',{file_path:'existing.txt',offset:0,limit:1}),
       E('partial-edit'),
-    ],expected:{content:'alpha\\nsecond',errors:{
+    ],expected:{content:'alpha\nsecond',errors:{
       1:/File has not been read yet/,
     }}},
   {name:'external Edit between Read and Write is rejected',
