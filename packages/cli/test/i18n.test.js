@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -144,6 +144,77 @@ test('real CLI help auto-detects Chinese and explicit language selection persist
     const config = JSON.parse(await readFile(join(directory, 'config.json'), 'utf8'));
     assert.equal(config.language, 'zh-CN');
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('interactive TTY language command switches the live prompt and persists the selected language', {
+  skip: process.platform !== 'linux' || spawnSync('script', ['--version'], { stdio: 'ignore' }).status !== 0,
+  timeout: 15000,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-cil-locale-tty-'));
+  const cliPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+  const quote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
+  const command = [
+    process.execPath, cliPath, '--base-url', 'http://127.0.0.1:1',
+    '--model', 'locale-tty-fixture', '--cwd', directory,
+  ].map(quote).join(' ');
+  let child;
+  let timeout;
+  try {
+    child = spawn('script', ['-q', '-e', '-c', command, '/dev/null'], {
+      env: {
+        ...process.env,
+        ANTHROPIC_API_KEY: 'locale-tty-key',
+        AGENT_CIL_CONFIG_DIR: directory,
+        LC_ALL: 'en_US.UTF-8',
+        LANG: 'en_US.UTF-8',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let output = '';
+    let stderr = '';
+    let stage = 0;
+    let exited = false;
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      output += chunk;
+      if (stage === 0 && output.includes('you> ')) {
+        stage = 1;
+        child.stdin.write('/language zh-CN\\n');
+      }
+      if (stage === 1 && output.includes('界面语言已切换为 简体中文。') && output.includes('你> ')) {
+        stage = 2;
+        child.stdin.write('/language\\n');
+      }
+      if (stage === 2 && output.includes('当前界面语言：简体中文')) {
+        stage = 3;
+        child.stdin.write('/language en\\n');
+      }
+      if (stage === 3 && output.includes('Interface language set to English.')) {
+        stage = 4;
+        child.stdin.write('/exit\\n');
+      }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    timeout = setTimeout(() => child.kill('SIGKILL'), 9000);
+    const [status, signal] = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, sig) => resolve([code, sig]));
+    });
+    exited = true;
+    assert.equal(signal, null, 'interactive language test timed out: ' + output + '\\n' + stderr);
+    assert.equal(status, 0, output + '\\n' + stderr);
+    assert.equal(stage, 4, 'not all live language transitions were observed: ' + output);
+    assert.match(output, /当前界面语言：简体中文/);
+    assert.match(output, /界面语言已切换为 简体中文。/);
+    assert.match(output, /Interface language set to English\./);
+    const config = JSON.parse(await readFile(join(directory, 'config.json'), 'utf8'));
+    assert.equal(config.language, 'en');
+  } finally {
+    if (!exited && child && child.exitCode === null) child.kill('SIGKILL');
+    if (timeout) clearTimeout(timeout);
     await rm(directory, { recursive: true, force: true });
   }
 });
