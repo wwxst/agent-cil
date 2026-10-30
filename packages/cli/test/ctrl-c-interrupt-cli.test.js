@@ -86,7 +86,8 @@ test('TTY Ctrl+C aborts in-flight DeepSeek SSE, does not exit, and idle Ctrl+C n
         /assistant> RESUMED\r?\n/.test(output)) {
         sentExit = true;
         child.stdin.write('/exit\n');
-      }    });
+      }
+    });
     child.stderr.on('data', x => { err += x; });
     watchdog = setTimeout(() => child.kill('SIGKILL'), 18000);
     const [status, signal] = await new Promise((resolve, reject) => {
