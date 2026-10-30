@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -72,6 +71,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       rows: 30,
       cwd: workspace,
       useConpty: true,
+      useConptyDll: true,
       env: { ...process.env, TERM: 'xterm-256color', DEEPSEEK_API_KEY: 'fixture-windows-conpty-key' },
     });
 
@@ -160,9 +160,8 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
     if (idleClearTimer) clearTimeout(idleClearTimer);
     if (idleExitTimer) clearTimeout(idleExitTimer);
     if (terminal && !didExit) {
-      try {
-        execFileSync('taskkill', ['/PID', String(terminal.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 3000 });
-      } catch {}
+      // useConptyDll avoids node-pty 1.1.0's console-list helper race during
+      // kill(), while still exercising the real Windows ConPTY input path.
       try { terminal.kill(); } catch {}
     }
     if (openStream && !openStream.destroyed) openStream.destroy();
