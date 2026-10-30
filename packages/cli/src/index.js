@@ -1603,6 +1603,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (rl.line.length > 0) {
         rl.write(null, { ctrl: true, name: 'a' });
         rl.write(null, { ctrl: true, name: 'k' });
+        // readline retains historyIndex when a recalled line is deleted.
+        // 2.1.88 useTextInput calls onHistoryReset on this first press, so
+        // return Node's history cursor to the newest entry as well.
+        rl.historyIndex = -1;
       }
       process.stderr.write('Press Ctrl+C again to exit.\n');
     }
