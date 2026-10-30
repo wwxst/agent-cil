@@ -48,7 +48,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
     }
   });
 
-  let terminal, watchdog;
+  let terminal, watchdog, idleClearTimer, idleExitTimer;
   let output = '';
   let sentBusyInterrupt = false;
   let sentClearInterrupt = false;
@@ -79,18 +79,21 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       output += data;
       if (!sentBusyInterrupt && output.includes('STREAMING')) {
         sentBusyInterrupt = true;
-        terminal.write('\x03');
+        // The second key arrives while the cancelled turn is still settling.
+        // It must arm, not complete, the idle double-press exit.
+        terminal.write('\x03\x03');
       }
 
       if (sentBusyInterrupt && !sentClearInterrupt &&
         output.includes('Interrupted.') && output.includes('you> ')) {
         sentClearInterrupt = true;
-        // First idle Ctrl+C must clear this pending input, not submit it.
-        terminal.write('discard-this\x03');
+        // Let the first-press window armed during cancellation expire; this
+        // fresh idle press must clear the pending input instead of submitting it.
+        idleClearTimer = setTimeout(() => terminal.write('discard-this\x03'), 850);
       }
 
       const exitHintCount = (output.match(/Press Ctrl\+C again to exit\./g) || []).length;
-      if (sentClearInterrupt && !sentContinue && exitHintCount >= 1) {
+      if (sentClearInterrupt && !sentContinue && exitHintCount >= 2) {
         sentContinue = true;
         terminal.write('continue\r');
       }
@@ -99,10 +102,12 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       if (sentContinue && !sentIdleExitFirst &&
         promptCount >= 2 && /assistant> RESUMED\r?\n/.test(output)) {
         sentIdleExitFirst = true;
-        terminal.write('\x03');
+        // The previous idle clear armed the legacy timer. Wait for it to
+        // expire before starting a separate empty-prompt double-press exit.
+        idleExitTimer = setTimeout(() => terminal.write('\x03'), 850);
       }
 
-      if (sentIdleExitFirst && !sentIdleExitSecond && exitHintCount >= 2) {
+      if (sentIdleExitFirst && !sentIdleExitSecond && exitHintCount >= 3) {
         sentIdleExitSecond = true;
         terminal.write('\x03');
       }
@@ -119,6 +124,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
     assert.equal(sentContinue, true, output);
     assert.equal(sentIdleExitFirst, true, output);
     assert.equal(sentIdleExitSecond, true, output);
+    assert.ok((output.match(/Press Ctrl\\+C again to exit\\./g) || []).length >= 3, output);
     assert.match(output, /Interrupted by user/);
     assert.match(output, /RESUMED/);
     assert.equal(requests.length, 2, 'cancelled SSE must not replay and cleared input must not submit');
@@ -127,6 +133,8 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
     assert.equal(output.includes('fixture-windows-conpty-key'), false);
   } finally {
     if (watchdog) clearTimeout(watchdog);
+    if (idleClearTimer) clearTimeout(idleClearTimer);
+    if (idleExitTimer) clearTimeout(idleExitTimer);
     if (terminal) terminal.kill();
     if (openStream && !openStream.destroyed) openStream.destroy();
     server.closeAllConnections?.();
