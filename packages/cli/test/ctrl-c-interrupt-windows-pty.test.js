@@ -160,6 +160,10 @@ test('Windows ConPTY delivers Ctrl+C to active cancellation and idle input clear
   } finally {
     for (const session of terminals) {
       if (!session.didExit) {
+        // This test owns only a single CLI child (no tool subprocesses). Kill
+        // that process directly first so a stuck ConPTY transport cannot keep
+        // the test runner alive; then close node-pty's native handles.
+        try { process.kill(session.terminal.pid); } catch {}
         try { session.terminal.kill(); } catch {}
         await waitForExit(session.exitPromise, 2000);
       }
