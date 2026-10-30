@@ -41,7 +41,7 @@ test('TTY Ctrl+C aborts in-flight DeepSeek SSE, does not exit, and idle Ctrl+C n
       // Keep the SSE socket open until the CLI's AbortController cancels it.
     } else res.end(final('RESUMED'));
   });
-  let child, watchdog;
+  let child, watchdog, idleClearTimer;
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -65,17 +65,19 @@ test('TTY Ctrl+C aborts in-flight DeepSeek SSE, does not exit, and idle Ctrl+C n
       output += chunk;
       if (!sentBusyInterrupt && output.includes('STREAMING')) {
         sentBusyInterrupt = true;
-        child.stdin.write('\x03');
+        // The second Ctrl+C may arrive while cancellation is still settling.
+        // It must arm the idle first-press hint, never close readline early.
+        child.stdin.write('\x03\x03');
       }
       if (sentBusyInterrupt && !sentIdleInterrupt &&
         output.includes('Interrupted.') && output.includes('you> ')) {
         sentIdleInterrupt = true;
-        // Match 2.1.88 useTextInput: Ctrl+C clears a non-empty input line
-        // on its first press, then asks for a second press to exit.
-        child.stdin.write('discard-this\x03');
+        // Wait out the first-press window armed by the second Ctrl+C during
+        // cancellation. This next press must start a fresh idle double-press.
+        idleClearTimer = setTimeout(() => child.stdin.write('discard-this\x03'), 850);
       }
-      if (sentIdleInterrupt && !sentContinue &&
-        output.includes('Press Ctrl+C again to exit.')) {
+      const exitHintCount = (output.match(/Press Ctrl\\+C again to exit\\./g) || []).length;
+      if (sentIdleInterrupt && !sentContinue && exitHintCount >= 2) {
         sentContinue = true;
         child.stdin.write('continue\n');
       }
@@ -111,6 +113,7 @@ test('TTY Ctrl+C aborts in-flight DeepSeek SSE, does not exit, and idle Ctrl+C n
     assert.equal(output.includes('fixture-ctrlc-test-key'), false);
   } finally {
     if (watchdog) clearTimeout(watchdog);
+    if (idleClearTimer) clearTimeout(idleClearTimer);
     if (openStream && !openStream.destroyed) openStream.destroy();
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
     server.closeAllConnections?.();
