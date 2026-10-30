@@ -1576,6 +1576,22 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // the original 800ms window before ending the interactive session.
   const DOUBLE_PRESS_TIMEOUT_MS = 800;
   let lastIdleInterruptAt = 0;
+  const armIdleInterrupt = now => {
+    lastIdleInterruptAt = now;
+    // 2.1.88 useTextInput.ts clears a non-empty prompt on the first
+    // Ctrl+C, then leaves the 800ms double-press window armed for exit.
+    // Use readline's public key injection rather than mutating its
+    // internal line/cursor fields so the terminal is redrawn consistently.
+    if (rl.line.length > 0) {
+      rl.write(null, { ctrl: true, name: 'a' });
+      rl.write(null, { ctrl: true, name: 'k' });
+      // readline retains historyIndex when a recalled line is deleted.
+      // 2.1.88 useTextInput calls onHistoryReset on this first press, so
+      // return Node's history cursor to the newest entry as well.
+      rl.historyIndex = -1;
+    }
+    process.stderr.write('Press Ctrl+C again to exit.\n');
+  };
   const onSigint = () => {
     if (activeController && !activeController.signal.aborted) {
       lastIdleInterruptAt = 0;
@@ -1584,31 +1600,25 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       activeController.abort(error);
       return;
     }
+    const now = Date.now();
     if (activeController) {
-      // A second keypress while the first abort is in progress must not
-      // close readline; the model/tool cancellation must settle first.
+      // 2.1.88 CancelRequestHandler stops claiming Ctrl+C once the active
+      // signal is aborted. The focused TextInput then treats the next key as
+      // its first idle press. Arm that press, but never close readline while
+      // the cancellation owner is still settling; a later press after cleanup
+      // may complete the double-press exit.
+      if (rl && !rl.closed &&
+        (lastIdleInterruptAt === 0 || now - lastIdleInterruptAt > DOUBLE_PRESS_TIMEOUT_MS)) {
+        armIdleInterrupt(now);
+      }
       return;
     }
     if (!rl || rl.closed) return;
-    const now = Date.now();
     if (lastIdleInterruptAt !== 0 && now - lastIdleInterruptAt <= DOUBLE_PRESS_TIMEOUT_MS) {
       rl.close();
       process.exitCode = 130;
     } else {
-      lastIdleInterruptAt = now;
-      // 2.1.88 useTextInput.ts clears a non-empty prompt on the first
-      // Ctrl+C, then leaves the 800ms double-press window armed for exit.
-      // Use readline's public key injection rather than mutating its
-      // internal line/cursor fields so the terminal is redrawn consistently.
-      if (rl.line.length > 0) {
-        rl.write(null, { ctrl: true, name: 'a' });
-        rl.write(null, { ctrl: true, name: 'k' });
-        // readline retains historyIndex when a recalled line is deleted.
-        // 2.1.88 useTextInput calls onHistoryReset on this first press, so
-        // return Node's history cursor to the newest entry as well.
-        rl.historyIndex = -1;
-      }
-      process.stderr.write('Press Ctrl+C again to exit.\n');
+      armIdleInterrupt(now);
     }
   };
   process.on('SIGINT', onSigint);
