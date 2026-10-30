@@ -1569,7 +1569,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       error.name = 'AbortError';
       activeController.abort(error);
     }
-    // Closing readline also exits an idle interactive shell.
+    // Abort an outstanding readline question as well as closing the
+    // interface; readline/promises must release the waiting interactive loop.
+    const questionError = new Error('Terminated by SIGTERM.');
+    questionError.name = 'AbortError';
+    interactiveQuestionController?.abort(questionError);
     rl?.close();
   };
   // Port 2.1.88 hooks/useExitOnCtrlCD.ts + useDoublePress.ts:
