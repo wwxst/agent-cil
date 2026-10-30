@@ -163,7 +163,6 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       try {
         execFileSync('taskkill', ['/PID', String(terminal.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 3000 });
       } catch {}
-      try { terminal.kill(); } catch {}
     }
     if (openStream && !openStream.destroyed) openStream.destroy();
     server.closeAllConnections?.();
