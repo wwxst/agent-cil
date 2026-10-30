@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -124,7 +123,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
     assert.equal(sentContinue, true, output);
     assert.equal(sentIdleExitFirst, true, output);
     assert.equal(sentIdleExitSecond, true, output);
-    assert.ok((output.match(/Press Ctrl\\+C again to exit\\./g) || []).length >= 3, output);
+    assert.ok((output.match(/Press Ctrl\+C again to exit\./g) || []).length >= 3, output);
     assert.match(output, /Interrupted by user/);
     assert.match(output, /RESUMED/);
     assert.equal(requests.length, 2, 'cancelled SSE must not replay and cleared input must not submit');
