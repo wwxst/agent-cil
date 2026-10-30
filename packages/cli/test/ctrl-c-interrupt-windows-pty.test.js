@@ -118,13 +118,20 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
         execFileSync('taskkill', ['/PID', String(terminal.pid), '/T', '/F'], { stdio: 'ignore' });
       } catch {}
     };
-    watchdog = setTimeout(forceKill, 22000);
-    const result = await new Promise((resolve, reject) => {
+    const exitPromise = new Promise(resolve => {
       terminal.onExit(info => {
         didExit = true;
         resolve(info);
       });
     });
+    const result = await Promise.race([
+      exitPromise,
+      new Promise(resolve => { watchdog = setTimeout(() => resolve(null), 7000); }),
+    ]);
+    if (!result) {
+      forceKill();
+      throw new Error('ConPTY CLI did not exit after the expected Ctrl+C sequence:\n' + output);
+    }
 
     assert.equal(result.exitCode, 130, output);
     assert.equal(sentBusyInterrupt, true, output);
