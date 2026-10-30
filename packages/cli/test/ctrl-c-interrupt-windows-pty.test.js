@@ -110,7 +110,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       if (sentIdleExitFirst && !sentIdleExitSecond && exitHintCount >= 3) {
         sentIdleExitSecond = true;
         terminal.write('\x03');
-        resolveExitSequence();
+        resolveExitSequence(true);
       }
     });
 
