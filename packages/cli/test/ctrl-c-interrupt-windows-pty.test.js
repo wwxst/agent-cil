@@ -115,7 +115,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
 
     const forceKill = () => {
       try {
-        execFileSync('taskkill', ['/PID', String(terminal.pid), '/T', '/F'], { stdio: 'ignore' });
+        execFileSync('taskkill', ['/PID', String(terminal.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 5000 });
       } catch {}
     };
     const exitPromise = new Promise(resolve => {
