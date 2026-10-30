@@ -1556,6 +1556,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   let history = journal.messages;
   let activeController;
+  let interactiveQuestionController;
   let sigtermRequested = false;
   const onSigterm = () => {
     // Pinned original ShellCommandImpl delegates cancellation to the active
@@ -1615,6 +1616,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     }
     if (!rl || rl.closed) return;
     if (lastIdleInterruptAt !== 0 && now - lastIdleInterruptAt <= DOUBLE_PRESS_TIMEOUT_MS) {
+      interactiveQuestionController?.abort(new Error('Interrupted by user.'));
       rl.close();
       process.exitCode = 130;
     } else {
@@ -1748,10 +1750,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     }
     while (rl && !rl.closed && !sigtermRequested) {
       let text;
+      interactiveQuestionController = new AbortController();
       try {
-        text = await rl.question('you> ');
+        text = await rl.question('you> ', { signal: interactiveQuestionController.signal });
       } catch {
         break;
+      } finally {
+        interactiveQuestionController = undefined;
       }
       const trimmed = text.trim();
       if (trimmed === '/exit' || trimmed === '/quit') break;
@@ -1764,6 +1769,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.off('SIGINT', onSigint);
     process.off('SIGTERM', onSigterm);
     rl?.off('SIGINT', onSigint);
+    interactiveQuestionController?.abort(new Error('CLI is closing.'));
     rl?.close();
     try {
       // 2.1.88 LocalShellTask kills agent-owned shells on exit, and
