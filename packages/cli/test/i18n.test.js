@@ -182,19 +182,19 @@ test('interactive TTY language command switches the live prompt and persists the
       output += chunk;
       if (stage === 0 && output.includes('you> ')) {
         stage = 1;
-        child.stdin.write('/language zh-CN\\n');
+        child.stdin.write('/language zh-CN\n');
       }
       if (stage === 1 && output.includes('界面语言已切换为 简体中文。') && output.includes('你> ')) {
         stage = 2;
-        child.stdin.write('/language\\n');
+        child.stdin.write('/language\n');
       }
       if (stage === 2 && output.includes('当前界面语言：简体中文')) {
         stage = 3;
-        child.stdin.write('/language en\\n');
+        child.stdin.write('/language en\n');
       }
       if (stage === 3 && output.includes('Interface language set to English.')) {
         stage = 4;
-        child.stdin.write('/exit\\n');
+        child.stdin.write('/exit\n');
       }
     });
     child.stderr.on('data', chunk => { stderr += chunk; });
@@ -204,8 +204,8 @@ test('interactive TTY language command switches the live prompt and persists the
       child.once('close', (code, sig) => resolve([code, sig]));
     });
     exited = true;
-    assert.equal(signal, null, 'interactive language test timed out: ' + output + '\\n' + stderr);
-    assert.equal(status, 0, output + '\\n' + stderr);
+    assert.equal(signal, null, 'interactive language test timed out: ' + output + '\n' + stderr);
+    assert.equal(status, 0, output + '\n' + stderr);
     assert.equal(stage, 4, 'not all live language transitions were observed: ' + output);
     assert.match(output, /当前界面语言：简体中文/);
     assert.match(output, /界面语言已切换为 简体中文。/);
