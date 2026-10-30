@@ -112,7 +112,9 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       }
     });
 
-    watchdog = setTimeout(() => terminal.kill(), 22000);
+    watchdog = setTimeout(() => {
+      try { process.kill(terminal.pid, 'SIGKILL'); } catch {}
+    }, 22000);
     const result = await new Promise((resolve, reject) => {
       terminal.onExit(info => {
         didExit = true;
@@ -137,7 +139,9 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
     if (watchdog) clearTimeout(watchdog);
     if (idleClearTimer) clearTimeout(idleClearTimer);
     if (idleExitTimer) clearTimeout(idleExitTimer);
-    if (terminal && !didExit) terminal.kill();
+    if (terminal && !didExit) {
+      try { process.kill(terminal.pid, 'SIGKILL'); } catch {}
+    }
     if (openStream && !openStream.destroyed) openStream.destroy();
     server.closeAllConnections?.();
     if (server.listening) await new Promise(resolve => server.close(resolve));
