@@ -42,7 +42,24 @@ export function parseArgs(argv) {
   if (argv.length === 1 && ['--version', '-v', '-V'].includes(argv[0])) {
     return { mode: 'version' };
   }
-  if (argv.includes('--help') || argv.includes('-h')) return { mode: 'help' };
+  if (argv.includes('--help') || argv.includes('-h')) {
+    let language;
+    for (let i = 0; i < argv.length; i += 1) {
+      const arg = argv[i];
+      if (arg === '--') break;
+      if (arg === '--language') {
+        const raw = argv[i + 1];
+        if (raw === undefined || raw.startsWith('--')) throw new CliArgumentError('--language requires a value.');
+        language = normalizeLanguagePreference(raw);
+        if (!language) throw new CliArgumentError('Language must be auto, zh-CN, or en.');
+        i += 1;
+      } else if (arg.startsWith('--language=')) {
+        language = normalizeLanguagePreference(arg.slice('--language='.length));
+        if (!language) throw new CliArgumentError('Language must be auto, zh-CN, or en.');
+      }
+    }
+    return language === undefined ? { mode: 'help' } : { mode: 'help', language };
+  }
 
   const options = {
     mode: 'run',
@@ -1283,11 +1300,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.stdout.write('agent-cil ' + VERSION + '\n');
     return 0;
   }
-  if (options.mode === 'help') {
-    process.stdout.write(getHelp(locale, VERSION));
-    return 0;
-  }
-
   if (options.language !== undefined) {
     locale = resolveLanguage(options.language, env);
     languagePreference = options.language;
@@ -1298,6 +1310,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         reason: error instanceof Error ? error.message : String(error),
       }) + '\n');
     }
+  }
+
+  if (options.mode === 'help') {
+    process.stdout.write(getHelp(locale, VERSION));
+    return 0;
   }
 
   const provider = options.provider;
@@ -1434,12 +1451,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }) + '\n');
   if(journal.needsToolReconciliation) {
     if(journal.startedToolExecutions.length) {
-      process.stderr.write('[session] ' + journal.startedToolExecutions.length +
-        ' started tool call(s) recorded; verify side effects before resuming.\n');
+      process.stderr.write(t(locale, 'sessionStartedToolExecutions', {
+        count: journal.startedToolExecutions.length,
+      }) + '\n');
     }
     if(journal.mappedToolResults.length) {
-      process.stderr.write('[session] ' + journal.mappedToolResults.length +
-        ' mapped tool result(s) saved before PostToolUse; Hook completion still requires reconciliation.\n');
+      process.stderr.write(t(locale, 'sessionMappedResults', {
+        count: journal.mappedToolResults.length,
+      }) + '\n');
     }
     // Original Session retains an assistant tool_use even when the process
     // dies before its matching tool_result. Never replay that assistant
@@ -1757,8 +1776,10 @@ const isDirectInvocation = (() => {
 if (isDirectInvocation) {
   main().then((code) => {
     if (Number.isInteger(code) && code !== 0) process.exitCode = code;
-  }).catch((error) => {
-    printError(error instanceof Error ? error.message : String(error));
+  }).catch(async (error) => {
+    let locale = 'en';
+    try { locale = (await loadLanguagePreference()).locale; } catch {}
+    printError(error instanceof Error ? error.message : String(error), locale);
     process.exitCode = 1;
   });
 }

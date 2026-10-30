@@ -119,6 +119,7 @@ test('CLI parses explicit language preferences without changing the Agent prompt
   assert.equal(options.prompt, 'explain this repository');
   assert.equal(parseArgs(['--language=en']).language, 'en');
   assert.equal(parseArgs(['--language=auto']).language, 'auto');
+  assert.equal(parseArgs(['--language', 'zh-CN', '--help']).language, 'zh-CN');
   assert.throws(() => parseArgs(['--language', 'ja-JP']), /Language must be auto, zh-CN, or en/);
 });
 
@@ -134,6 +135,16 @@ test('real CLI help auto-detects Chinese and explicit language selection persist
     assert.match(help.stdout, /用法：/);
     assert.match(help.stdout, /环境变量：/);
     assert.doesNotMatch(help.stdout, /Usage:/);
+
+    const helpOverride = spawnSync(process.execPath, [cliPath, '--language', 'en', '--help'], {
+      encoding: 'utf8',
+      env: { ...process.env, AGENT_CIL_CONFIG_DIR: directory, LC_ALL: 'zh_CN.UTF-8', LANG: 'zh_CN.UTF-8' },
+    });
+    assert.equal(helpOverride.status, 0, helpOverride.stderr);
+    assert.match(helpOverride.stdout, /Usage:/);
+    assert.doesNotMatch(helpOverride.stdout, /用法：/);
+    const helpConfig = JSON.parse(await readFile(join(directory, 'config.json'), 'utf8'));
+    assert.equal(helpConfig.language, 'en');
 
     const setLanguage = spawnSync(process.execPath, [cliPath, '--language', 'zh-CN'], {
       encoding: 'utf8',
