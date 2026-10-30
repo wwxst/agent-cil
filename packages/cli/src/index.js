@@ -1556,6 +1556,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   let history = journal.messages;
   let activeController;
+  let interactiveQuestionController;
   let sigtermRequested = false;
   const onSigterm = () => {
     // Pinned original ShellCommandImpl delegates cancellation to the active
@@ -1568,20 +1569,69 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       error.name = 'AbortError';
       activeController.abort(error);
     }
-    // Closing readline also exits an idle interactive shell.
+    // Abort an outstanding readline question as well as closing the
+    // interface; readline/promises must release the waiting interactive loop.
+    const questionError = new Error('Terminated by SIGTERM.');
+    questionError.name = 'AbortError';
+    interactiveQuestionController?.abort(questionError);
     rl?.close();
+  };
+  // Port 2.1.88 hooks/useExitOnCtrlCD.ts + useDoublePress.ts:
+  // cancel an active turn first; when idle, require a second Ctrl+C within
+  // the original 800ms window before ending the interactive session.
+  const DOUBLE_PRESS_TIMEOUT_MS = 800;
+  let lastIdleInterruptAt = 0;
+  const armIdleInterrupt = now => {
+    lastIdleInterruptAt = now;
+    // 2.1.88 useTextInput.ts clears a non-empty prompt on the first
+    // Ctrl+C, then leaves the 800ms double-press window armed for exit.
+    // Use readline's public key injection rather than mutating its
+    // internal line/cursor fields so the terminal is redrawn consistently.
+    if (rl.line.length > 0) {
+      rl.write(null, { ctrl: true, name: 'a' });
+      rl.write(null, { ctrl: true, name: 'k' });
+      // readline retains historyIndex when a recalled line is deleted.
+      // 2.1.88 useTextInput calls onHistoryReset on this first press, so
+      // return Node's history cursor to the newest entry as well.
+      rl.historyIndex = -1;
+    }
+    process.stderr.write('Press Ctrl+C again to exit.\n');
   };
   const onSigint = () => {
     if (activeController && !activeController.signal.aborted) {
+      lastIdleInterruptAt = 0;
       const error = new Error('Interrupted by user.');
       error.name = 'AbortError';
       activeController.abort(error);
-    } else {
-      rl?.close();
+      return;
+    }
+    const now = Date.now();
+    if (activeController) {
+      // 2.1.88 CancelRequestHandler stops claiming Ctrl+C once the active
+      // signal is aborted. The focused TextInput then treats the next key as
+      // its first idle press. Arm that press, but never close readline while
+      // the cancellation owner is still settling; a later press after cleanup
+      // may complete the double-press exit.
+      if (rl && !rl.closed &&
+        (lastIdleInterruptAt === 0 || now - lastIdleInterruptAt > DOUBLE_PRESS_TIMEOUT_MS)) {
+        armIdleInterrupt(now);
+      }
+      return;
+    }
+    if (!rl || rl.closed) return;
+    if (lastIdleInterruptAt !== 0 && now - lastIdleInterruptAt <= DOUBLE_PRESS_TIMEOUT_MS) {
+      interactiveQuestionController?.abort(new Error('Interrupted by user.'));
+      rl.close();
       process.exitCode = 130;
+    } else {
+      armIdleInterrupt(now);
     }
   };
   process.on('SIGINT', onSigint);
+  // readline owns raw-mode Ctrl+C on a TTY (including Windows ConPTY).
+  // It emits SIGINT on the interface instead of the process. Without this
+  // listener Ctrl+C closes input while the active model keeps streaming.
+  rl?.on('SIGINT', onSigint);
   process.on('SIGTERM', onSigterm);
   loop.on('toolCallStarted', ({ toolName }) => {
     if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
@@ -1704,10 +1754,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     }
     while (rl && !rl.closed && !sigtermRequested) {
       let text;
+      interactiveQuestionController = new AbortController();
       try {
-        text = await rl.question('you> ');
+        text = await rl.question('you> ', { signal: interactiveQuestionController.signal });
       } catch {
         break;
+      } finally {
+        interactiveQuestionController = undefined;
       }
       const trimmed = text.trim();
       if (trimmed === '/exit' || trimmed === '/quit') break;
@@ -1719,6 +1772,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   } finally {
     process.off('SIGINT', onSigint);
     process.off('SIGTERM', onSigterm);
+    rl?.off('SIGINT', onSigint);
+    interactiveQuestionController?.abort(new Error('CLI is closing.'));
     rl?.close();
     try {
       // 2.1.88 LocalShellTask kills agent-owned shells on exit, and
