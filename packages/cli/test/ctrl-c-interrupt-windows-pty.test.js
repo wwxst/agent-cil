@@ -75,6 +75,22 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       env: { ...process.env, TERM: 'xterm-256color', DEEPSEEK_API_KEY: 'fixture-windows-conpty-key' },
     });
 
+    let resolveExitSequence;
+    const exitSequencePromise = new Promise(resolve => { resolveExitSequence = resolve; });
+    const exitPromise = new Promise(resolve => {
+      terminal.onExit(info => {
+        didExit = true;
+        resolve(info);
+      });
+    });
+    const waitFor = (promise, ms) => new Promise(resolve => {
+      const timer = setTimeout(() => resolve(null), ms);
+      promise.then(value => {
+        clearTimeout(timer);
+        resolve(value);
+      });
+    });
+
     terminal.onData(data => {
       output += data;
       if (!sentBusyInterrupt && output.includes('STREAMING')) {
@@ -112,28 +128,6 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
         terminal.write('\x03');
         resolveExitSequence(true);
       }
-    });
-
-    const forceKill = () => {
-      try {
-        execFileSync('taskkill', ['/PID', String(terminal.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 3000 });
-      } catch {}
-      try { terminal.kill(); } catch {}
-    };
-    let resolveExitSequence;
-    const exitSequencePromise = new Promise(resolve => { resolveExitSequence = resolve; });
-    const exitPromise = new Promise(resolve => {
-      terminal.onExit(info => {
-        didExit = true;
-        resolve(info);
-      });
-    });
-    const waitFor = (promise, ms) => new Promise(resolve => {
-      const timer = setTimeout(() => resolve(null), ms);
-      promise.then(value => {
-        clearTimeout(timer);
-        resolve(value);
-      });
     });
 
 
