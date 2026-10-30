@@ -105,7 +105,8 @@ test('TTY Ctrl+C aborts in-flight DeepSeek SSE, does not exit, and idle Ctrl+C n
     assert.equal(sentContinue, true, output + err);
     assert.equal(sentExit, true, output + err);
     assert.match(output, /Interrupted by user/);
-    assert.match(output, /Press Ctrl\+C again to exit/);
+    assert.ok((output.match(/Press Ctrl\+C again to exit\./g) || []).length >= 2,
+      'second Ctrl+C during cancellation must arm the first idle press');
     assert.match(output, /RESUMED/);
     assert.equal(requests.length, 2, 'cancelled partial SSE must not be replayed');
     assert.equal(JSON.stringify(requests[1]).includes('discard-this'), false,
