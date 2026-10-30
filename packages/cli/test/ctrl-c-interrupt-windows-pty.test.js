@@ -77,7 +77,6 @@ test('Windows ConPTY delivers Ctrl+C to active cancellation and idle input clear
       rows: 30,
       cwd: workspace,
       useConpty: true,
-      useConptyDll: true,
       env: {
         ...process.env,
         TERM: 'xterm-256color',
@@ -159,14 +158,15 @@ test('Windows ConPTY delivers Ctrl+C to active cancellation and idle input clear
     assert.equal(idle.output.includes('fixture-windows-conpty-key'), false);
   } finally {
     for (const session of terminals) {
+      // node-pty 1.1.0 only disposes its ConPTY output worker immediately on
+      // the non-DLL path. Always call kill(), even after onExit, so sockets,
+      // native handles and the Conout worker do not keep node --test alive.
       if (!session.didExit) {
-        // This test owns only a single CLI child (no tool subprocesses). Kill
-        // that process directly first so a stuck ConPTY transport cannot keep
-        // the test runner alive; then close node-pty's native handles.
+        // This test owns only the CLI process; no tool subprocesses are run.
         try { process.kill(session.terminal.pid); } catch {}
-        try { session.terminal.kill(); } catch {}
-        await waitForExit(session.exitPromise, 2000);
       }
+      try { session.terminal.kill(); } catch {}
+      if (!session.didExit) await waitForExit(session.exitPromise, 2000);
     }
     server.closeAllConnections?.();
     if (server.listening) await new Promise(resolve => server.close(resolve));
