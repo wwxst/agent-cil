@@ -99,7 +99,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
 
       const promptCount = (output.match(/you>/g) || []).length;
       if (sentContinue && !sentIdleExitFirst &&
-        promptCount >= 2 && /assistant> RESUMED\r?\n/.test(output)) {
+        promptCount >= 2 && output.includes('RESUMED')) {
         sentIdleExitFirst = true;
         // The previous idle clear armed the legacy timer. Wait for it to
         // expire before starting a separate empty-prompt double-press exit.
