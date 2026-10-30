@@ -47,7 +47,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
     }
   });
 
-  let terminal, watchdog, idleClearTimer, idleExitTimer;
+  let terminal, watchdog, idleClearTimer, idleExitTimer, didExit = false;
   let output = '';
   let sentBusyInterrupt = false;
   let sentClearInterrupt = false;
@@ -84,7 +84,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       }
 
       if (sentBusyInterrupt && !sentClearInterrupt &&
-        output.includes('Interrupted.') && output.includes('you> ')) {
+        output.includes('Interrupted.') && output.includes('you>')) {
         sentClearInterrupt = true;
         // Let the first-press window armed during cancellation expire; this
         // fresh idle press must clear the pending input instead of submitting it.
@@ -97,7 +97,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
         terminal.write('continue\r');
       }
 
-      const promptCount = (output.match(/you> /g) || []).length;
+      const promptCount = (output.match(/you>/g) || []).length;
       if (sentContinue && !sentIdleExitFirst &&
         promptCount >= 2 && /assistant> RESUMED\r?\n/.test(output)) {
         sentIdleExitFirst = true;
@@ -114,7 +114,10 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
 
     watchdog = setTimeout(() => terminal.kill(), 22000);
     const result = await new Promise((resolve, reject) => {
-      terminal.onExit(resolve);
+      terminal.onExit(info => {
+        didExit = true;
+        resolve(info);
+      });
     });
 
     assert.equal(result.exitCode, 130, output);
@@ -134,7 +137,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
     if (watchdog) clearTimeout(watchdog);
     if (idleClearTimer) clearTimeout(idleClearTimer);
     if (idleExitTimer) clearTimeout(idleExitTimer);
-    if (terminal) terminal.kill();
+    if (terminal && !didExit) terminal.kill();
     if (openStream && !openStream.destroyed) openStream.destroy();
     server.closeAllConnections?.();
     if (server.listening) await new Promise(resolve => server.close(resolve));
