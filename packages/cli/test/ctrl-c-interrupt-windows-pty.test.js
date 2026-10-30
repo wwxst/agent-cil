@@ -48,7 +48,7 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
     }
   });
 
-  let terminal, watchdog, idleClearTimer, idleExitTimer, didExit = false;
+  let terminal, idleClearTimer, idleExitTimer, didExit = false;
   let output = '';
   let sentBusyInterrupt = false;
   let sentClearInterrupt = false;
@@ -110,29 +110,45 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       if (sentIdleExitFirst && !sentIdleExitSecond && exitHintCount >= 3) {
         sentIdleExitSecond = true;
         terminal.write('\x03');
+        resolveExitSequence();
       }
     });
 
     const forceKill = () => {
       try {
-        execFileSync('taskkill', ['/PID', String(terminal.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 5000 });
+        execFileSync('taskkill', ['/PID', String(terminal.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 3000 });
       } catch {}
+      try { terminal.kill(); } catch {}
     };
+    let resolveExitSequence;
+    const exitSequencePromise = new Promise(resolve => { resolveExitSequence = resolve; });
     const exitPromise = new Promise(resolve => {
       terminal.onExit(info => {
         didExit = true;
         resolve(info);
       });
     });
-    const result = await Promise.race([
-      exitPromise,
-      new Promise(resolve => { watchdog = setTimeout(() => resolve(null), 7000); }),
-    ]);
-    if (!result) {
-      forceKill();
-      throw new Error('ConPTY CLI did not exit after the expected Ctrl+C sequence:\n' + output);
-    }
+    const waitFor = (promise, ms) => new Promise(resolve => {
+      const timer = setTimeout(() => resolve(null), ms);
+      promise.then(value => {
+        clearTimeout(timer);
+        resolve(value);
+      });
+    });
 
+
+    const sequenceSent = await waitFor(exitSequencePromise, 8000);
+    assert.equal(sequenceSent, true, 'ConPTY automation did not send the second idle Ctrl+C: ' + output);
+    let result = await waitFor(exitPromise, 2000);
+    const doublePressExitVerified = Boolean(result && result.exitCode === 130);
+    if (!result) {
+      // Keep the harness leak-free if the double-press contract regresses.
+      terminal.write('/exit\r');
+      result = await waitFor(exitPromise, 3000);
+    }
+    assert.ok(result, 'ConPTY child did not exit after double-Ctrl+C or /exit: ' + output);
+    assert.equal(doublePressExitVerified, true,
+      'idle double Ctrl+C must exit with 130 before the /exit fallback: ' + output);
     assert.equal(result.exitCode, 130, output);
     assert.equal(sentBusyInterrupt, true, output);
     assert.equal(sentClearInterrupt, true, output);
@@ -147,7 +163,6 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       'ConPTY first idle Ctrl+C must clear the readline buffer');
     assert.equal(output.includes('fixture-windows-conpty-key'), false);
   } finally {
-    if (watchdog) clearTimeout(watchdog);
     if (idleClearTimer) clearTimeout(idleClearTimer);
     if (idleExitTimer) clearTimeout(idleExitTimer);
     if (terminal && !didExit) {
