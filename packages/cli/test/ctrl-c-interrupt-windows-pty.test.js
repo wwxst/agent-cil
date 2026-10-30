@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -112,9 +113,12 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
       }
     });
 
-    watchdog = setTimeout(() => {
-      try { process.kill(terminal.pid, 'SIGKILL'); } catch {}
-    }, 22000);
+    const forceKill = () => {
+      try {
+        execFileSync('taskkill', ['/PID', String(terminal.pid), '/T', '/F'], { stdio: 'ignore' });
+      } catch {}
+    };
+    watchdog = setTimeout(forceKill, 22000);
     const result = await new Promise((resolve, reject) => {
       terminal.onExit(info => {
         didExit = true;
@@ -140,7 +144,9 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
     if (idleClearTimer) clearTimeout(idleClearTimer);
     if (idleExitTimer) clearTimeout(idleExitTimer);
     if (terminal && !didExit) {
-      try { process.kill(terminal.pid, 'SIGKILL'); } catch {}
+      try {
+        execFileSync('taskkill', ['/PID', String(terminal.pid), '/T', '/F'], { stdio: 'ignore' });
+      } catch {}
     }
     if (openStream && !openStream.destroyed) openStream.destroy();
     server.closeAllConnections?.();
