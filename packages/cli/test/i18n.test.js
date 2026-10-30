@@ -161,6 +161,7 @@ test('interactive TTY language command switches the live prompt and persists the
   ].map(quote).join(' ');
   let child;
   let timeout;
+  let exited = false;
   try {
     child = spawn('script', ['-q', '-e', '-c', command, '/dev/null'], {
       env: {
@@ -175,7 +176,6 @@ test('interactive TTY language command switches the live prompt and persists the
     let output = '';
     let stderr = '';
     let stage = 0;
-    let exited = false;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
