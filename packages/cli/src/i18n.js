@@ -30,7 +30,7 @@ const MESSAGES = {
     sessionUnfinishedBatch: 'Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.',
     sessionNoPendingPrompt: 'Session has no committed pending user prompt or tool result. Supply a new prompt to continue.',
     interruptedByUser: 'Interrupted by user.', terminatedBySignal: 'Terminated by SIGTERM.',
-    invalidArgv: 'argv must be an array of strings.', promptTooLarge: 'Prompt from stdin exceeds the 1 MiB limit.'
+    invalidArgv: 'argv must be an array of strings.', promptTooLarge: 'Prompt from stdin exceeds the 1 MiB limit.',
     recoveryNeedsReview: '[recovery] Completed tool results were saved, but post-tool context needs manual review. Automatic replay is blocked.',
     recoveryToolResults: '[recovery] Completed tool results were retained. Continue the conversation without re-running previous tools.',
     recoveryPrompt: '[recovery] The unanswered prompt was saved. It can be retried with --resume after restart.',
@@ -74,7 +74,7 @@ const MESSAGES = {
     sessionUnfinishedBatch: '会话包含未完成的工具批次。继续前请检查副作用并核对会话；已阻止自动重放。',
     sessionNoPendingPrompt: '会话中没有已提交且待处理的提示词或工具结果。请提供新的提示词继续。',
     interruptedByUser: '用户已中断。', terminatedBySignal: '进程收到 SIGTERM，已终止。',
-    invalidArgv: 'argv 必须是字符串数组。', promptTooLarge: '标准输入中的提示词超过 1 MiB 限制。'
+    invalidArgv: 'argv 必须是字符串数组。', promptTooLarge: '标准输入中的提示词超过 1 MiB 限制。',
     recoveryNeedsReview: '[恢复] 已保存已完成的工具结果，但工具执行后的上下文需要人工检查。已阻止自动重放。',
     recoveryToolResults: '[恢复] 已保留已完成的工具结果。可以继续对话，不会重复执行之前的工具。',
     recoveryPrompt: '[恢复] 尚未得到回答的提示词已保存。重启后可使用 --resume 重试。',
