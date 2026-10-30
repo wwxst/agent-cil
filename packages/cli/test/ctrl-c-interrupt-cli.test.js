@@ -76,7 +76,7 @@ test('TTY Ctrl+C aborts in-flight DeepSeek SSE, does not exit, and idle Ctrl+C n
         // cancellation. This next press must start a fresh idle double-press.
         idleClearTimer = setTimeout(() => child.stdin.write('discard-this\x03'), 850);
       }
-      const exitHintCount = (output.match(/Press Ctrl\\+C again to exit\\./g) || []).length;
+      const exitHintCount = (output.match(/Press Ctrl\+C again to exit\./g) || []).length;
       if (sentIdleInterrupt && !sentContinue && exitHintCount >= 2) {
         sentContinue = true;
         child.stdin.write('continue\n');
