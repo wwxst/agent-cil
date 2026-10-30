@@ -1596,6 +1596,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       process.exitCode = 130;
     } else {
       lastIdleInterruptAt = now;
+      // 2.1.88 useTextInput.ts clears a non-empty prompt on the first
+      // Ctrl+C, then leaves the 800ms double-press window armed for exit.
+      // Use readline's public key injection rather than mutating its
+      // internal line/cursor fields so the terminal is redrawn consistently.
+      if (rl.line.length > 0) {
+        rl.write(null, { ctrl: true, name: 'a' });
+        rl.write(null, { ctrl: true, name: 'k' });
+      }
       process.stderr.write('Press Ctrl+C again to exit.\n');
     }
   };
