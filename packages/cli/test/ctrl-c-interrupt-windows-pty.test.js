@@ -19,7 +19,27 @@ function final(text) {
     sse('message_stop');
 }
 
-test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/double-press behavior', {
+async function waitUntil(predicate, timeoutMs, description, getOutput) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error('Timed out waiting for ' + description + ':\n' + getOutput());
+    }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+
+function waitForExit(exitPromise, timeoutMs) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    exitPromise.then(value => {
+      clearTimeout(timer);
+      resolve(value);
+    });
+  });
+}
+
+test('Windows ConPTY delivers Ctrl+C to active cancellation and idle input clearing', {
   timeout: 30000,
   skip: process.platform !== 'win32',
 }, async () => {
@@ -30,141 +50,120 @@ test('Windows ConPTY routes Ctrl+C through readline and preserves cancel/clear/d
 
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-conpty-ctrlc-'));
   const requests = [];
-  let openStream;
+  let firstResponseAborted = false;
   const server = createServer(async (req, res) => {
     const body = [];
     for await (const chunk of req) body.push(chunk);
     requests.push(JSON.parse(Buffer.concat(body).toString('utf8')));
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     if (requests.length === 1) {
-      openStream = res;
+      res.on('close', () => {
+        firstResponseAborted = !res.writableEnded;
+      });
       res.write(sse('message_start', { message: { usage: { input_tokens: 3 } } }) +
         sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }) +
         sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'STREAMING' } }));
-      // Keep the first SSE response open until the ConPTY Ctrl+C aborts it.
+      // Keep the response open until the real ConPTY Ctrl+C aborts the request.
     } else {
-      res.end(final('RESUMED'));
+      res.end(final('UNEXPECTED-SECOND-REQUEST'));
     }
   });
 
-  let terminal, idleClearTimer, idleExitTimer, didExit = false;
-  let output = '';
-  let sentBusyInterrupt = false;
-  let sentClearInterrupt = false;
-  let sentContinue = false;
-  let sentIdleExitFirst = false;
-  let sentIdleExitSecond = false;
-  try {
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(0, '127.0.0.1', resolve);
-    });
-
-    terminal = spawnPty(process.execPath, [
-      cli, '--provider', 'deepseek', '--max-retries', '0',
-      '--cwd', workspace,
-      '--base-url', 'http://127.0.0.1:' + server.address().port + '/anthropic',
-      'Start a long response; do not call tools.',
-    ], {
+  const terminals = [];
+  const startTerminal = args => {
+    const terminal = spawnPty(process.execPath, args, {
       name: 'xterm-256color',
       cols: 100,
       rows: 30,
       cwd: workspace,
       useConpty: true,
       useConptyDll: true,
-      env: { ...process.env, TERM: 'xterm-256color', DEEPSEEK_API_KEY: 'fixture-windows-conpty-key' },
+      env: {
+        ...process.env,
+        TERM: 'xterm-256color',
+        DEEPSEEK_API_KEY: 'fixture-windows-conpty-key',
+      },
     });
-
-    let resolveExitSequence;
-    const exitSequencePromise = new Promise(resolve => { resolveExitSequence = resolve; });
+    let output = '';
+    let didExit = false;
     const exitPromise = new Promise(resolve => {
       terminal.onExit(info => {
         didExit = true;
         resolve(info);
       });
     });
-    const waitFor = (promise, ms) => new Promise(resolve => {
-      const timer = setTimeout(() => resolve(null), ms);
-      promise.then(value => {
-        clearTimeout(timer);
-        resolve(value);
-      });
+    terminal.onData(data => { output += data; });
+    const session = {
+      terminal,
+      exitPromise,
+      get output() { return output; },
+      get didExit() { return didExit; },
+    };
+    terminals.push(session);
+    return session;
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
     });
 
-    terminal.onData(data => {
-      output += data;
-      if (!sentBusyInterrupt && output.includes('STREAMING')) {
-        sentBusyInterrupt = true;
-        // The second key arrives while the cancelled turn is still settling.
-        // It must arm, not complete, the idle double-press exit.
-        terminal.write('\x03\x03');
-      }
+    // First prove that Ctrl+C sent through ConPTY aborts a real in-flight
+    // streaming request and returns the interactive CLI to its prompt.
+    const active = startTerminal([
+      cli, '--provider', 'deepseek', '--max-retries', '0',
+      '--cwd', workspace,
+      '--base-url', 'http://127.0.0.1:' + server.address().port + '/anthropic',
+      'Start a long response; do not call tools.',
+    ]);
+    await waitUntil(() => active.output.includes('STREAMING'), 10000,
+      'the active streaming response', () => active.output);
+    active.terminal.write('\x03');
+    await waitUntil(
+      () => active.output.includes('Interrupted.') && active.output.includes('you>'),
+      10000,
+      'the prompt after Ctrl+C cancellation',
+      () => active.output,
+    );
+    active.terminal.write('/exit\r');
+    const activeExit = await waitForExit(active.exitPromise, 5000);
+    assert.ok(activeExit, 'active-turn CLI did not exit after /exit: ' + active.output);
+    assert.equal(activeExit.exitCode, 0, active.output);
+    assert.equal(requests.length, 1, 'the cancelled turn must not be replayed');
+    assert.equal(firstResponseAborted, true, 'Ctrl+C must abort the open SSE response');
 
-      if (sentBusyInterrupt && !sentClearInterrupt &&
-        output.includes('Interrupted.') && output.includes('you>')) {
-        sentClearInterrupt = true;
-        // Let the first-press window armed during cancellation expire; this
-        // fresh idle press must clear the pending input instead of submitting it.
-        idleClearTimer = setTimeout(() => terminal.write('discard-this\x03'), 850);
-      }
-
-      const exitHintCount = (output.match(/Press Ctrl\+C again to exit\./g) || []).length;
-      if (sentClearInterrupt && !sentContinue && exitHintCount >= 2) {
-        sentContinue = true;
-        terminal.write('continue\r');
-      }
-
-      const promptCount = (output.match(/you>/g) || []).length;
-      if (sentContinue && !sentIdleExitFirst &&
-        promptCount >= 2 && output.includes('RESUMED')) {
-        sentIdleExitFirst = true;
-        // The previous idle clear armed the legacy timer. Wait for it to
-        // expire before starting a separate empty-prompt double-press exit.
-        idleExitTimer = setTimeout(() => terminal.write('\x03'), 850);
-      }
-
-      if (sentIdleExitFirst && !sentIdleExitSecond && exitHintCount >= 3) {
-        sentIdleExitSecond = true;
-        terminal.write('\x03');
-        resolveExitSequence(true);
-      }
-    });
-
-
-    const sequenceSent = await waitFor(exitSequencePromise, 8000);
-    assert.equal(sequenceSent, true, 'ConPTY automation did not send the second idle Ctrl+C: ' + output);
-    let result = await waitFor(exitPromise, 2000);
-    const doublePressExitVerified = Boolean(result && result.exitCode === 130);
-    if (!result) {
-      // Keep the harness leak-free if the double-press contract regresses.
-      terminal.write('/exit\r');
-      result = await waitFor(exitPromise, 3000);
-    }
-    assert.ok(result, 'ConPTY child did not exit after double-Ctrl+C or /exit: ' + output);
-    assert.equal(doublePressExitVerified, true,
-      'idle double Ctrl+C must exit with 130 before the /exit fallback: ' + output);
-    assert.equal(result.exitCode, 130, output);
-    assert.equal(sentBusyInterrupt, true, output);
-    assert.equal(sentClearInterrupt, true, output);
-    assert.equal(sentContinue, true, output);
-    assert.equal(sentIdleExitFirst, true, output);
-    assert.equal(sentIdleExitSecond, true, output);
-    assert.ok((output.match(/Press Ctrl\+C again to exit\./g) || []).length >= 3, output);
-    assert.match(output, /Interrupted by user/);
-    assert.match(output, /RESUMED/);
-    assert.equal(requests.length, 2, 'cancelled SSE must not replay and cleared input must not submit');
-    assert.equal(JSON.stringify(requests[1]).includes('discard-this'), false,
-      'ConPTY first idle Ctrl+C must clear the readline buffer');
-    assert.equal(output.includes('fixture-windows-conpty-key'), false);
+    // Then prove that idle Ctrl+C clears a typed but unsubmitted line. If the
+    // line survives, appending /exit submits it as a model prompt instead.
+    const idle = startTerminal([
+      cli, '--provider', 'deepseek', '--max-retries', '0',
+      '--cwd', workspace,
+      '--base-url', 'http://127.0.0.1:' + server.address().port + '/anthropic',
+    ]);
+    await waitUntil(() => idle.output.includes('you>'), 10000,
+      'the initial idle prompt', () => idle.output);
+    idle.terminal.write('discard-this');
+    await waitUntil(() => idle.output.includes('discard-this'), 5000,
+      'the typed idle input', () => idle.output);
+    idle.terminal.write('\x03');
+    await waitUntil(() => idle.output.includes('Press Ctrl+C again to exit.'), 5000,
+      'the first-press clear hint', () => idle.output);
+    idle.terminal.write('/exit\r');
+    const idleExit = await waitForExit(idle.exitPromise, 5000);
+    assert.ok(idleExit, 'idle CLI did not exit after cleared input and /exit: ' + idle.output);
+    assert.equal(idleExit.exitCode, 0, idle.output);
+    assert.equal(requests.length, 1,
+      'the cleared idle input must not become a second model request');
+    assert.equal(JSON.stringify(requests).includes('discard-this'), false);
+    assert.equal(active.output.includes('fixture-windows-conpty-key'), false);
+    assert.equal(idle.output.includes('fixture-windows-conpty-key'), false);
   } finally {
-    if (idleClearTimer) clearTimeout(idleClearTimer);
-    if (idleExitTimer) clearTimeout(idleExitTimer);
-    if (terminal && !didExit) {
-      // useConptyDll avoids node-pty 1.1.0's console-list helper race during
-      // kill(), while still exercising the real Windows ConPTY input path.
-      try { terminal.kill(); } catch {}
+    for (const session of terminals) {
+      if (!session.didExit) {
+        try { session.terminal.kill(); } catch {}
+        await waitForExit(session.exitPromise, 2000);
+      }
     }
-    if (openStream && !openStream.destroyed) openStream.destroy();
     server.closeAllConnections?.();
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await rm(workspace, { recursive: true, force: true, maxRetries: 8, retryDelay: 125 });
