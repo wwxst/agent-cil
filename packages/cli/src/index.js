@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { getHelp, languageLabel, loadLanguagePreference, localizeCliMessage, normalizeLanguagePreference, resolveLanguage, saveLanguagePreference, translate as t } from './i18n.js';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
 import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
@@ -25,53 +26,7 @@ const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.
 const BACKSLASH = String.fromCharCode(92);
 const REGEX_META = new Set(['.', '+', '^', '$', '(', ')', '|', '[', ']', '{', '}', BACKSLASH]);
 
-export const HELP = [
-  'agent-cil ' + VERSION,
-  '',
-  'Usage:',
-  '  agent-cil [options] [prompt]',
-  '  agent-cil --print [options] [prompt]',
-  '  agent-cil --version',
-  '',
-  'Options:',
-  '  -h, --help              Show help',
-  '  -v, -V, --version       Show version',
-  '  -p, --print             Run one prompt and print only the assistant response',
-  '      --model <name>      Model ID (default depends on provider)',
-  '      --base-url <url>    API endpoint base URL (defaults to provider URL)',
-  '      --provider <name>   anthropic (default), deepseek, or openai',
-  '      --max-tokens <n>    Maximum output tokens (default: 4096)',
-  '      --max-turns <n>     Maximum model rounds per prompt (default: 8)',
-  '      --compact-threshold <n>  Auto-compact above approximate input tokens (0 disables)',
-  '      --max-retries <n>   HTTP retries before streaming (default: 2, max: 5)',
-  '      --allow-edits       Explicitly allow workspace Write/Edit without prompts (Bash still asks)',
-  '      --allowedTools <name>    Allow tool or literal Bash(command), repeatable',
-  '      --disallowedTools <name> Deny tool or Bash(command/prefix/wildcard), repeatable',
-  '      --askTools <name>        Ask tool or Bash(command/prefix/wildcard), repeatable',
-  '      --hooks-file <path> Explicitly trust a tool-hook settings JSON file (Pre/Post/Failure)',
-  '      --session-id <uuid> Start a fresh, named persisted CLI session',
-  '      --resume <uuid>     Resume a session; omit prompt to finish a committed tool round',
-  '      --system <text>     System prompt',
-  '      --cwd <path>        Workspace directory (default: current directory)',
-  '',
-  'Environment:',
-  '  ANTHROPIC_API_KEY       Required for model requests',
-  '  ANTHROPIC_MODEL         Default model name',
-  '  ANTHROPIC_BASE_URL      Optional Anthropic-compatible endpoint',
-  '  DEEPSEEK_API_KEY        DeepSeek key (fallback: ANTHROPIC_API_KEY)',
-  '  OPENAI_API_KEY          OpenAI key for --provider openai',
-  '  OPENAI_MODEL            Default OpenAI model ID',
-  '  OPENAI_BASE_URL         Optional OpenAI Chat API base URL',
-  '  AGENT_CIL_COMPACT_THRESHOLD  Override auto-compact trigger in tokens',
-  '',
-  'Built-in tools:',
-  '  Read, Glob, Grep       Read-only workspace tools',
-  '  Write, Edit, Bash      Require interactive approval before execution',
-  '',
-  'This first CLI slice uses the repository AgentLoop and Messages API adapter.',
-  'Resume uses a versioned committed-checkpoint JSONL subset; full original sessionStorage is pending.',
-  'The full official CLI configuration, OAuth and MCP contract is not implemented.',
-].join('\n') + '\n';
+export const HELP = getHelp('en', VERSION);
 
 export class CliArgumentError extends Error {
   constructor(message) {
@@ -87,11 +42,29 @@ export function parseArgs(argv) {
   if (argv.length === 1 && ['--version', '-v', '-V'].includes(argv[0])) {
     return { mode: 'version' };
   }
-  if (argv.includes('--help') || argv.includes('-h')) return { mode: 'help' };
+  if (argv.includes('--help') || argv.includes('-h')) {
+    let language;
+    for (let i = 0; i < argv.length; i += 1) {
+      const arg = argv[i];
+      if (arg === '--') break;
+      if (arg === '--language') {
+        const raw = argv[i + 1];
+        if (raw === undefined || raw.startsWith('--')) throw new CliArgumentError('--language requires a value.');
+        language = normalizeLanguagePreference(raw);
+        if (!language) throw new CliArgumentError('Language must be auto, zh-CN, or en.');
+        i += 1;
+      } else if (arg.startsWith('--language=')) {
+        language = normalizeLanguagePreference(arg.slice('--language='.length));
+        if (!language) throw new CliArgumentError('Language must be auto, zh-CN, or en.');
+      }
+    }
+    return language === undefined ? { mode: 'help' } : { mode: 'help', language };
+  }
 
   const options = {
     mode: 'run',
     print: false,
+    language: undefined,
     model: undefined,
     baseUrl: undefined,
     provider: 'anthropic',
@@ -123,7 +96,12 @@ export function parseArgs(argv) {
       options.positional.push(...argv.slice(i + 1));
       break;
     }
-    if (arg === '--print' || arg === '-p') {
+    if (arg === '--language' || arg.startsWith('--language=')) {
+      const raw = arg === '--language' ? takeValue(arg, i++) : arg.slice('--language='.length);
+      const language = normalizeLanguagePreference(raw);
+      if (!language) throw new CliArgumentError('Language must be auto, zh-CN, or en.');
+      options.language = language;
+    } else if (arg === '--print' || arg === '-p') {
       options.print = true;
     } else if (arg === '--allow-edits') {
       options.allowEdits = true;
@@ -1301,16 +1279,20 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf8').trim();
 }
 
-function printError(message) {
-  process.stderr.write('agent-cil: ' + message + '\n');
+function printError(message, locale = 'en') {
+  process.stderr.write(t(locale, 'errorPrefix') + ' ' + localizeCliMessage(message, locale) + '\n');
 }
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
+  const languageState = await loadLanguagePreference({ env });
+  let locale = languageState.locale;
+  let languagePreference = languageState.preference;
+  const printLocalizedError = message => printError(message, locale);
   let options;
   try {
     options = parseArgs(argv);
   } catch (error) {
-    printError(error instanceof Error ? error.message : String(error));
+    printLocalizedError(error instanceof Error ? error.message : String(error));
     return 2;
   }
 
@@ -1318,8 +1300,20 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.stdout.write('agent-cil ' + VERSION + '\n');
     return 0;
   }
+  if (options.language !== undefined) {
+    locale = resolveLanguage(options.language, env);
+    languagePreference = options.language;
+    try {
+      await saveLanguagePreference(languagePreference, { env });
+    } catch (error) {
+      process.stderr.write(t(locale, 'errorPrefix') + ' ' + t(locale, 'languageSaveFailed', {
+        reason: error instanceof Error ? error.message : String(error),
+      }) + '\n');
+    }
+  }
+
   if (options.mode === 'help') {
-    process.stdout.write(HELP);
+    process.stdout.write(getHelp(locale, VERSION));
     return 0;
   }
 
@@ -1330,7 +1324,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     : provider === 'deepseek' ? (env.DEEPSEEK_API_KEY || env.ANTHROPIC_API_KEY)
       : env.ANTHROPIC_API_KEY;
   if (typeof apiKey !== 'string' || apiKey.trim().length === 0) {
-    printError(credentialEnvName + ' is required. Supply it via the environment, not CLI arguments.');
+    printLocalizedError(credentialEnvName + ' is required. Supply it via the environment, not CLI arguments.');
     return 2;
   }
 
@@ -1339,7 +1333,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // not silently force one-shot mode. --print remains explicitly one-shot.
   const interactiveInput = process.stdin.isTTY && process.stdout.isTTY && !options.print;
   if (options.print && prompt.length === 0 && process.stdin.isTTY && !options.resume) {
-    printError('No prompt provided. Pass a prompt or pipe stdin.');
+    printLocalizedError('No prompt provided. Pass a prompt or pipe stdin.');
     return 2;
   }
   if (!interactiveInput && prompt.length === 0 &&
@@ -1350,12 +1344,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     try {
       prompt = await readStdin();
     } catch (error) {
-      printError(error instanceof Error ? error.message : String(error));
+      printLocalizedError(error instanceof Error ? error.message : String(error));
       return 2;
     }
   }
   if (!interactiveInput && prompt.length === 0 && !options.resume) {
-    printError('No prompt provided. Pass a prompt, pipe stdin, or start an interactive session.');
+    printLocalizedError('No prompt provided. Pass a prompt, pipe stdin, or start an interactive session.');
     return 2;
   }
 
@@ -1366,7 +1360,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       throw new Error('Path is not a directory.');
     }
   } catch (error) {
-    printError('Workspace directory is unavailable: ' + workspace + ' (' +
+    printLocalizedError('Workspace directory is unavailable: ' + workspace + ' (' +
       (error instanceof Error ? error.message : String(error)) + ')');
     return 2;
   }
@@ -1417,7 +1411,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // from an untrusted repository's settings on startup.
       toolHooks = await loadToolHookSettings(options.hooksFile);
     } catch (error) {
-      printError('Tool Hook configuration failed: ' +
+      printLocalizedError('Tool Hook configuration failed: ' +
         (error instanceof Error ? error.message : String(error)));
       return 2;
     }
@@ -1430,7 +1424,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     compactThreshold = Number(env.AGENT_CIL_COMPACT_THRESHOLD);
     if (!Number.isSafeInteger(compactThreshold) || compactThreshold < 0 ||
       compactThreshold > 2000000) {
-      printError('AGENT_CIL_COMPACT_THRESHOLD must be an integer from 0 to 2000000.');
+      printLocalizedError('AGENT_CIL_COMPACT_THRESHOLD must be an integer from 0 to 2000000.');
       return 2;
     }
   }
@@ -1447,24 +1441,29 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       resume: !!options.resume,
     });
   } catch(error) {
-    printError('Session initialization failed: ' +
+    printLocalizedError('Session initialization failed: ' +
       (error instanceof Error ? error.message : String(error)));
     return 2;
   }
-  process.stderr.write('[session] ' + journal.id + (options.resume ? ' resumed' : ' created') + '\n');
+  process.stderr.write(t(locale, 'sessionStarted', {
+    id: journal.id,
+    state: options.resume ? t(locale, 'sessionResumed') : t(locale, 'sessionCreated'),
+  }) + '\n');
   if(journal.needsToolReconciliation) {
     if(journal.startedToolExecutions.length) {
-      process.stderr.write('[session] ' + journal.startedToolExecutions.length +
-        ' started tool call(s) recorded; verify side effects before resuming.\n');
+      process.stderr.write(t(locale, 'sessionStartedToolExecutions', {
+        count: journal.startedToolExecutions.length,
+      }) + '\n');
     }
     if(journal.mappedToolResults.length) {
-      process.stderr.write('[session] ' + journal.mappedToolResults.length +
-        ' mapped tool result(s) saved before PostToolUse; Hook completion still requires reconciliation.\n');
+      process.stderr.write(t(locale, 'sessionMappedResults', {
+        count: journal.mappedToolResults.length,
+      }) + '\n');
     }
     // Original Session retains an assistant tool_use even when the process
     // dies before its matching tool_result. Never replay that assistant
     // request through the model: Write/Bash may already have taken effect.
-    printError(journal.needsToolContextReview
+    printLocalizedError(journal.needsToolContextReview
       ? 'Session contains completed tool results but failed Hook/native context normalization. Inspect the preserved results and Hook side effects before continuing; automatic replay is unsafe.'
       : 'Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
     await journal.close();
@@ -1474,7 +1473,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // Source insertMessageChain() saves initial user messages before the
     // provider responds. Resume either an unanswered prompt or a fully
     // committed tool batch, never a previously completed answer.
-    printError('Session has no committed pending user prompt or tool result. Supply a new prompt to continue.');
+    printLocalizedError('Session has no committed pending user prompt or tool result. Supply a new prompt to continue.');
     await journal.close();
     return 2;
   }
@@ -1489,7 +1488,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       });
     }
   }catch(error) {
-    printError('Task output recovery failed: '+
+    printLocalizedError('Task output recovery failed: '+
       (error instanceof Error?error.message:String(error)));
     await journal.close();
     return 2;
@@ -1540,12 +1539,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     maxTurns: options.maxTurns,
     approvalHandler: async ({ name, input, reason, signal }) => {
       if (!rl || options.print || !process.stdin.isTTY) {
-        process.stderr.write('[permission] denied ' + name + ': interactive approval is unavailable.\n');
+        process.stderr.write(t(locale, 'permissionDeniedUnavailable', { tool: name }) + '\n');
         return { approved: false, reason: 'Interactive approval is unavailable.' };
       }
-      process.stderr.write('\n[permission] ' + name + ': ' + reason + '\n');
+      process.stderr.write('\n' + t(locale, 'permissionRequest', { tool: name, reason }) + '\n');
       process.stderr.write(JSON.stringify(input, null, 2) + '\n');
-      const answer = await rl.question('Approve this tool call? [y/N] ', { signal });
+      const answer = await rl.question(t(locale, 'approvalPrompt'), { signal });
       return { approved: /^(y|yes)$/i.test(answer.trim()), reason: 'User did not approve the tool call.' };
     },
   });
@@ -1635,24 +1634,27 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   process.on('SIGTERM', onSigterm);
   loop.on('toolCallStarted', ({ toolName }) => {
     if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
-      process.stderr.write('[permission] auto-approved ' + toolName + ' (--allow-edits)\n');
+      process.stderr.write(t(locale, 'permissionAutoApproved', { tool: toolName }) + '\n');
     }
-    process.stderr.write('\n[tool] ' + toolName + '\n');
+    process.stderr.write('\n' + t(locale, 'toolStarted', { tool: toolName }) + '\n');
   });
   loop.on('toolCallFinished', ({ toolName, isError, denied }) => {
-    if (isError) process.stderr.write('[tool] ' + toolName + (denied ? ' denied' : ' failed') + '\n');
+    if (isError) process.stderr.write(t(locale, 'toolFailed', {
+      tool: toolName,
+      status: denied ? t(locale, 'toolDenied') : t(locale, 'toolError'),
+    }) + '\n');
   });
 
   const runPrompt = async (text, { plain = false } = {}) => {
     if(sigtermRequested)return 143;
     if(journal.needsToolReconciliation) {
-      printError(journal.needsToolContextReview
+      printLocalizedError(journal.needsToolContextReview
       ? 'Session contains completed tool results but failed Hook/native context normalization. Inspect the preserved results and Hook side effects before continuing; automatic replay is unsafe.'
       : 'Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
       return 2;
     }
     activeController = new AbortController();
-    if (!plain) process.stdout.write('assistant> ');
+    if (!plain) process.stdout.write(t(locale, 'assistantPrompt'));
     const onTextDelta = ({ text: delta }) => process.stdout.write(delta);
     // Once a model-requested tool turn has finished, its effects may already
     // be on disk. If the NEXT model stream fails, retaining the completed
@@ -1663,8 +1665,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     };
     const onContextCompacted = ({ committedMessages, beforeCount, afterCount }) => {
       committedHistory = committedMessages;
-      process.stderr.write('[context] compacted ' + beforeCount + ' → ' + afterCount +
-        ' messages; recent tool turns preserved.\n');
+      process.stderr.write(t(locale, 'contextCompacted', {
+        before: beforeCount,
+        after: afterCount,
+      }) + '\n');
     };
     loop.on('textDelta', onTextDelta);
     loop.on('turnFinished', onTurnFinished);
@@ -1688,11 +1692,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       process.stdout.write('\n');
       if(sigtermRequested)return 143;
       if (result.stopReason === 'max_tokens') {
-        printError('Model output reached --max-tokens before finishing. Increase --max-tokens or continue the conversation.');
+        printLocalizedError('Model output reached --max-tokens before finishing. Increase --max-tokens or continue the conversation.');
         return 1;
       }
       if (result.stopReason === 'max_turns') {
-        printError('Agent reached --max-turns (' + options.maxTurns + ') without a final response. Increase --max-turns or continue the conversation.');
+        printLocalizedError('Agent reached --max-turns (' + options.maxTurns + ') without a final response. Increase --max-turns or continue the conversation.');
         return 1;
       }
       return 0;
@@ -1712,25 +1716,23 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         // failed. Preserve the confirmed final tool result without pretending
         // that the failed post-tool context can be safely replayed.
         if(interactiveInput) {
-          process.stderr.write('[recovery] Completed tool results were saved, but post-tool context needs manual review. Automatic replay is blocked.\n');
+          process.stderr.write(t(locale, 'recoveryNeedsReview') + '\n');
         }
       } else if (committedHistory) {
         // The erroring model response is NOT committed. Keep every preceding
         // durable transition, including task notifications since the last
         // completed tool batch. Never reconstruct history from an older event.
         if (interactiveInput) {
-          process.stderr.write('[recovery] Completed tool results were retained. ' +
-            'Continue the conversation without re-running previous tools.\n');
+          process.stderr.write(t(locale, 'recoveryToolResults') + '\n');
         }
       } else if (history.length > priorHistoryLength) {
         // A provider failure before its first complete response must not
         // strand a durable user prompt outside the interactive history.
         if (interactiveInput) {
-          process.stderr.write('[recovery] The unanswered prompt was saved. ' +
-            'It can be retried with --resume after restart.\n');
+          process.stderr.write(t(locale, 'recoveryPrompt') + '\n');
         }
       }
-      printError(error instanceof Error ? error.message : String(error));
+      printLocalizedError(error instanceof Error ? error.message : String(error));
       return sigtermRequested ? 143 : activeController.signal.aborted ? 130 : 1;
     } finally {
       loop.off('textDelta', onTextDelta);
@@ -1744,10 +1746,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     if (!interactiveInput) {
       return await runPrompt(prompt.length ? prompt : undefined, { plain: options.print });
     }
-    process.stderr.write('agent-cil interactive mode. Type /exit to quit.\n');
+    process.stderr.write(t(locale, 'interactiveStarted') + '\n');
     if (prompt) {
       const status = await runPrompt(prompt);
-      if (status === 130) process.stderr.write('Interrupted.\n');
+      if (status === 130) process.stderr.write(t(locale, 'interrupted') + '\n');
       // Invalid/incomplete model responses are never committed. A completed
       // tool-result checkpoint is retained when a later model turn fails, so
       // the interactive shell can safely continue without replaying tools.
@@ -1756,7 +1758,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       let text;
       interactiveQuestionController = new AbortController();
       try {
-        text = await rl.question('you> ', { signal: interactiveQuestionController.signal });
+        text = await rl.question(t(locale, 'userPrompt'), { signal: interactiveQuestionController.signal });
       } catch {
         break;
       } finally {
@@ -1765,8 +1767,35 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       const trimmed = text.trim();
       if (trimmed === '/exit' || trimmed === '/quit') break;
       if (!trimmed) continue;
+      if (trimmed === '/language' || trimmed.startsWith('/language ')) {
+        const rawLanguage = trimmed.slice('/language'.length).trim();
+        if (!rawLanguage) {
+          process.stderr.write(t(locale, 'languageCurrent', {
+            language: languageLabel(locale, languagePreference),
+          }) + '\n' + t(locale, 'languageUsage') + '\n');
+          continue;
+        }
+        const nextPreference = normalizeLanguagePreference(rawLanguage);
+        if (!nextPreference) {
+          process.stderr.write(t(locale, 'languageInvalid') + '\n' + t(locale, 'languageUsage') + '\n');
+          continue;
+        }
+        try {
+          await saveLanguagePreference(nextPreference, { env });
+          languagePreference = nextPreference;
+          locale = resolveLanguage(nextPreference, env);
+          process.stderr.write(t(locale, 'languageSet', {
+            language: languageLabel(locale, nextPreference),
+          }) + '\n');
+        } catch (error) {
+          process.stderr.write(t(locale, 'languageSaveFailed', {
+            reason: error instanceof Error ? error.message : String(error),
+          }) + '\n');
+        }
+        continue;
+      }
       const status = await runPrompt(trimmed);
-      if (status === 130) process.stderr.write('Interrupted.\n');
+      if (status === 130) process.stderr.write(t(locale, 'interrupted') + '\n');
     }
     return sigtermRequested ? 143 : 0;
   } finally {
@@ -1802,8 +1831,10 @@ const isDirectInvocation = (() => {
 if (isDirectInvocation) {
   main().then((code) => {
     if (Number.isInteger(code) && code !== 0) process.exitCode = code;
-  }).catch((error) => {
-    printError(error instanceof Error ? error.message : String(error));
+  }).catch(async (error) => {
+    let locale = 'en';
+    try { locale = (await loadLanguagePreference()).locale; } catch {}
+    printError(error instanceof Error ? error.message : String(error), locale);
     process.exitCode = 1;
   });
 }

@@ -17,6 +17,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install runtime dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund --no-package-lock
       - name: Install Windows ConPTY test harness
         run: npm install --no-save --no-package-lock node-pty@1.1.0
       - name: Verify actual Windows ConPTY Ctrl+C path
@@ -37,6 +39,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install runtime dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund --no-package-lock
       - name: Run original parallel suite with bounded failure diagnostics
         shell: bash
         run: |
