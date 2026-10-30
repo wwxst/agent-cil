@@ -20,6 +20,7 @@ jobs:
       - name: Install Windows ConPTY test harness
         run: npm install --no-save --no-package-lock node-pty@1.1.0
       - name: Verify actual Windows ConPTY Ctrl+C path
+        timeout-minutes: 1
         run: node --test packages/cli/test/ctrl-c-interrupt-windows-pty.test.js
       - name: Verify integrated original stream, tokens, tool results, permission and Hook chain on Windows
         run: |
