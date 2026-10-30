@@ -70,7 +70,9 @@ test('TTY Ctrl+C aborts in-flight DeepSeek SSE, does not exit, and idle Ctrl+C n
       if (sentBusyInterrupt && !sentIdleInterrupt &&
         output.includes('Interrupted.') && output.includes('you> ')) {
         sentIdleInterrupt = true;
-        child.stdin.write('\x03');
+        // Match 2.1.88 useTextInput: Ctrl+C clears a non-empty input line
+        // on its first press, then asks for a second press to exit.
+        child.stdin.write('discard-this\x03');
       }
       if (sentIdleInterrupt && !sentContinue &&
         output.includes('Press Ctrl+C again to exit.')) {
@@ -104,6 +106,8 @@ test('TTY Ctrl+C aborts in-flight DeepSeek SSE, does not exit, and idle Ctrl+C n
     assert.match(output, /Press Ctrl\+C again to exit/);
     assert.match(output, /RESUMED/);
     assert.equal(requests.length, 2, 'cancelled partial SSE must not be replayed');
+    assert.equal(JSON.stringify(requests[1]).includes('discard-this'), false,
+      'first idle Ctrl+C must clear the current input instead of submitting it');
     assert.equal(output.includes('fixture-ctrlc-test-key'), false);
   } finally {
     if (watchdog) clearTimeout(watchdog);
