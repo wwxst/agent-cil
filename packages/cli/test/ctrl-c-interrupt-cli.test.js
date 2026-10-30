@@ -77,11 +77,16 @@ test('TTY Ctrl+C aborts in-flight DeepSeek SSE, does not exit, and idle Ctrl+C n
         sentContinue = true;
         child.stdin.write('continue\n');
       }
-      if (sentContinue && !sentExit && output.includes('RESUMED')) {
+      // Do not type the next command while the previous model turn is
+      // still streaming. The old check fired on the first "RESUMED" delta,
+      // before runPrompt wrote its newline and before readline asked again;
+      // that input was consumed/lost while no question was active.
+      const promptCount = (output.match(/you> /g) || []).length;
+      if (sentContinue && !sentExit && promptCount >= 2 &&
+        /assistant> RESUMED\r?\n/.test(output)) {
         sentExit = true;
         child.stdin.write('/exit\n');
-      }
-    });
+      }    });
     child.stderr.on('data', x => { err += x; });
     watchdog = setTimeout(() => child.kill('SIGKILL'), 18000);
     const [status, signal] = await new Promise((resolve, reject) => {
