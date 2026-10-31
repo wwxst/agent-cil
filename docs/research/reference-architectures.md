@@ -1,0 +1,73 @@
+# 参考架构研究：Pi、Codex 与 DeepSeek Harness
+
+## 1. 研究结论
+
+Agent CIL V2 不应把三个项目简单拼成三个子系统。建议以 Pi 的小核心循环为主导，以 Codex 的任务生命周期和执行可靠性作为重要参考，再吸收 DeepSeek Harness 的事件日志与服务组合思路。
+
+| 项目 | 值得吸收 | 不直接照搬 |
+| --- | --- | --- |
+| Pi | 小而清晰的 Agent Loop、模型协议解耦、可替换工具和上下文构建 | 不能为了极简牺牲安全、审批和恢复 |
+| Codex | Thread / Turn 生命周期、控制协议、审批、Sandbox、任务执行可靠性 | 不直接移植庞大的 Rust 工程结构 |
+| DeepSeek Harness | 服务注册、插件依赖、可替换组件、事件驱动和运行轨迹 | 不把整个内核交给无约束的动态插件系统 |
+| Agent CIL 历史实现 | 工具执行经验、权限规则、Session Journal、异常处理和回归测试 | 不保留旧 Query 的历史状态耦合 |
+
+## 2. Pi：简洁循环与协议边界
+
+Pi 的 Agent Loop 展示了模型请求、工具执行和用户 Steering 消息之间的简洁循环。请求前上下文准备可通过扩展点完成，而不是把所有逻辑塞进 Loop。
+
+Agent CIL 的借鉴点：
+- Loop 负责“下一步是什么”，不负责所有步骤“如何实现”。
+- Context preparation 与 Provider serialization 分离。
+- 工具调用后将结果明确回填，再决定是否进入下一轮。
+- 用户可在运行中追加 Steering 或 Follow-up。
+
+V2 需要额外补足：持久事件提交、审批暂停、Sandbox、进程管理和不确定副作用恢复。
+
+## 3. Codex：任务生命周期与执行边界
+
+Codex 的重要参考不是某个具体类，而是把任务生命周期、控制协议、审批和 Sandbox 作为独立但协作的边界。
+
+Agent CIL 的借鉴点：
+- 明确 Thread / Turn / Step。
+- 用户取消是控制命令，不是直接修改消息数组。
+- 审批决定与真实 Sandbox 限制是两层机制。
+- 执行意图、执行开始和执行结算应能被审计。
+- 恢复时不能把“可能已执行”的命令当成“肯定未执行”。
+
+## 4. DeepSeek Harness：事件和服务组合
+
+DSH 的事件日志与服务注册体系提供了两个值得吸收的思想：
+
+- Session 使用追加事件作为事实来源，消息历史和运行状态由事件派生。
+- 插件通过依赖声明组合服务，加载和卸载具有明确生命周期。
+
+Agent CIL 的取舍：
+- Event Journal 和投影成为内核基础设施。
+- 插件可以注册 Provider、Tool、Context Strategy 和 Store。
+- 插件不能覆盖状态机、安全执行入口和提交语义。
+
+## 5. 融合后的主导架构
+
+~~~text
+Pi 式简洁 Agent Loop
+       +
+Codex 式 Thread / Turn / Step、审批与 Sandbox
+       +
+DSH 式 Event Journal、Projection 和服务生命周期
+       +
+Agent CIL 的工具执行与权限回归经验
+       ↓
+Agent CIL Kernel V2
+~~~
+
+## 6. 验证原则
+
+上述比较是架构设计判断，不是同条件 Benchmark 结果。不能据此宣称 V2 的 Coding 成功率、速度或资源效率高于 Pi、Codex 或 DSH。
+
+性能与能力比较必须使用相同模型、任务集、工具权限、上下文预算和执行环境，并报告成功率、成本、延迟、失败类型和恢复正确性。
+
+## 7. 参考资料
+
+- Pi Agent Loop: https://github.com/earendil-works/pi
+- OpenAI Codex: https://github.com/openai/codex
+- DeepSeek Harness: https://github.com/deepseek-ai/deepseek-harness

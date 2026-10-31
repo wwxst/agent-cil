@@ -1,0 +1,74 @@
+# Context Engine：上下文投影、预算与压缩
+
+## 1. 职责
+
+Context Engine 将完整 Session 历史转换成当前模型请求需要的上下文视图。
+
+它管理：
+- 历史消息投影；
+- 相关性选择；
+- token 预算；
+- 工具结果截断和引用；
+- 长任务摘要；
+- Provider-specific serialization；
+- Prompt Cache 稳定性；
+- Compaction 和恢复后的连续性。
+
+完整事件日志始终保留。压缩只改变模型下一次看到的上下文视图。
+
+## 2. 推荐流水线
+
+~~~text
+Event Journal
+  → History Projection
+  → Relevance Selection
+  → Token Budget
+  → Compaction
+  → Provider Serialization
+  → Model Gateway
+~~~
+
+每个阶段都应能独立测试和替换。
+
+## 3. Token Budget
+
+预算不只是对历史消息做一次 token 计数。它还应考虑：
+
+- system prompt 和动态上下文；
+- 工具描述与 JSON Schema；
+- Provider 对 reasoning / image / data block 的计费规则；
+- 当前用户输入；
+- 预留的模型输出空间；
+- 工具结果和附件引用；
+- 模型窗口变化与估算误差。
+
+Token 估算是启发式，不得覆盖 Provider 返回的权威 usage 或 context length error。
+
+## 4. Compaction 事务
+
+建议的安全流程：
+
+1. 选择可压缩的完整历史范围。
+2. 保留工具调用与结果配对完整的 API round。
+3. 以无工具权限的独立摘要请求生成候选摘要。
+4. 验证摘要请求完整结束、摘要非空且满足预算收益。
+5. 将摘要和保留的最近历史组成新的上下文快照。
+6. 持久化 context.compacted 事件及引用。
+7. 只有提交成功后，后续模型请求才使用新视图。
+
+摘要失败、取消、工具调用意外出现或流不完整时，必须保留旧上下文，不提交部分摘要。
+
+## 5. 不可破坏的上下文不变量
+
+- 不能拆散 tool_call / tool_result 配对。
+- 不能删除仍有未决执行结果的工具调用。
+- Provider 原生签名或不透明推理状态必须按 Provider 规则原样保留。
+- 不能把 reasoning/private block 输出成普通用户可见文本。
+- Compaction 不能删除 Event Journal 的事实记录。
+- Fork 和恢复必须能明确使用哪个上下文快照与事件序号。
+
+## 6. 长期任务记忆
+
+摘要应记录任务目标、已确认事实、关键决策、已完成副作用、待办事项和引用来源。模型生成摘要可能遗漏细节；重要事实应能回查原始事件或工作区文件。
+
+长期记忆与短期上下文压缩应分开设计。第一阶段先保证 Session 内的上下文预算与压缩，不急于引入跨 Session 的自动记忆系统。

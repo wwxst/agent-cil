@@ -1,0 +1,103 @@
+# Thread / Turn / Step 生命周期与状态机
+
+## 1. 三层任务模型
+
+### Thread
+
+Thread 是长期会话容器，可持续包含多个 Turn。它具有稳定 ID、创建信息、当前分支关系和事件序列。
+
+Thread 可从历史事件节点 Fork 成新 Thread。Fork 复制必要的上下文与历史引用，但不继承旧 Thread 的临时审批、运行中的进程或授权令牌。
+
+### Turn
+
+Turn 是一次用户指令触发的完整 Agent 工作。一个 Turn 可以包含多次模型请求、多个工具批次、审批暂停、Steering 和恢复。
+
+例如：用户要求修复 Bug，模型请求多次、修改多个文件、执行测试两次，这些都属于同一个 Turn。
+
+### Step
+
+Step 是 Turn 内的执行单元。建议以一次模型请求及其产生的工具调用批次为基本边界。一次 Turn 可以包含多个 Step。
+
+Step 应能关联：
+- model attempt ID；
+- 输入上下文版本；
+- 模型响应事件；
+- 产生的 ToolCall ID；
+- 工具执行结果；
+- stop reason 和 usage。
+
+## 2. ID 空间
+
+以下 ID 必须分离，不能复用同一个字段：
+
+| ID | 标识对象 |
+| --- | --- |
+| threadId | 长期会话 |
+| turnId | 用户指令触发的一次工作 |
+| stepId | Turn 内一次执行步骤 |
+| attemptId | 一次模型请求尝试 |
+| toolCallId | 一次模型工具调用 |
+| approvalId | 一次待处理审批 |
+| eventSeq | Session 内单调递增事件序号 |
+| correlationId | 跨组件请求关联 |
+| causationId | 引发当前事件的上游事件 |
+
+Provider 原生 tool-use ID 可保留在 provider metadata 中，但内部 toolCallId 仍由 Runtime 管理。
+
+## 3. Turn 状态
+
+建议的基础状态：
+
+- queued：已接受，等待运行。
+- running：模型或工具工作正在进行。
+- waiting_approval：因需要用户审批而暂停。
+- cancelling：已请求取消，正在收尾。
+- completed：Turn 正常完成。
+- failed：Turn 以明确错误结束。
+- interrupted：Turn 被中断，且已安全记录可恢复边界。
+
+ToolCall 另有独立状态；例如 outcome_unknown 不应简单等同于 Turn failed。它表示进程或宿主无法确认副作用是否已经发生。
+
+## 4. 控制动作
+
+| Command | 语义 |
+| --- | --- |
+| StartTurn | 接受新的用户指令并创建 Turn |
+| SteerTurn | 在当前安全执行边界后追加指令，影响当前 Turn 的后续工作 |
+| QueueFollowUp | 将新指令排入队列，在当前 Turn 完成后启动新 Turn |
+| InterruptTurn | 请求取消当前 Turn，并进行安全收尾 |
+| RespondApproval | 对指定 approvalId 和精确输入摘要给出 allow/deny |
+| ResumeThread | 从已提交状态恢复 Thread |
+| ForkThread | 从历史节点创建新的 Thread 分支 |
+
+Steer、Follow-up 和 Interrupt 由 Session Controller 处理。CLI 不得直接修改模型历史或内存状态来模拟这些动作。
+
+## 5. 生命周期示意
+
+~~~text
+Thread
+  ├─ Turn 1
+  │    ├─ Step 1: Model Attempt
+  │    ├─ Tool Batch
+  │    ├─ Step 2: Model Attempt
+  │    └─ completed
+  ├─ Turn 2
+  │    ├─ Step 1: Model Attempt
+  │    ├─ waiting_approval
+  │    ├─ approval accepted
+  │    ├─ Tool Batch
+  │    └─ completed
+  └─ Fork → Thread B
+~~~
+
+## 6. 取消语义
+
+取消是请求，不等于所有副作用都已撤销。
+
+- 尚未开始的工作应停止调度。
+- 可取消的模型请求和工具进程应收到 AbortSignal 或进程终止请求。
+- 已经产生外部副作用的工具不能假装被回滚。
+- 无法确认结果的工具调用必须进入 outcome_unknown。
+- Turn 进入 interrupted 前，必须提交已知的完成结果和未决状态。
+
+审批等待期间收到 Interrupt，应关闭审批等待并记录取消事实；迟到的审批响应不得启动原工具调用。
