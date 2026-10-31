@@ -1,0 +1,225 @@
+name: Node.js CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'recovery/**']
+
+permissions:
+  contents: read
+
+jobs:
+  windows-live-harness:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install runtime dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund --no-package-lock
+      - name: Install Windows ConPTY test harness
+        run: npm install --no-save --no-package-lock node-pty@1.1.0
+      - name: Verify actual Windows ConPTY Ctrl+C path
+        timeout-minutes: 1
+        run: node --test packages/cli/test/ctrl-c-interrupt-windows-pty.test.js
+      - name: Preflight cold Windows Bash Job Object startup
+        run: |
+          node --test packages/cli/test/windows-job-supervisor-smoke.test.js
+      - name: Verify integrated original stream, tokens, tool results, permission and Hook chain on Windows
+        run: |
+          node --test packages/cli/test/live-provider-launch.test.js packages/cli/test/pretooluse-hooks-cli.test.js packages/cli/test/posttooluse-hooks-cli.test.js packages/cli/test/native-hook-permission-mode-cli.test.js packages/cli/test/original-bash-ast-security-cli.test.js packages/cli/test/joint-core-p0p1-cli.test.js packages/cli/test/permission-rules-cli.test.js packages/cli/test/tool-result-storage-cli.test.js packages/cli/test/usage-context-compact-cli.test.js packages/cli/test/streaming-readonly-cli.test.js packages/cli/test/session-resume-cli.test.js packages/cli/test/bash-process-tree.test.js packages/cli/test/task-output.test.js packages/cli/test/trusted-task-output-read.test.js packages/cli/test/session-bash-output-resume-cli.test.js packages/cli/test/local-shell-background.test.js packages/cli/test/background-registration-cleanup.test.js packages/cli/test/background-fatal-output-fence.test.js packages/cli/test/background-midstream-fatal-cli.test.js packages/cli/test/bash-completed-output-size-fence.test.js packages/cli/test/bash-taskoutput-finalization-fence.test.js packages/cli/test/bash-finalization-owner-barrier.test.js packages/cli/test/windows-reaped-shell-pid-fence.test.js packages/cli/test/windows-job-object-descendant-ownership.test.js packages/cli/test/windows-job-supervisor-owner-loss.test.js packages/cli/test/background-cli-model.test.js packages/runtime/test/pretooluse-hook-cancellation.test.js packages/runtime/test/original-native-hook-tree-fatal-fence.test.js packages/runtime/test/original-parallel-hook-early-stop-join.test.js packages/cli/test/permission-mode-plan-cli.test.js packages/cli/test/original-file-read-state-cli.test.js packages/cli/test/original-bash-command-semantics-cli.test.js packages/runtime/test/original-durable-tool-result-finalization-fence.test.js packages/runtime/test/original-partial-tool-side-effect-fence.test.js
+
+      - name: Verify original execution input, PreToolUse checkpoint, permission and interruption contracts on Windows
+        run: |
+          node --test packages/runtime/test/original-pretooluse-execution-contract.test.js packages/runtime/test/original-tool-call-observable-input.test.js packages/runtime/test/original-posttool-failure-interruption.test.js packages/runtime/test/original-tool-call-user-modified.test.js packages/runtime/test/original-permission-result-content.test.js packages/runtime/test/original-structured-tool-result.test.js packages/runtime/test/original-tool-new-messages.test.js packages/runtime/test/original-context-modifier-lifecycle.test.js packages/runtime/test/original-nested-can-use-tool.test.js packages/runtime/test/original-query-tool-context-lifecycle.test.js packages/runtime/test/original-repl-session-context.test.js packages/runtime/test/original-require-can-use-tool.test.js packages/runtime/test/original-session-journal.test.js packages/runtime/test/session-model-metadata-fence.test.js packages/runtime/test/unfinished-tool-finished-fence.test.js packages/runtime/test/stale-lock-recovery-race.test.js packages/runtime/test/original-process-tree-cleanup-fence.test.js packages/runtime/test/original-native-task-notification.test.js packages/runtime/test/original-speculative-cleanup-join.test.js
+
+  runtime-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install runtime dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund --no-package-lock
+      - name: Run original parallel suite with bounded failure diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Preserve the original npm test concurrency coverage. An
+          # unchecked CLI fixture server previously leaked on assertion
+          # failure and left this job in_progress for hours.
+          if timeout --signal=TERM --kill-after=10s 180s npm test; then
+            echo 'All original parallel Node tests passed.'
+          else
+            original_status=$?
+            echo "::error::Parallel npm test failed or exceeded 180s (exit $original_status)"
+            # Narrow any test-worker leak or failure to an actual file.
+            # Diagnostics cannot convert a failing parallel suite to pass.
+            while IFS= read -r -d '' file; do
+              echo "::group::Diagnose $file"
+              if timeout --signal=TERM --kill-after=10s 110s node --test "$file"; then
+                echo "::endgroup::"
+              else
+                file_status=$?
+                echo "::error file=$file::Node test failed or timed out (exit $file_status)"
+                echo "::endgroup::"
+                break
+              fi
+            done < <(find packages -path '*/test/*.test.js' -type f -print0 | sort -z)
+            exit "$original_status"
+          fi
+      - name: Check compiled original Bash AST matches verbatim pinned 2.1.88 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/generate-original-bash-ast.mjs
+          git diff --exit-code -- packages/runtime/src/legacy-permissions/generated
+      - name: Syntax-check source, tests, and optional live-provider harness
+        run: |
+          find packages -name '*.js' -print0 | xargs -0 -n1 node --check
+          node --check scripts/verify-live-provider.mjs
+      - name: Validate packed installation and real CLI entry point
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(npm pack --ignore-scripts --silent)"
+          install_dir="$(mktemp -d)"
+          trap 'rm -rf "$install_dir" "$archive"' EXIT
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$install_dir" "./$archive"
+          cli="$install_dir/node_modules/.bin/agent-cil"
+          echo "Packed CLI executable metadata:"
+          ls -l "$cli"
+          test -x "$cli"
+          echo "Packed CLI version:"
+          "$cli" --version
+          test "$("$cli" --version)" = "agent-cil 0.1.0"
+          echo "Packed CLI help:"
+          "$cli" --help | head -n 30
+          "$cli" --help | grep -q -- '--allow-edits'
+          node scripts/verify-installed-cli.mjs "$cli"
+          # Exercise model transport and TTY approval via the installed CLI.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/legacy-model-transport-cli.test.js
+          # Verify signed thinking, 3 model rounds and Read/Edit behavior
+          # through the freshly packed and installed executable.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-thinking-cli.test.js
+          # Prove Read begins while DeepSeek SSE still has no message_stop;
+          # Write/Edit remain deferred, and malformed streams cannot edit.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/streaming-readonly-cli.test.js
+          # A completed Edit + tool_result must survive a failed follow-up
+          # model request in the installed interactive CLI; never replay Edit.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/tool-turn-recovery-cli.test.js
+          # Summarize completed DeepSeek tool rounds on installed CLI while
+          # keeping recent signed thinking, tool_use and tool_result intact.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-auto-compact-cli.test.js
+          # A typed prompt-too-long HTTP 400 after successful Edit must
+          # trigger one tool-free summary then continue without redoing Edit.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-reactive-recovery-cli.test.js
+          # Original PreToolUse hook decision and input rewriting through installed CLI.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/pretooluse-hooks-cli.test.js
+          # Verify full integrated original 2.1.88 mechanisms on packed entry point.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/usage-context-compact-cli.test.js packages/cli/test/tool-result-storage-cli.test.js packages/cli/test/permission-rules-cli.test.js
+          # Source PostToolUse and PostToolUseFailure must survive npm packing.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/posttooluse-hooks-cli.test.js
+          # An early PostToolUse stop must join all already-started sibling Hooks
+          # before the packed CLI commits the tool result or releases its session.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/parallel-hook-lifecycle-cli.test.js
+          # Match the original 2.1.88 Ctrl+C contract on the packed CLI:
+          # one press cancels active work; idle exit requires a second press.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/ctrl-c-interrupt-cli.test.js
+          # Combined source CLI permission, file-state and Bash failure
+          # protections must hold through the same installed executable.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/permission-mode-plan-cli.test.js packages/cli/test/original-file-read-state-cli.test.js packages/cli/test/original-bash-command-semantics-cli.test.js
+          # Verbatim original 2.1.88 pure-TS AST/parser/semantics gate, using
+          # the installed CLI and original provider-facing tool result path.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/original-bash-ast-security-cli.test.js
+          # Joint P0/P1 acceptance against the same installed CLI process:
+          # unread Write recovery, source Read->Write, and completed Bash
+          # nonzero exit after an actual shell side effect, without replay.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/joint-core-p0p1-cli.test.js
+          # Verify source session JSONL persists a completed Write and resumes in a new packed CLI process.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/session-resume-cli.test.js
+          # Two actual installed CLI processes compete for one crashed
+          # session. Exactly one may own the lock or send the next SSE request.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/session-lock-recovery-cli.test.js
+          # Cross-process startup interruption must preserve the initial
+          # fsynced user prompt and release its original SessionJournal lock.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/startup-journal-cleanup-cli.test.js
+          # Verify an actual Read/Edit/Bash(node --test)/Read development task,
+          # not a mocked shell output, through the installed binary.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/development-bash-verified-cli.test.js
+          # Verify real Bash foreground-exit, unowned descendant result,
+          # AbortSignal and timeout cleanup through the packed CLI entry point.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/bash-process-tree.test.js
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/session-bash-output-resume-cli.test.js
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/local-shell-background.test.js
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/background-cli-model.test.js
+          # Real installed CLI must not fabricate a successful TaskStop
+          # when the original background Bash TaskOutput finalizer fails.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/background-output-fatal-cli.test.js
+          # A real Bash output file can shrink after its completed size was
+          # snapshotted. The npm-installed CLI must retain tool_started and
+          # refuse a second model request after this corruption.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/bash-final-output-fence-cli.test.js
+          # The background Bash output can fail AFTER provider SSE has started.
+          # A later streamed Write must be fenced before tool execution.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/background-midstream-fatal-cli.test.js
+          # The source Query may durably append a LocalShellTask completion
+          # notice after its last turnFinished event. A failed provider call
+          # must not discard the notice when the SAME TTY resumes on next input.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/interactive-native-notice-recovery.test.js
+          # Verify OpenAI Chat's streaming tools and coding repair loop on installed CLI.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/openai-provider-cli.test.js
+
+  legacy-cli-2-1-88-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download the bundle from the pinned reference commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/wwxst/-/57d4d4d05121f84601af119091455832d37de5df/package"
+          curl --fail --location --silent --show-error "$base/cli.js" -o "$RUNNER_TEMP/cli.js"
+          curl --fail --location --silent --show-error "$base/package.json" -o "$RUNNER_TEMP/package.json"
+          curl --fail --location --silent --show-error "$base/LICENSE.md" -o "$RUNNER_TEMP/LICENSE.md"
+
+          actual_blob="$(git hash-object "$RUNNER_TEMP/cli.js")"
+          expected_blob="397ffc36211479cca414cfb245df35f3db232336"
+          printf 'git_blob_sha=%s\n' "$actual_blob"
+          test "$actual_blob" = "$expected_blob"
+
+          node -e '
+            const fs = require("node:fs");
+            const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (p.name !== "@anthropic-ai/claude-code" || p.version !== "2.1.88" || p.bin?.claude !== "cli.js") {
+              throw new Error("Unexpected reference package identity or entry point");
+            }
+            console.log(JSON.stringify({ name: p.name, version: p.version, bin: p.bin, engines: p.engines, license: p.license }));
+          ' "$RUNNER_TEMP/package.json"
+          printf '%s\n' '--- package license notice ---'
+          cat "$RUNNER_TEMP/LICENSE.md"
+
+      - name: Run only the version fast path with an empty environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/empty-home"
+          set +e
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/empty-home" TMPDIR="$RUNNER_TEMP" \
+            timeout 10s node "$RUNNER_TEMP/cli.js" --version \
+            > "$RUNNER_TEMP/legacy-cli.stdout" 2> "$RUNNER_TEMP/legacy-cli.stderr"
+          status=$?
+          set -e
+          printf 'exit_code=%s\n' "$status"
+          printf '%s\n' '--- stdout ---'
+          cat "$RUNNER_TEMP/legacy-cli.stdout"
+          printf '%s\n' '--- stderr ---'
+          cat "$RUNNER_TEMP/legacy-cli.stderr"
+          test "$status" -eq 0
+          test "$(cat "$RUNNER_TEMP/legacy-cli.stdout")" = '2.1.88 (Claude Code)'
+          test ! -s "$RUNNER_TEMP/legacy-cli.stderr"
