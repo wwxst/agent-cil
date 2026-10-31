@@ -2448,6 +2448,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let taskManager;
   let onSigint, onSigterm;
   let interactiveQuestionController;
+  let modelJournalFailure = false;
   try {
     taskManager=createLocalShellTaskManager({sessionId:journal.id});
   const tools = await createBuiltinTools({
@@ -2801,7 +2802,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
     // The source /model implementation persists the model override before
     // changing the active provider. Both Ink and readline use this owner.
-    let modelJournalFailure = false;
     const notifyInteractive = message => {
       if (tui) tui.pushSystemMessage(message);
       else process.stderr.write(message + '\n');
