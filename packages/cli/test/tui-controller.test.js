@@ -11,9 +11,10 @@ test('TUI controller preserves streamed assistant output and updates the live lo
   controller.appendAssistantText('file is safe.');
   controller.finishAssistantMessage();
   controller.setLocale('zh-CN');
+  controller.setModel('model-after-command');
   const snapshot = controller.getSnapshot();
   assert.equal(snapshot.locale, 'zh-CN');
-  assert.equal(snapshot.model, 'fixture-model');
+  assert.equal(snapshot.model, 'model-after-command');
   assert.deepEqual(snapshot.messages.map(message => [message.role, message.text]), [
     ['user', 'inspect this file'],
     ['assistant', 'The file is safe.'],
