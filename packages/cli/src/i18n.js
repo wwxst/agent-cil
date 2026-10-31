@@ -8,6 +8,7 @@ export const SUPPORTED_LOCALES = Object.freeze(['zh-CN', 'en']);
 
 const MESSAGES = {
   en: {
+    tuiReady: 'Ready', tuiWorking: 'Working…', pressCtrlCAgain: 'Press Ctrl+C again within 800 ms to exit.', pressCtrlDAgain: 'Press Ctrl+D again within 800 ms to exit.', pressEscAgainToClear: 'Press Esc again to clear the input.', tuiPlaceholder: 'Describe a task… Enter to send, Shift+Enter for a new line', tuiPermissionAuto: 'accept edits', tuiPermissionApproval: 'approval required', tuiPermissionRequired: 'Permission required', tuiPermissionQuestion: 'Do you want to proceed?', tuiPermissionAllowOnce: 'Allow this tool call once', tuiPermissionDeny: 'Deny this tool call', tuiPermissionApprove: '↑/↓ select · Enter confirm · Press Y to allow, N to deny', tuiPermissionSelectHint: '↑/↓ select · Enter confirm · Type a number to select', tuiPermissionDefaultAllow: 'default: allow', tuiPermissionDefaultDeny: 'default: deny', tuiPermissionAcceptFeedbackPlaceholder: 'tell Claude what to do next', tuiPermissionRejectFeedbackPlaceholder: 'tell Claude what to do differently', tuiPermissionTabHint: 'Tab to amend', tuiPermissionEscHint: 'Esc to cancel', tuiRoleYou: 'you', tuiRoleAssistant: 'assistant', tuiFooterHelp: 'Enter send · Shift+Enter newline · Ctrl+C cancel/exit · /exit quit', tuiPasting: 'Pasting…',
     errorPrefix: 'agent-cil:', languageInvalid: 'Language must be auto, zh-CN, or en.',
     languageUsage: 'Usage: /language [auto|zh-CN|en]', languageCurrent: 'Interface language: {language}',
     languageSet: 'Interface language set to {language}.',
@@ -59,6 +60,7 @@ const MESSAGES = {
     helpLimitations: 'The full official CLI configuration, OAuth and MCP contract is not implemented.',
   },
   'zh-CN': {
+    tuiReady: '就绪', tuiWorking: '执行中…', pressCtrlCAgain: '请在 800 毫秒内再次按 Ctrl+C 退出。', pressCtrlDAgain: '请在 800 毫秒内再次按 Ctrl+D 退出。', pressEscAgainToClear: '再次按 Esc 清空输入内容。', tuiPlaceholder: '输入任务，Enter 发送，Shift+Enter 换行…', tuiPermissionAuto: '自动允许编辑', tuiPermissionApproval: '逐项审批', tuiPermissionRequired: '需要权限确认', tuiPermissionQuestion: '是否继续执行？', tuiPermissionAllowOnce: '仅允许本次工具调用', tuiPermissionDeny: '拒绝本次工具调用', tuiPermissionApprove: '↑/↓ 选择 · Enter 确认 · Y 允许、N 拒绝', tuiPermissionSelectHint: '↑/↓ 选择 · Enter 确认 · 输入数字直接选择', tuiPermissionDefaultAllow: '默认：允许', tuiPermissionDefaultDeny: '默认：拒绝', tuiPermissionAcceptFeedbackPlaceholder: '告诉模型接下来要做什么', tuiPermissionRejectFeedbackPlaceholder: '告诉模型需要如何调整', tuiPermissionTabHint: '按 Tab 添加说明', tuiPermissionEscHint: '按 Esc 取消', tuiRoleYou: '你', tuiRoleAssistant: '助手', tuiFooterHelp: 'Enter 发送 · Shift+Enter 换行 · Ctrl+C 中断/退出 · /exit 退出', tuiPasting: '正在粘贴…',
     errorPrefix: 'agent-cil：', languageInvalid: '语言必须是 auto、zh-CN 或 en。',
     languageUsage: '用法：/language [auto|zh-CN|en]', languageCurrent: '当前界面语言：{language}',
     languageSet: '界面语言已切换为 {language}。', languageSaveFailed: '无法保存语言设置：{reason}',
