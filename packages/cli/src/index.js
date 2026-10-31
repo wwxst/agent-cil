@@ -503,9 +503,22 @@ export function createCliPermissionPolicy({
         {behavior:'allow',reason:'Operate on this CLI session-owned background Bash task.'};
     }
     if (name === 'Bash') {
-      return checkWholeToolPermissionRules(permissionContext, { name }) ||
-        { behavior: 'ask', reason: 'This command executes a shell process.',
-          decisionReason: { type: 'mode', mode: 'default' } };
+      const explicitRule = checkWholeToolPermissionRules(permissionContext, { name });
+      if (explicitRule) {
+        // The original 2.1.304 defaultToNo flag is used for asks that need
+        // deliberate confirmation. This CLI has not yet ported the full
+        // Bash safety classifier, so every interactive Bash ask stays on
+        // Deny until that classifier can safely distinguish benign commands.
+        return explicitRule.behavior === 'ask'
+          ? { ...explicitRule, defaultToNo: true }
+          : explicitRule;
+      }
+      return {
+        behavior: 'ask',
+        reason: 'This command executes a shell process.',
+        decisionReason: { type: 'mode', mode: 'default' },
+        defaultToNo: true,
+      };
     }
 
     return { behavior: 'deny', reason: 'No CLI permission rule exists for tool ' + String(name) + '.' };
