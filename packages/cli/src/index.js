@@ -2257,6 +2257,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // Do not attach a readline listener until configuration and runtime setup succeed.
   // Otherwise a constructor/import error can leave a TTY handle open before the cleanup finally block.
   let rl;
+  let tui;
 
   const { AgentLoop } = await import('../../runtime/src/agent-loop.js');
   // Only the transport changes: both providers feed the same 2.1.88-derived
@@ -2503,7 +2504,38 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       taskManager,
     }),
     maxTurns: options.maxTurns,
-    approvalHandler: async ({ name, input, reason, signal }) => {
+    approvalHandler: async ({ name, input, reason, defaultToNo, signal }) => {
+      if (tui && !options.print) {
+        const approval = await tui.requestApproval({ name, input, reason, defaultToNo, signal });
+        if (approval?.approved && Array.isArray(approval.permissionUpdates) &&
+            approval.permissionUpdates.length > 0) {
+          const command = name === 'Bash' && typeof input?.command === 'string'
+            ? input.command.trim() : '';
+          const [update] = approval.permissionUpdates;
+          const rule = update?.rules?.[0];
+          // Source permission updates must grant only the exact reviewed
+          // Bash command, for this session; never broaden an Ink selection.
+          const validExactSessionGrant = approval.permissionUpdates.length === 1 &&
+            command.length > 0 &&
+            update.type === 'addRules' &&
+            update.behavior === 'allow' &&
+            update.destination === 'session' &&
+            Array.isArray(update.rules) &&
+            update.rules.length === 1 &&
+            rule?.toolName === 'Bash' &&
+            rule.ruleContent === command;
+          if (!validExactSessionGrant) {
+            return { approved: false, reason: 'Invalid session permission update; the tool call was denied.' };
+          }
+          const updatedContext = applyPermissionUpdates(permissionContext, approval.permissionUpdates);
+          // AgentLoop performs its mandatory post-approval reauthorization
+          // against this same source permission context.
+          Object.assign(permissionContext, updatedContext);
+          const { permissionUpdates: _permissionUpdates, ...resolvedApproval } = approval;
+          return resolvedApproval;
+        }
+        return approval;
+      }
       if (!rl || options.print || !process.stdin.isTTY) {
         process.stderr.write(t(locale, 'permissionDeniedUnavailable', { tool: name }) + '\n');
         return { approved: false, reason: 'Interactive approval is unavailable.' };
@@ -2515,13 +2547,23 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     },
   });
 
-  if (process.stdin.isTTY && process.stdout.isTTY) {
+  // Original Ink renderer owns raw TTY input. Readline is a fallback only.
+  if (!interactiveInput && process.stdin.isTTY && process.stdout.isTTY) {
     rl = createInterface({ input: process.stdin, output: process.stdout });
   }
 
   let history = journal.messages;
   let activeController;
   let sigtermRequested = false;
+  const { createTuiInterruptHandler } = await import('./tui/interrupt.js');
+  const onTuiInterrupt = createTuiInterruptHandler({
+    getActiveController: () => activeController,
+    onCancelMessage: () => tui?.pushSystemMessage(t(locale, 'pressCtrlCAgain')),
+    onExit: () => {
+      process.exitCode = 130;
+      tui?.close(130);
+    },
+  });
   onSigterm = () => {
     // Pinned original ShellCommandImpl delegates cancellation to the active
     // abort signal, whose Bash process owner kills its entire process tree.
@@ -2539,6 +2581,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     questionError.name = 'AbortError';
     interactiveQuestionController?.abort(questionError);
     rl?.close();
+    tui?.close(143);
   };
   // Port 2.1.88 hooks/useExitOnCtrlCD.ts + useDoublePress.ts:
   // cancel an active turn first; when idle, require a second Ctrl+C within
@@ -2562,6 +2605,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.stderr.write('Press Ctrl+C again to exit.\n');
   };
   onSigint = () => {
+    if (tui) {
+      onTuiInterrupt();
+      return;
+    }
     if (activeController && !activeController.signal.aborted) {
       lastIdleInterruptAt = 0;
       const error = new Error('Interrupted by user.');
@@ -2599,16 +2646,31 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   process.on('SIGTERM', onSigterm);
   loop.on('toolCallStarted', ({ toolName }) => {
     if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
-      process.stderr.write(t(locale, 'permissionAutoApproved', { tool: toolName }) + '\n');
+      const notice = t(locale, 'permissionAutoApproved', { tool: toolName });
+      if (tui) tui.pushSystemMessage(notice);
+      else process.stderr.write(notice + '\n');
     }
-    process.stderr.write('\n' + t(locale, 'toolStarted', { tool: toolName }) + '\n');
+    const notice = t(locale, 'toolStarted', { tool: toolName });
+    if (tui) tui.setStatus(notice);
+    else process.stderr.write('\n' + notice + '\n');
   });
   loop.on('toolCallFinished', ({ toolName, isError, denied }) => {
-    if (isError) process.stderr.write(t(locale, 'toolFailed', {
-      tool: toolName,
-      status: denied ? t(locale, 'toolDenied') : t(locale, 'toolError'),
-    }) + '\n');
+    if (isError) {
+      const notice = t(locale, 'toolFailed', {
+        tool: toolName,
+        status: denied ? t(locale, 'toolDenied') : t(locale, 'toolError'),
+      });
+      if (tui) tui.pushSystemMessage(notice);
+      else process.stderr.write(notice + '\n');
+    }
+    if (tui) tui.setStatus(tui.getSnapshot().busy ? t(locale, 'tuiWorking') : t(locale, 'tuiReady'));
   });
+
+  const reportInteractiveError = message => {
+    if (tui) tui.pushSystemMessage(t(locale, 'errorPrefix') + ' ' + localizeCliMessage(
+      message instanceof Error ? message.message : String(message), locale));
+    else printLocalizedError(message);
+  };
 
   const runPrompt = async (text, { plain = false } = {}) => {
     if(sigtermRequested)return 143;
