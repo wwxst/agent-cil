@@ -1,5 +1,10 @@
 name: Node.js CI
 
+# Recheck only the newest source/tree per PR, avoiding stale PTY runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 on:
   pull_request:
   push:
@@ -24,6 +29,11 @@ jobs:
       - name: Verify actual Windows ConPTY Ctrl+C path
         timeout-minutes: 1
         run: node --test packages/cli/test/ctrl-c-interrupt-windows-pty.test.js
+      - name: Verify original Ink TUI permission prompts through Windows ConPTY
+        timeout-minutes: 2
+        run: node --test packages/cli/test/tui-permission-windows-pty.test.js
+      - name: Verify original Ink dependency closure and interrupt lifecycle
+        run: node --test packages/cli/test/tui-controller.test.js packages/cli/test/tui-interrupt.test.js
       - name: Preflight cold Windows Bash Job Object startup
         run: |
           node --test packages/cli/test/windows-job-supervisor-smoke.test.js
@@ -102,6 +112,11 @@ jobs:
           node scripts/verify-installed-cli.mjs "$cli"
           # Exercise model transport and TTY approval via the installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/legacy-model-transport-cli.test.js
+          # Original 2.1.88 Ink rendering and permissions on the installed executable.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/tui-permission-enter-cli.test.js
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/tui-permission-arrow-cli.test.js
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/tui-permission-feedback-cli.test.js
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/tui-permission-default-to-no-cli.test.js
           # Verify signed thinking, 3 model rounds and Read/Edit behavior
           # through the freshly packed and installed executable.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/deepseek-thinking-cli.test.js

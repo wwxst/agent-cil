@@ -1,0 +1,656 @@
+{
+  "sourceRepository": "wwxst/-",
+  "sourceCommit": "57d4d4d05121f84601af119091455832d37de5df",
+  "sourcePackage": "@anthropic-ai/claude-code",
+  "sourceVersion": "2.1.88",
+  "sourcePackageCliBlob": "397ffc36211479cca414cfb245df35f3db232336",
+  "importedFileCount": 142,
+  "files": [
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/App.tsx",
+      "gitBlobSha": "69ca9686d6cc2566aba148e5ab882e77826cf1e1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/BaseTextInput.tsx",
+      "gitBlobSha": "8edc60564de4ea3624adcd7015fd70ca816eb839"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/CustomSelect/option-map.ts",
+      "gitBlobSha": "ef51c5b11fa849eddb90f60d5fd2ccfb0cc83b0a"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/CustomSelect/select-option.tsx",
+      "gitBlobSha": "e3a98d6e2388c610c0e7271db22473e9fe09b5fd"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/CustomSelect/use-select-navigation.ts",
+      "gitBlobSha": "7ecb4e71074703ab633e6a8134c978639547c1f7"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/design-system/color.ts",
+      "gitBlobSha": "d21e5127958c64cdd0a78a5f926e32dccb4b1e64"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/design-system/ListItem.tsx",
+      "gitBlobSha": "7f77dda12ab54535d6871da268969af1265ac793"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/design-system/ThemedBox.tsx",
+      "gitBlobSha": "c92b733ef896f9353df9c4e80901de5f7d6065bc"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/design-system/ThemedText.tsx",
+      "gitBlobSha": "1c65b5c4d6e429d49b8c012408585d9a17c20ba9"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/design-system/ThemeProvider.tsx",
+      "gitBlobSha": "8e0de6021cbd83a430683ddde4c235302c5af3f6"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/Message.tsx",
+      "gitBlobSha": "ca2ef768686577d987c3525414355452cf0371fa"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/Messages.tsx",
+      "gitBlobSha": "81f38a17426123268bfd4dc1247728424063015b"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/permissions/PermissionPrompt.tsx",
+      "gitBlobSha": "cc04708a866bca60b3c4fabbfa7d6060671ef97e"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/permissions/PermissionRequest.tsx",
+      "gitBlobSha": "2def623e9527d5b0850257111a3aee6a6b47a92e"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/PromptInput/inputModes.ts",
+      "gitBlobSha": "f464a206159005b84e27af37426094e82a2ac618"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/PromptInput/PromptInput.tsx",
+      "gitBlobSha": "128e73cb3f4070bef7c8c770edfbfab2fe7ac28f"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/PromptInput/ShimmeredInput.tsx",
+      "gitBlobSha": "b6890e5971dd8176ee243a0135427a67595a5007"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/Spinner/ShimmerChar.tsx",
+      "gitBlobSha": "dd3a8ed87291bbd4532480235d63651e60f045c1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/TextInput.tsx",
+      "gitBlobSha": "47434096eea75801394e39e1210b4d0935acf3ae"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/VimTextInput.tsx",
+      "gitBlobSha": "7c2e6c552f6afd22749160e33f6435ada2297e4c"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/dialogLaunchers.tsx",
+      "gitBlobSha": "e4f68b6369e257aff3798564046d486dcdc71372"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/hooks/renderPlaceholder.ts",
+      "gitBlobSha": "50913ff01a554cdd0e98835bb7524ee469f69ea0"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/hooks/useDoublePress.ts",
+      "gitBlobSha": "7844fbd66d7bd2d89217c6b7b626606940928d8e"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/hooks/useInputBuffer.ts",
+      "gitBlobSha": "8dc8161dc06571e9d63a63caa2cee88c16bd4e27"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/hooks/usePasteHandler.ts",
+      "gitBlobSha": "d6257b9a2172c9ad11bd8921522203fd529c39de"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/hooks/useTextInput.ts",
+      "gitBlobSha": "90c4c4f8204282a8e9db422c45ca12f25f1d5d38"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink.ts",
+      "gitBlobSha": "a06b343cc7e7b9c3cac6e6ebc9ae94be2e8addab"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/Ansi.tsx",
+      "gitBlobSha": "aef5f60ee266aea794beadcf362afd76efd876af"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/bidi.ts",
+      "gitBlobSha": "bed474db8435e1c20917fdd420f2b44168eddd04"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/clearTerminal.ts",
+      "gitBlobSha": "38d4a6887c9a62ff234608b32f9f41674975f5a1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/colorize.ts",
+      "gitBlobSha": "9117a84c7a35a4661a51a1a7612545c5198b8c9d"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/AlternateScreen.tsx",
+      "gitBlobSha": "b736f9299dde3bdf65e2521509e84eca370cc013"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/App.tsx",
+      "gitBlobSha": "f9d248d389dc5164adc553bdbee41bce44bd928c"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/AppContext.ts",
+      "gitBlobSha": "c0409c4278786d80e8f2da0d9c85c94bfe15091d"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/Box.tsx",
+      "gitBlobSha": "67f2500ff84220940f4c40e14c06afa2fd6e10f1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/Button.tsx",
+      "gitBlobSha": "8dc35f06cb6e1eeda93d1d3d4f298120b75ccfa1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/ClockContext.tsx",
+      "gitBlobSha": "0f24839dfce619809cb3b4b79a3d436d5ea4baa4"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/CursorDeclarationContext.ts",
+      "gitBlobSha": "358c80409a6bc2dd808edfc52fe419024846f5d6"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/ErrorOverview.tsx",
+      "gitBlobSha": "c889f901fa536a76ec9b11be092c0e7411d4b624"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/Link.tsx",
+      "gitBlobSha": "82341db6489298c975d28e52d3ebe19b8b90eb6e"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/Newline.tsx",
+      "gitBlobSha": "5edf61882f36bdda97243879485d57ab25e09136"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/NoSelect.tsx",
+      "gitBlobSha": "d21b8d7abae89af1524cd4556fb880bb02c522f1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/RawAnsi.tsx",
+      "gitBlobSha": "919e453b283412a51fcea3a4804e7045ca8c54e3"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/ScrollBox.tsx",
+      "gitBlobSha": "03e4a31cb1dab9818a259f89aa46cd83d6c9309b"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/Spacer.tsx",
+      "gitBlobSha": "4d0af40f66646de8dec1f7d88dc4560f22ed68f6"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/StdinContext.ts",
+      "gitBlobSha": "0b1a49717c1d4922f4c5917d30c86c54056dde4f"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/TerminalFocusContext.tsx",
+      "gitBlobSha": "e017b64ab18e01a8cb53561641c3439652c25efc"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/TerminalSizeContext.tsx",
+      "gitBlobSha": "8ca447ec4e96834aa20cdf4cba1f81943357874f"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/components/Text.tsx",
+      "gitBlobSha": "b53d8345dd48b9e8d2ac9f45114be02f73c16a7d"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/constants.ts",
+      "gitBlobSha": "bff73319fe69e4b0c7145c9e1fb2f8c76e6f7576"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/dom.ts",
+      "gitBlobSha": "993dadd3ad1409ef609702f3a2c482a75bb81e34"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/events/click-event.ts",
+      "gitBlobSha": "1f58659a89bb7c5d7e8e24f875426ca959edc550"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/events/dispatcher.ts",
+      "gitBlobSha": "a310d389e5c6ce1ad10e1ce520f6d5dcce25a688"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/events/emitter.ts",
+      "gitBlobSha": "56a4b0dc69a0c4af3b6cb3a3421ff901a4075200"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/events/event-handlers.ts",
+      "gitBlobSha": "7865f5b3c721f75525d4ec351f9558ded7d60b40"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/events/event.ts",
+      "gitBlobSha": "61874002ebbdb476ffe9a2a0db8001ec6aefb178"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/events/focus-event.ts",
+      "gitBlobSha": "a552e54561162cb97469e1160d1529e30d17ed48"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/events/input-event.ts",
+      "gitBlobSha": "490502811fefaa513b133f9c840904c7ce63a907"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/events/keyboard-event.ts",
+      "gitBlobSha": "1210efd13da400294fbf47a09358632f80e6cd80"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/events/terminal-event.ts",
+      "gitBlobSha": "9a86bf8b296dac649b632ff172a470933d1f8493"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/events/terminal-focus-event.ts",
+      "gitBlobSha": "6d0303fdb48c824d9ca7b104d0180ec7f9a5b0e8"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/focus.ts",
+      "gitBlobSha": "7072de1fcba9bd3043d9bd9d19dc30b0bbf0eae1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/frame.ts",
+      "gitBlobSha": "ccbbed04ed2df3a434e64bc48caa5136344c5107"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/get-max-width.ts",
+      "gitBlobSha": "e079463748afb8e44f053e3e8a1d80f1a8a88089"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hit-test.ts",
+      "gitBlobSha": "53ddb869e51e6a22349797d97137980d5dce3ee3"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-animation-frame.ts",
+      "gitBlobSha": "d4dd38a1657f8f4ccff70211f269353291da7ce6"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-app.ts",
+      "gitBlobSha": "5545f35f7bf25ffdf858658243495f5bc9aca346"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-declared-cursor.ts",
+      "gitBlobSha": "e49668b3885ba68a29e433f0370a6a24152cd760"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-input.ts",
+      "gitBlobSha": "7cf75b3114227891dde2babb6552182891bceabd"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-interval.ts",
+      "gitBlobSha": "49c3ee6279b119b0ebea5e103944961dc1fe0f27"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-search-highlight.ts",
+      "gitBlobSha": "ce9fc364dccc0c6f675402dc672e1b8fb8d53807"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-selection.ts",
+      "gitBlobSha": "f7e1d45717c18282bca8c307c60f7d9038dc7471"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-stdin.ts",
+      "gitBlobSha": "997f3c3883f1c787befdc640cd730471487db9c5"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-tab-status.ts",
+      "gitBlobSha": "be6014204e087fe76f140b5a23030de972ff55fe"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-terminal-focus.ts",
+      "gitBlobSha": "b717f7b469550cbe649fab4b913a4e023ecb67e5"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-terminal-title.ts",
+      "gitBlobSha": "d820cd7ae94a0f4a69c8188cc3a5966e72e6b8f5"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-terminal-viewport.ts",
+      "gitBlobSha": "91193bf73f62b8af0f7bba8044284e9951bb4faf"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/ink.tsx",
+      "gitBlobSha": "1cf479d147fde553cf3c8df10a3ef7ee8c5a46e3"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/instances.ts",
+      "gitBlobSha": "389384a8d47ce1c15b22bf3e9afa534c61fe8a1c"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/layout/engine.ts",
+      "gitBlobSha": "38f6dcb0fb5614d423f9a59cedb31d696ddeeef6"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/layout/geometry.ts",
+      "gitBlobSha": "e586f8ecf11df704babb9ad283f80e1c818b4477"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/layout/node.ts",
+      "gitBlobSha": "5ebf177ba7f7c59a27dab4026b0620caf46db4c8"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/layout/yoga.ts",
+      "gitBlobSha": "58f2646fba661835d478477e16cc6139a7b69174"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/line-width-cache.ts",
+      "gitBlobSha": "d7d503b4b9947969bb5e94ded8bc9cef2ea27e3d"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/log-update.ts",
+      "gitBlobSha": "4434b9418b86560a43b514e172d1717498bdbb4e"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/measure-element.ts",
+      "gitBlobSha": "ed56eaf3f3d8f62ce007b51f5a17f195112bb3c1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/measure-text.ts",
+      "gitBlobSha": "cc8ae457c55b95670b5222a162173427ead70e6a"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/node-cache.ts",
+      "gitBlobSha": "f887325c862d577dc956d1c621233ab6775dfb76"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/optimizer.ts",
+      "gitBlobSha": "70016ef4baf76eaf76f1ee017d1b77ca03b23b59"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/output.ts",
+      "gitBlobSha": "16b5ae27f7685a3493c12db416babd82d7d73862"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/parse-keypress.ts",
+      "gitBlobSha": "a7e43adc8b4a2f9725f99aece87954e2d0f42f31"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/reconciler.ts",
+      "gitBlobSha": "f5c68130ade500a2613a110715848a08a3a5e581"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/render-border.ts",
+      "gitBlobSha": "ec3df8f9cb85129978d295f513cfc3805ce72616"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/render-node-to-output.ts",
+      "gitBlobSha": "73bbbbe8d0ed6dd9851cc1f864159d03c1f02c7b"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/render-to-screen.ts",
+      "gitBlobSha": "1c375c0f45916f78716bf8be189bd0a31381498b"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/renderer.ts",
+      "gitBlobSha": "d87fb3db91fb14593ded104e3ba397c8554688c1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/root.ts",
+      "gitBlobSha": "067bbd49602729862c9e8c1a7e201b277fd99273"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/screen.ts",
+      "gitBlobSha": "5b206d9541f6c502ca2a66eb37140be8182cee1f"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/searchHighlight.ts",
+      "gitBlobSha": "c7c8647e63bc27049ac29e2f2f9a4af580aa7ec7"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/selection.ts",
+      "gitBlobSha": "0025534f983e21713cc23a34a33f268523897083"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/squash-text-nodes.ts",
+      "gitBlobSha": "133a024f3f1300e6b3b8cf13540bfcb42de5cc60"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/stringWidth.ts",
+      "gitBlobSha": "83f7bcb5e6ba36060e56320c7d8699b543a1552c"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/styles.ts",
+      "gitBlobSha": "50986f43e14d6c72caa7ead6bd8fe01e8646ec61"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/supports-hyperlinks.ts",
+      "gitBlobSha": "0af37459f4e35969d38835c450ee95c620b12e10"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/tabstops.ts",
+      "gitBlobSha": "fc519fbd0b6cdeb92cced9057e73508d5e303774"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/terminal-focus-state.ts",
+      "gitBlobSha": "dfc3df1da9aec0ea1edb2fa4d8cbd206b510da40"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/terminal-querier.ts",
+      "gitBlobSha": "e190f1f6b23b4dfea6ae345e5894924d8e7bf514"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/terminal.ts",
+      "gitBlobSha": "2aad947d72d1762f2fd93cb8caa026797f7b50ed"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/termio.ts",
+      "gitBlobSha": "39f4fb216b8becba632b6ef6c179faaa8b35aa62"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/termio/ansi.ts",
+      "gitBlobSha": "c6e8effe7589c7c852a13002794f93ae3f64cee6"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/termio/csi.ts",
+      "gitBlobSha": "f3b2f524bf824a9affbc2ad673de18ac03cbc346"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/termio/dec.ts",
+      "gitBlobSha": "ac8bcc731c78aeb53305647a81b3fe8b063ff8d7"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/termio/esc.ts",
+      "gitBlobSha": "6d4cc9286600e4b10a3e726a0d7c1c4c50c885d1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/termio/osc.ts",
+      "gitBlobSha": "9bef515328535b7fbdd1ab938f3c78477ec704e9"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/termio/parser.ts",
+      "gitBlobSha": "301f14c5a0bd3dce2b7d3bf7e0aa901bbf5f99b1"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/termio/sgr.ts",
+      "gitBlobSha": "4c5a02200c7facb1b7191fbe43620429e4273474"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/termio/tokenize.ts",
+      "gitBlobSha": "68a0d113c596772512a2149a5b58edb0b235d9cf"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/termio/types.ts",
+      "gitBlobSha": "6c9bf737833153216962006c7e96b1ae64e0d133"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/useTerminalNotification.ts",
+      "gitBlobSha": "90e53eb63eb51d68a37034a81b0a87f2d84383c8"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/warn.ts",
+      "gitBlobSha": "98e6bced2beac7487903cbad9362c2d810a7f169"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/widest-line.ts",
+      "gitBlobSha": "80091e4a958ddde29e445171b8f7db4671fa5341"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/wrap-text.ts",
+      "gitBlobSha": "434412cc9bdd98bcddb805ee4ba1587aacf49d04"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/wrapAnsi.ts",
+      "gitBlobSha": "eff436bb14a289d9b88f584c02db9721ce5839bf"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/interactiveHelpers.tsx",
+      "gitBlobSha": "b88dbbf132fcf393dbe022740eb3f407fe031610"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/native-ts/yoga-layout/enums.ts",
+      "gitBlobSha": "8cbb6ecff2c85fcda9a729553119e4ec561fc9f2"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/native-ts/yoga-layout/index.ts",
+      "gitBlobSha": "49b9602becdcf2d2f5e2d3278e937e172f9c398b"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/replLauncher.tsx",
+      "gitBlobSha": "4d0989b336049dc6e1db13b9545fe316b6940bef"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/screens/REPL.tsx",
+      "gitBlobSha": "11cc4d84deb86395e400932f2344d40bc38e317d"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/state/AppState.tsx",
+      "gitBlobSha": "bdbb169ce0526ec1ff9d1762e82fb156fa67249f"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/state/AppStateStore.ts",
+      "gitBlobSha": "fd6526e0f0a956c044dfcc36095db68875f13094"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/types/textInputTypes.ts",
+      "gitBlobSha": "1e77b56fe822b6df8f3fca73b1bac2172b94cc72"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/Cursor.ts",
+      "gitBlobSha": "0317ece77139f429079ab928046a9399e8038517"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/envUtils.ts",
+      "gitBlobSha": "5a3ca96ac8bf29d2709f21857528fe0fd4239a4b"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/fullscreen.ts",
+      "gitBlobSha": "9d344177feee805c6ad637234690164ee229d355"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/intl.ts",
+      "gitBlobSha": "53b900d18743c7456dda4e313e31c27f7dd0238c"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/semver.ts",
+      "gitBlobSha": "6d6295c624ff62fced173f14f7f2b5b21239d395"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/sliceAnsi.ts",
+      "gitBlobSha": "4cd910775da86b87869c3f5793e58737ae955688"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/stringUtils.ts",
+      "gitBlobSha": "6f5da15910e3b96376f0e1c09f4787ae99010dc0"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/textHighlighting.ts",
+      "gitBlobSha": "4cdd916a7e3deaa6904b0874e8f778c6a4e9e51a"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/theme.ts",
+      "gitBlobSha": "9491dca652ce17992cdd626f07775d546af20b03"
+    },
+    {
+      "path": "legacy/2.1.88/source-original/restored-src/src/utils/debug.ts",
+      "gitBlobSha": "220da2bf7bc7505a1b637cf1d9fa45cbca2cc0a0"
+    },
+    {
+      "path": "legacy/2.1.88/source-original/restored-src/src/utils/log.ts",
+      "gitBlobSha": "bc4df3e17efb72ee8c351e41def3e6e04a5e2e1f"
+    }
+  ],
+  "compatibilityFiles": [
+    {
+      "path": "legacy/2.1.88/restored-src/src/bootstrap/state.ts",
+      "gitBlobSha": "ed742e89c02d99b8afb07c990686a3accd8e383a"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/commands/terminalSetup/terminalSetup.js",
+      "gitBlobSha": "471f297f07b3e2afa36108556e0f96a7ed90a85d"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/BaseTextInput.node.tsx",
+      "gitBlobSha": "074e988071524a7c86ec7893fbe069750742afec"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/PromptInput/ShimmeredInput.node.tsx",
+      "gitBlobSha": "3d5f24fafbc78da6087b640fb73dc7c16e8a77da"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/Spinner/ShimmerChar.node.tsx",
+      "gitBlobSha": "5b4a9c32c8fde2510ea6a3ed8518268ac410cd1e"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/context/notifications.js",
+      "gitBlobSha": "30d43524a16e90ea09a433c644e2ab25123be2ac"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/history.js",
+      "gitBlobSha": "0be3b1d6a0bdc5cf188e679d6b4aac4ff94e21c3"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/global.d.ts",
+      "gitBlobSha": "ec6a393fb0c0db5d0f284fa28048ae57866ec6c8"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink/hooks/use-input.node.ts",
+      "gitBlobSha": "4fd4e216ca1e7a6b6be56c410ad21e1fdd531e13"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/debug.ts",
+      "gitBlobSha": "b251514df6edf4b7be046816f9fc2dc81d8824b3"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/earlyInput.ts",
+      "gitBlobSha": "8de9c5982971f4328772239f77482bc28705b358"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/env.js",
+      "gitBlobSha": "6f04897b1a8466b377b64587aa0f1e0c0667121a"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/env.ts",
+      "gitBlobSha": "1bd72ec62e38086cb18bef75c837d71b09c763a9"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/execFileNoThrow.ts",
+      "gitBlobSha": "5ca9ea3737c5a1e9d0b056ca6ad85297890272f9"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/fullscreen.js",
+      "gitBlobSha": "314f6cb203534f7fec86f5bba2f86bdb319c3f93"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/imagePaste.js",
+      "gitBlobSha": "15486abd6d7368834f1c9ad463e95d64a7861fed"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/log.ts",
+      "gitBlobSha": "125d035898b456f611c53cfb71666db9e09bf674"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/modifiers.js",
+      "gitBlobSha": "b6aea6191eba838297d708af7170ad1bc317ca08"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/platform.js",
+      "gitBlobSha": "05ccd36894c6bf8300719396c83a0cce710a7850"
+    }
+  ]
+}

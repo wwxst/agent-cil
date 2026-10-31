@@ -503,9 +503,16 @@ export function createCliPermissionPolicy({
         {behavior:'allow',reason:'Operate on this CLI session-owned background Bash task.'};
     }
     if (name === 'Bash') {
-      return checkWholeToolPermissionRules(permissionContext, { name }) ||
-        { behavior: 'ask', reason: 'This command executes a shell process.',
-          decisionReason: { type: 'mode', mode: 'default' } };
+      // 2.1.304 PermissionAskDecision.defaultToNo is part of the reviewed
+      // consent surface, not a grant. Preserve all original source rule
+      // decisions and put a Bash ask on Deny before presenting it in Ink.
+      // The original AST/path checks and post-approval recheck still decide
+      // whether this exact shell command may execute.
+      const decision=checkWholeToolPermissionRules(permissionContext,{name}) ||
+        { behavior:'ask', reason:'This command executes a shell process.',
+          decisionReason:{type:'mode',mode:'default'} };
+      return decision.behavior==='ask'
+        ? {...decision,defaultToNo:true} : decision;
     }
 
     return { behavior: 'deny', reason: 'No CLI permission rule exists for tool ' + String(name) + '.' };
@@ -2257,6 +2264,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // Do not attach a readline listener until configuration and runtime setup succeed.
   // Otherwise a constructor/import error can leave a TTY handle open before the cleanup finally block.
   let rl;
+  let tui;
 
   const { AgentLoop } = await import('../../runtime/src/agent-loop.js');
   // Only the transport changes: both providers feed the same 2.1.88-derived
@@ -2445,6 +2453,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // Cover every fallible runtime setup operation with the SAME finally
   // that already owns shell cancellation and fsynced journal release.
   let taskManager;
+  let sigtermRequested=false;
+  let modelJournalFailure=false;
   let onSigint, onSigterm;
   let interactiveQuestionController;
   try {
@@ -2503,7 +2513,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       taskManager,
     }),
     maxTurns: options.maxTurns,
-    approvalHandler: async ({ name, input, reason, signal }) => {
+    approvalHandler: async ({ name, input, reason, defaultToNo, signal }) => {
+      if (tui && !options.print) {
+        return tui.requestApproval({ name, input, reason, defaultToNo, signal });
+      }
       if (!rl || options.print || !process.stdin.isTTY) {
         process.stderr.write(t(locale, 'permissionDeniedUnavailable', { tool: name }) + '\n');
         return { approved: false, reason: 'Interactive approval is unavailable.' };
@@ -2515,13 +2528,23 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     },
   });
 
-  if (process.stdin.isTTY && process.stdout.isTTY) {
+  // The original Ink root owns raw input for interactive TTY sessions.
+  // Do not attach a readline competitor until TUI initialization fails.
+  if (!interactiveInput && process.stdin.isTTY && process.stdout.isTTY) {
     rl = createInterface({ input: process.stdin, output: process.stdout });
   }
 
   let history = journal.messages;
   let activeController;
-  let sigtermRequested = false;
+  const { createTuiInterruptHandler } = await import('./tui/interrupt.js');
+  const onTuiInterrupt = createTuiInterruptHandler({
+    getActiveController: () => activeController,
+    onCancelMessage: () => tui?.pushSystemMessage(t(locale, 'pressCtrlCAgain')),
+    onExit: () => {
+      process.exitCode = 130;
+      tui?.close(130);
+    },
+  });
   onSigterm = () => {
     // Pinned original ShellCommandImpl delegates cancellation to the active
     // abort signal, whose Bash process owner kills its entire process tree.
@@ -2539,6 +2562,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     questionError.name = 'AbortError';
     interactiveQuestionController?.abort(questionError);
     rl?.close();
+    tui?.close(143);
   };
   // Port 2.1.88 hooks/useExitOnCtrlCD.ts + useDoublePress.ts:
   // cancel an active turn first; when idle, require a second Ctrl+C within
@@ -2551,7 +2575,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // Ctrl+C, then leaves the 800ms double-press window armed for exit.
     // Use readline's public key injection rather than mutating its
     // internal line/cursor fields so the terminal is redrawn consistently.
-    if (rl.line.length > 0) {
+    if (rl && !rl.closed && rl.line.length > 0) {
       rl.write(null, { ctrl: true, name: 'a' });
       rl.write(null, { ctrl: true, name: 'k' });
       // readline retains historyIndex when a recalled line is deleted.
@@ -2562,6 +2586,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.stderr.write('Press Ctrl+C again to exit.\n');
   };
   onSigint = () => {
+    if (tui) {
+      onTuiInterrupt();
+      return;
+    }
     if (activeController && !activeController.signal.aborted) {
       lastIdleInterruptAt = 0;
       const error = new Error('Interrupted by user.');
@@ -2599,28 +2627,56 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   process.on('SIGTERM', onSigterm);
   loop.on('toolCallStarted', ({ toolName }) => {
     if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
-      process.stderr.write(t(locale, 'permissionAutoApproved', { tool: toolName }) + '\n');
+      const notice = t(locale, 'permissionAutoApproved', { tool: toolName });
+      if (tui) tui.pushSystemMessage(notice);
+      else process.stderr.write(notice + '\n');
     }
-    process.stderr.write('\n' + t(locale, 'toolStarted', { tool: toolName }) + '\n');
+    const notice = t(locale, 'toolStarted', { tool: toolName });
+    if (tui) {
+      tui.pushSystemMessage(notice);
+      tui.setStatus(t(locale, 'tuiWorking'));
+    } else process.stderr.write('\n' + notice + '\n');
   });
   loop.on('toolCallFinished', ({ toolName, isError, denied }) => {
-    if (isError) process.stderr.write(t(locale, 'toolFailed', {
-      tool: toolName,
-      status: denied ? t(locale, 'toolDenied') : t(locale, 'toolError'),
-    }) + '\n');
+    if (isError) {
+      const notice = t(locale, 'toolFailed', {
+        tool: toolName,
+        status: denied ? t(locale, 'toolDenied') : t(locale, 'toolError'),
+      });
+      if (tui) tui.pushSystemMessage(notice);
+      else process.stderr.write(notice + '\n');
+    }
+    if (tui) tui.setStatus(
+      tui.getSnapshot().busy ? t(locale, 'tuiWorking') : t(locale, 'tuiReady'));
   });
 
-  const runPrompt = async (text, { plain = false } = {}) => {
+  const reportInteractiveError = error => {
+    if (tui) tui.pushSystemMessage(
+      t(locale, 'errorPrefix') + ' ' +
+      localizeCliMessage(error instanceof Error ? error.message : String(error), locale));
+    else printLocalizedError(error);
+  };
+
+  const runPrompt = async (text, { plain = false, displayInput } = {}) => {
     if(sigtermRequested)return 143;
     if(journal.needsToolReconciliation) {
-      printLocalizedError(journal.needsToolContextReview
+      reportInteractiveError(journal.needsToolContextReview
       ? 'Session contains completed tool results but failed Hook/native context normalization. Inspect the preserved results and Hook side effects before continuing; automatic replay is unsafe.'
       : 'Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
       return 2;
     }
     activeController = new AbortController();
-    if (!plain) process.stdout.write(t(locale, 'assistantPrompt'));
-    const onTextDelta = ({ text: delta }) => process.stdout.write(delta);
+    if (tui) {
+      tui.setBusy(true);
+      tui.setStatus(t(locale, 'tuiWorking'));
+      const shownInput = displayInput ?? text;
+      if (shownInput !== undefined) tui.addMessage('user', shownInput);
+      if (!plain) tui.beginAssistantMessage();
+    } else if (!plain) process.stdout.write(t(locale, 'assistantPrompt'));
+    const onTextDelta = ({ text: delta }) => {
+      if (tui) tui.appendAssistantText(delta);
+      else process.stdout.write(delta);
+    };
     // Once a model-requested tool turn has finished, its effects may already
     // be on disk. If the NEXT model stream fails, retaining the completed
     // assistant/tool_result pair prevents a retry from redoing that work.
@@ -2630,10 +2686,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     };
     const onContextCompacted = ({ committedMessages, beforeCount, afterCount }) => {
       committedHistory = committedMessages;
-      process.stderr.write(t(locale, 'contextCompacted', {
+      const notice = t(locale, 'contextCompacted', {
         before: beforeCount,
         after: afterCount,
-      }) + '\n');
+      });
+      if (tui) tui.setStatus(notice);
+      else process.stderr.write(notice + '\n');
     };
     loop.on('textDelta', onTextDelta);
     loop.on('turnFinished', onTurnFinished);
@@ -2654,19 +2712,24 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         signal: activeController.signal,
       });
       history = result.messages;
-      process.stdout.write('\n');
+      if (tui) {
+        tui.finishAssistantMessage();
+        tui.setBusy(false);
+        tui.setStatus(t(locale, 'tuiReady'));
+      } else process.stdout.write('\n');
       if(sigtermRequested)return 143;
       if (result.stopReason === 'max_tokens') {
-        printLocalizedError('Model output reached --max-tokens before finishing. Increase --max-tokens or continue the conversation.');
+        reportInteractiveError('Model output reached --max-tokens before finishing. Increase --max-tokens or continue the conversation.');
         return 1;
       }
       if (result.stopReason === 'max_turns') {
-        printLocalizedError('Agent reached --max-turns (' + options.maxTurns + ') without a final response. Increase --max-turns or continue the conversation.');
+        reportInteractiveError('Agent reached --max-turns (' + options.maxTurns + ') without a final response. Increase --max-turns or continue the conversation.');
         return 1;
       }
       return 0;
     } catch (error) {
-      process.stdout.write('\n');
+      if (tui) tui.finishAssistantMessage();
+      else process.stdout.write('\n');
       // 2.1.88 sessionStorage.ts commits the actual message chain, not the
       // last Query turnFinished event. Query can fsync a LocalShellTask
       // <task_notification> AFTER emitting turnFinished and BEFORE a failed
@@ -2681,62 +2744,58 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         // failed. Preserve the confirmed final tool result without pretending
         // that the failed post-tool context can be safely replayed.
         if(interactiveInput) {
-          process.stderr.write(t(locale, 'recoveryNeedsReview') + '\n');
+          const notice=t(locale, 'recoveryNeedsReview');
+          if(tui)tui.pushSystemMessage(notice);
+          else process.stderr.write(notice + '\n');
         }
       } else if (committedHistory) {
         // The erroring model response is NOT committed. Keep every preceding
         // durable transition, including task notifications since the last
         // completed tool batch. Never reconstruct history from an older event.
         if (interactiveInput) {
-          process.stderr.write(t(locale, 'recoveryToolResults') + '\n');
+          const notice=t(locale, 'recoveryToolResults');
+          if(tui)tui.pushSystemMessage(notice);
+          else process.stderr.write(notice + '\n');
         }
       } else if (history.length > priorHistoryLength) {
         // A provider failure before its first complete response must not
         // strand a durable user prompt outside the interactive history.
         if (interactiveInput) {
-          process.stderr.write(t(locale, 'recoveryPrompt') + '\n');
+          const notice=t(locale, 'recoveryPrompt');
+          if(tui)tui.pushSystemMessage(notice);
+          else process.stderr.write(notice + '\n');
         }
       }
-      printLocalizedError(error);
+      reportInteractiveError(error);
       return sigtermRequested ? 143 : activeController.signal.aborted ? 130 : 1;
     } finally {
       loop.off('textDelta', onTextDelta);
       loop.off('turnFinished', onTurnFinished);
       loop.off('contextCompacted', onContextCompacted);
       activeController = undefined;
+      if (tui) {
+        tui.setBusy(false);
+        if (!sigtermRequested) tui.setStatus(t(locale, 'tuiReady'));
+      }
     }
   };
 
-    if (!interactiveInput) {
-      return await runPrompt(initialInputCommitted ? undefined : (prompt.length ? prompt : undefined), { plain: options.print });
-    }
-    process.stderr.write(t(locale, 'interactiveStarted') + '\n');
-    if (prompt) {
-      // The first prompt is already a committed original input checkpoint.
-      // Let Query use the authenticated journal history without adding a
-      // duplicate user message or a second model-visible input.
-      const status = await runPrompt(initialInputCommitted ? undefined : prompt);
-      if (status === 130) process.stderr.write(t(locale, 'interrupted') + '\n');
-      // Invalid/incomplete model responses are never committed. A completed
-      // tool-result checkpoint is retained when a later model turn fails, so
-      // the interactive shell can safely continue without replaying tools.
-    }
-    // Pinned 2.1.88 commands/model/model.tsx:
-    // /model [model] sets the session override, while /model --help
-    // and information actions are local CLI commands, NOT model prompts.
-    // The original UI picker has no headless equivalent, so /model with
-    // no args reports the selected model rather than inventing a picker.
-    let modelJournalFailure=false;
+    // Keep the persisted original /model command exactly as the readline
+    // implementation used it. Both hosts write through the same SessionJournal.
+    const notify = message => {
+      if (tui) tui.pushSystemMessage(message);
+      else process.stderr.write(message + '\n');
+    };
   const handleModelCommand=async command=>{
       const match=/^\/model(?:\s+(.*))?$/i.exec(command);
       if(!match)return false;
       const argument=(match[1]??'').trim();
       if(!argument||['--current','current','--info','info'].includes(argument)){
-        process.stderr.write(t(locale, 'modelCurrent', { model: model.model, setting: activeModelSetting }) + '\n');
+        notify(t(locale, 'modelCurrent', { model: model.model, setting: activeModelSetting }));
         return true;
       }
       if(['--help','-h','help'].includes(argument)){
-        process.stderr.write(t(locale, 'modelUsage') + '\n');
+        notify(t(locale, 'modelUsage'));
         return true;
       }
       try{
@@ -2758,62 +2817,138 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           });
         }catch(error){
           modelJournalFailure=true;
-          printLocalizedError('Session model checkpoint failed; stopping to prevent an unrecorded model change: '+
+          reportInteractiveError('Session model checkpoint failed; stopping to prevent an unrecorded model change: '+
             (error instanceof Error?error.message:String(error)));
           rl?.close();
+          tui?.close(2);
           return true;
         }
         model.setModel(resolved);
         activeModelSetting=setting;
-        process.stderr.write(t(locale, 'modelSet', { model: model.model }) + '\n');
+        tui?.setModel(model.model);
+        notify(t(locale, 'modelSet', { model: model.model }));
       }catch(error){
-        process.stderr.write(t(locale, 'modelUnchanged', { reason: error instanceof Error ? error.message : String(error) }) + '\n');
+        notify(t(locale, 'modelUnchanged', { reason: error instanceof Error ? error.message : String(error) }));
       }
       return true;
     };
-    while (rl && !rl.closed && !sigtermRequested) {
-      let text;
-      interactiveQuestionController = new AbortController();
-      try {
-        text = await rl.question(t(locale, 'userPrompt'), { signal: interactiveQuestionController.signal });
-      } catch {
-        break;
-      } finally {
-        interactiveQuestionController = undefined;
+    const handleInteractiveInput = async text => {
+      if (sigtermRequested) return 143;
+      const trimmed = String(text ?? '').trim();
+      if (trimmed === '/exit' || trimmed === '/quit') {
+        if (tui) tui.close(modelJournalFailure ? 2 : 0);
+        else rl?.close();
+        return 0;
       }
-      const trimmed = text.trim();
-      if (trimmed === '/exit' || trimmed === '/quit') break;
-      if (!trimmed) continue;
+      if (!trimmed) return 0;
+      if (trimmed === '/help') {
+        if (tui) tui.pushSystemMessage(getHelp(locale, VERSION));
+        else process.stdout.write(getHelp(locale, VERSION));
+        return 0;
+      }
       if (trimmed === '/language' || trimmed.startsWith('/language ')) {
         const rawLanguage = trimmed.slice('/language'.length).trim();
         if (!rawLanguage) {
-          process.stderr.write(t(locale, 'languageCurrent', {
+          notify(t(locale, 'languageCurrent', {
             language: languageLabel(locale, languagePreference),
-          }) + '\n' + t(locale, 'languageUsage') + '\n');
-          continue;
+          }) + '\n' + t(locale, 'languageUsage'));
+          return 0;
         }
         const nextPreference = normalizeLanguagePreference(rawLanguage);
         if (!nextPreference) {
-          process.stderr.write(t(locale, 'languageInvalid') + '\n' + t(locale, 'languageUsage') + '\n');
-          continue;
+          notify(t(locale, 'languageInvalid') + '\n' + t(locale, 'languageUsage'));
+          return 0;
         }
         try {
           await saveLanguagePreference(nextPreference, { env });
           languagePreference = nextPreference;
           locale = resolveLanguage(nextPreference, env);
-          process.stderr.write(t(locale, 'languageSet', {
+          tui?.setLocale(locale);
+          notify(t(locale, 'languageSet', {
             language: languageLabel(locale, languagePreference),
-          }) + '\n');
+          }));
         } catch (error) {
-          process.stderr.write(t(locale, 'languageSaveFailed', {
+          notify(t(locale, 'languageSaveFailed', {
             reason: error instanceof Error ? error.message : String(error),
-          }) + '\n');
+          }));
         }
-        continue;
+        return 0;
       }
-      if(await handleModelCommand(trimmed))continue;
+      if (await handleModelCommand(trimmed)) return modelJournalFailure ? 2 : 0;
       const status = await runPrompt(trimmed);
+      if (status === 130) notify(t(locale, 'interrupted'));
+      return status;
+    };
+
+    if (!interactiveInput) {
+      return await runPrompt(initialInputCommitted ? undefined :
+        (prompt.length ? prompt : undefined), { plain: options.print });
+    }
+
+    // The original 2.1.88 Ink root is the only owner of raw terminal input.
+    // On bootstrap failure only, the existing readline host remains available.
+    // Runtime errors are not caught here: do not replay a committed first
+    // prompt or any side-effecting tool through a second frontend.
+    // Preserve the preexisting readline host as an explicit compatibility
+    // choice for plain terminals and the original readline-focused PTY
+    // regression suite. Default interactive sessions always use source Ink.
+    // This switch does not change AgentLoop, permissions or session ownership.
+    if (env.AGENT_CIL_TUI !== 'readline') {
+      try {
+        const { startAgentTui } = await import('./tui/entry.js');
+        tui = await startAgentTui({
+          locale,
+          model: model.model,
+          permissionMode: permissionContext.mode,
+          onSubmit: handleInteractiveInput,
+          onInterrupt: onTuiInterrupt,
+        });
+        tui.setStatus(t(locale, 'tuiReady'));
+      } catch (error) {
+        if (tui) {
+          tui.close(1);
+          await tui.waitUntilExit();
+          tui = undefined;
+        }
+        printLocalizedError('Could not start the original Ink TUI; falling back to the readline interface: ' +
+          (error instanceof Error ? error.message : String(error)));
+      }
+    }
+    if (!tui) {
+      rl = createInterface({ input: process.stdin, output: process.stdout });
+      rl.on('SIGINT', onSigint);
+    }
+
+    if (tui) {
+      // The positional prompt is already committed before AgentLoop starts.
+      // Render it while passing undefined so Query does not append twice.
+      if (prompt) {
+        const status = await runPrompt(initialInputCommitted ? undefined : prompt,
+          { displayInput: prompt });
+        if (status === 130) tui.pushSystemMessage(t(locale, 'interrupted'));
+      }
+      tui.setInputEnabled(true);
+      await tui.waitUntilExit();
+      return sigtermRequested ? 143 : modelJournalFailure ? 2 : tui.getExitCode();
+    }
+
+    process.stderr.write(t(locale, 'interactiveStarted') + '\n');
+    if (prompt) {
+      const status = await runPrompt(initialInputCommitted ? undefined : prompt);
       if (status === 130) process.stderr.write(t(locale, 'interrupted') + '\n');
+    }
+    while (rl && !rl.closed && !sigtermRequested) {
+      let text;
+      interactiveQuestionController = new AbortController();
+      try {
+        text = await rl.question(t(locale, 'userPrompt'),
+          { signal: interactiveQuestionController.signal });
+      } catch {
+        break;
+      } finally {
+        interactiveQuestionController = undefined;
+      }
+      await handleInteractiveInput(text);
     }
     return sigtermRequested ? 143 : modelJournalFailure ? 2 : 0;
   } finally {
@@ -2824,6 +2959,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     rl?.off('SIGINT', onSigint);
     interactiveQuestionController?.abort(new Error('CLI is closing.'));
     rl?.close();
+    if (tui) {
+      tui.close(sigtermRequested ? 143 : modelJournalFailure ? 2 :
+        process.exitCode === 130 ? 130 : 0);
+      await tui.waitUntilExit();
+    }
     try {
       // 2.1.88 LocalShellTask kills agent-owned shells on exit, and
       // 2.1.304 waits for pendingKillBackstops during shutdown. Do this

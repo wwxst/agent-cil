@@ -145,7 +145,8 @@ test('Windows ConPTY delivers Ctrl+C to active cancellation and idle input clear
     await waitUntil(() => idle.output.includes('discard-this'), 5000,
       'the typed idle input', () => idle.output);
     idle.terminal.write('\x03');
-    await waitUntil(() => idle.output.includes('Press Ctrl+C again to exit.'), 5000,
+    await waitUntil(() => (idle.output.includes('Press Ctrl+C again to exit.') ||
+        idle.output.includes('Press Ctrl+C again within 800 ms to exit.')), 5000,
       'the first-press clear hint', () => idle.output);
     idle.terminal.write('/exit\r');
     const idleExit = await waitForExit(idle.exitPromise, 5000);

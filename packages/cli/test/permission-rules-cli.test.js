@@ -69,6 +69,35 @@ test('original CLI rule precedence is deny > ask > allow even with acceptEdits',
   }
 });
 
+test('2.1.304 Bash asks default to Deny without overriding original whole-tool rule decisions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-cil-bash-default-to-no-'));
+  try {
+    for (const permissionRules of [
+      { allow: [], deny: [], ask: [] },
+      { allow: [], deny: [], ask: [{ toolName: 'Bash' }] },
+    ]) {
+      const context = createCliPermissionContext({ permissionRules });
+      const policy = createCliPermissionPolicy({ workspace: root, permissionContext: context });
+      const decision = await policy({ name: 'Bash', input: { command: 'echo test' } });
+      assert.equal(decision.behavior, 'ask', JSON.stringify(decision));
+      assert.equal(decision.defaultToNo, true, JSON.stringify(decision));
+    }
+    for (const behavior of ['allow', 'deny']) {
+      const context = createCliPermissionContext({
+        permissionRules: { allow: [], deny: [], ask: [],
+          [behavior]: [{ toolName: 'Bash' }] },
+      });
+      const policy = createCliPermissionPolicy({ workspace: root, permissionContext: context });
+      const decision = await policy({ name: 'Bash', input: { command: 'echo test' } });
+      assert.equal(decision.behavior, behavior);
+      assert.notEqual(decision.defaultToNo, true,
+        'defaultToNo is a UI property of asks, not a replacement for source rule precedence');
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('real installed CLI honors original allow/deny/ask rules without bypassing path safety', {
   timeout: 30000,
 }, async () => {
