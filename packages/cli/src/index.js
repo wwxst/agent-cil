@@ -2446,6 +2446,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // Cover every fallible runtime setup operation with the SAME finally
   // that already owns shell cancellation and fsynced journal release.
   let taskManager;
+  let sigtermRequested=false;
   let modelJournalFailure=false;
   let onSigint, onSigterm;
   let interactiveQuestionController;
@@ -2528,7 +2529,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   let history = journal.messages;
   let activeController;
-  let sigtermRequested = false;
   const { createTuiInterruptHandler } = await import('./tui/interrupt.js');
   const onTuiInterrupt = createTuiInterruptHandler({
     getActiveController: () => activeController,
