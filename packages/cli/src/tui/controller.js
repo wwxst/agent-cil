@@ -64,6 +64,7 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
     setBusy(busy) { publish({ busy: Boolean(busy) }); },
     setInputEnabled(inputEnabled) { publish({ inputEnabled: Boolean(inputEnabled) }); },
     setLocale(locale) { publish({ locale }); },
+    setModel(model) { publish({ model: String(model) }); },
     setPermissionMode(permissionMode) { publish({ permissionMode }); },
     requestApproval({ name, input, reason, defaultToNo = false, signal }) {
       if (closed || signal?.aborted) {
