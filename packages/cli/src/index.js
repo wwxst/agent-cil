@@ -503,9 +503,16 @@ export function createCliPermissionPolicy({
         {behavior:'allow',reason:'Operate on this CLI session-owned background Bash task.'};
     }
     if (name === 'Bash') {
-      return checkWholeToolPermissionRules(permissionContext, { name }) ||
-        { behavior: 'ask', reason: 'This command executes a shell process.',
-          decisionReason: { type: 'mode', mode: 'default' } };
+      // 2.1.304 PermissionAskDecision.defaultToNo is part of the reviewed
+      // consent surface, not a grant. Preserve all original source rule
+      // decisions and put a Bash ask on Deny before presenting it in Ink.
+      // The original AST/path checks and post-approval recheck still decide
+      // whether this exact shell command may execute.
+      const decision=checkWholeToolPermissionRules(permissionContext,{name}) ||
+        { behavior:'ask', reason:'This command executes a shell process.',
+          decisionReason:{type:'mode',mode:'default'} };
+      return decision.behavior==='ask'
+        ? {...decision,defaultToNo:true} : decision;
     }
 
     return { behavior: 'deny', reason: 'No CLI permission rule exists for tool ' + String(name) + '.' };
