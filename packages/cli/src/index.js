@@ -2449,6 +2449,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let onSigint, onSigterm;
   let interactiveQuestionController;
   let modelJournalFailure = false;
+  let sigtermRequested = false;
   try {
     taskManager=createLocalShellTaskManager({sessionId:journal.id});
   const tools = await createBuiltinTools({
@@ -2555,7 +2556,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   let history = journal.messages;
   let activeController;
-  let sigtermRequested = false;
   const { createTuiInterruptHandler } = await import('./tui/interrupt.js');
   const onTuiInterrupt = createTuiInterruptHandler({
     getActiveController: () => activeController,
