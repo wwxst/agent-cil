@@ -2675,14 +2675,24 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const runPrompt = async (text, { plain = false } = {}) => {
     if(sigtermRequested)return 143;
     if(journal.needsToolReconciliation) {
-      printLocalizedError(journal.needsToolContextReview
+      reportInteractiveError(journal.needsToolContextReview
       ? 'Session contains completed tool results but failed Hook/native context normalization. Inspect the preserved results and Hook side effects before continuing; automatic replay is unsafe.'
       : 'Session contains an unfinished tool batch. Inspect side effects and reconcile the session before continuing; automatic replay is unsafe.');
       return 2;
     }
     activeController = new AbortController();
-    if (!plain) process.stdout.write(t(locale, 'assistantPrompt'));
-    const onTextDelta = ({ text: delta }) => process.stdout.write(delta);
+    if (tui) {
+      tui.setBusy(true);
+      tui.setStatus(t(locale, 'tuiWorking'));
+      if (text !== undefined) tui.addMessage('user', text);
+      if (!plain) tui.beginAssistantMessage();
+    } else if (!plain) {
+      process.stdout.write(t(locale, 'assistantPrompt'));
+    }
+    const onTextDelta = ({ text: delta }) => {
+      if (tui) tui.appendAssistantText(delta);
+      else process.stdout.write(delta);
+    };
     // Once a model-requested tool turn has finished, its effects may already
     // be on disk. If the NEXT model stream fails, retaining the completed
     // assistant/tool_result pair prevents a retry from redoing that work.
@@ -2692,10 +2702,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     };
     const onContextCompacted = ({ committedMessages, beforeCount, afterCount }) => {
       committedHistory = committedMessages;
-      process.stderr.write(t(locale, 'contextCompacted', {
+      const notice = t(locale, 'contextCompacted', {
         before: beforeCount,
         after: afterCount,
-      }) + '\n');
+      });
+      if (tui) tui.setStatus(notice);
+      else process.stderr.write(notice + '\n');
     };
     loop.on('textDelta', onTextDelta);
     loop.on('turnFinished', onTurnFinished);
@@ -2716,19 +2728,26 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         signal: activeController.signal,
       });
       history = result.messages;
-      process.stdout.write('\n');
+      if (tui) {
+        tui.finishAssistantMessage();
+        tui.setBusy(false);
+        tui.setStatus(t(locale, 'tuiReady'));
+      } else {
+        process.stdout.write('\n');
+      }
       if(sigtermRequested)return 143;
       if (result.stopReason === 'max_tokens') {
-        printLocalizedError('Model output reached --max-tokens before finishing. Increase --max-tokens or continue the conversation.');
+        reportInteractiveError('Model output reached --max-tokens before finishing. Increase --max-tokens or continue the conversation.');
         return 1;
       }
       if (result.stopReason === 'max_turns') {
-        printLocalizedError('Agent reached --max-turns (' + options.maxTurns + ') without a final response. Increase --max-turns or continue the conversation.');
+        reportInteractiveError('Agent reached --max-turns (' + options.maxTurns + ') without a final response. Increase --max-turns or continue the conversation.');
         return 1;
       }
       return 0;
     } catch (error) {
-      process.stdout.write('\n');
+      if (tui) tui.finishAssistantMessage();
+      else process.stdout.write('\n');
       // 2.1.88 sessionStorage.ts commits the actual message chain, not the
       // last Query turnFinished event. Query can fsync a LocalShellTask
       // <task_notification> AFTER emitting turnFinished and BEFORE a failed
@@ -2743,25 +2762,32 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         // failed. Preserve the confirmed final tool result without pretending
         // that the failed post-tool context can be safely replayed.
         if(interactiveInput) {
-          process.stderr.write(t(locale, 'recoveryNeedsReview') + '\n');
+          if (tui) tui.pushSystemMessage(t(locale, 'recoveryNeedsReview'));
+          else process.stderr.write(t(locale, 'recoveryNeedsReview') + '\n');
         }
       } else if (committedHistory) {
         // The erroring model response is NOT committed. Keep every preceding
         // durable transition, including task notifications since the last
         // completed tool batch. Never reconstruct history from an older event.
         if (interactiveInput) {
-          process.stderr.write(t(locale, 'recoveryToolResults') + '\n');
+          if (tui) tui.pushSystemMessage(t(locale, 'recoveryToolResults'));
+          else process.stderr.write(t(locale, 'recoveryToolResults') + '\n');
         }
       } else if (history.length > priorHistoryLength) {
         // A provider failure before its first complete response must not
         // strand a durable user prompt outside the interactive history.
         if (interactiveInput) {
-          process.stderr.write(t(locale, 'recoveryPrompt') + '\n');
+          if (tui) tui.pushSystemMessage(t(locale, 'recoveryPrompt'));
+          else process.stderr.write(t(locale, 'recoveryPrompt') + '\n');
         }
       }
-      printLocalizedError(error);
+      if (!tui || !activeController.signal.aborted) reportInteractiveError(error);
       return sigtermRequested ? 143 : activeController.signal.aborted ? 130 : 1;
     } finally {
+      if (tui) {
+        tui.setBusy(false);
+        if (!sigtermRequested) tui.setStatus(t(locale, 'tuiReady'));
+      }
       loop.off('textDelta', onTextDelta);
       loop.off('turnFinished', onTurnFinished);
       loop.off('contextCompacted', onContextCompacted);
