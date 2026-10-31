@@ -2899,6 +2899,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (status === 130) notifyInteractive(t(locale, 'interrupted'));
     };
 
+    // Regression harness opt-in: pre-Ink readline PTY fixtures verify the
+    // original fallback behavior. Normal terminal sessions still start Ink.
+    if (env.AGENT_CIL_TEST_FORCE_READLINE === '1') {
+      rl = createInterface({ input: process.stdin, output: process.stdout });
+      rl.on('SIGINT', onSigint);
+    } else {
     // Only bootstrap failure may fall back to readline. A real model/tool
     // error after Ink starts must stay in the existing AgentLoop/recovery path.
     try {
@@ -2921,6 +2927,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         (error instanceof Error ? error.message : String(error)));
       rl = createInterface({ input: process.stdin, output: process.stdout });
       rl.on('SIGINT', onSigint);
+    }
     }
 
     if (tui) {
