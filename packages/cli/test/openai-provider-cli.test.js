@@ -6,6 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+// These pre-Ink acceptance cases verify the real original readline fallback.
+// Ink is the default CLI and has separate Linux PTY / Windows ConPTY cases.
+process.env.AGENT_CIL_TUI = 'readline';
 import { parseArgs } from '../src/index.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ||

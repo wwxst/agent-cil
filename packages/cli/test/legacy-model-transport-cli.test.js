@@ -5,6 +5,9 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+// These pre-Ink acceptance cases verify the real original readline fallback.
+// Ink is the default CLI and has separate Linux PTY / Windows ConPTY cases.
+process.env.AGENT_CIL_TUI = 'readline';
 import { fileURLToPath } from 'node:url';
 
 // CI re-runs these acceptance cases against the freshly installed npm bin.

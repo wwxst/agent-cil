@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+// These pre-Ink acceptance cases verify the real original readline fallback.
+// Ink is the default CLI and has separate Linux PTY / Windows ConPTY cases.
+process.env.AGENT_CIL_TUI = 'readline';
 import { AgentLoop } from '../../runtime/src/agent-loop.js';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import {

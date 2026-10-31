@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
+// These pre-Ink acceptance cases verify the real original readline fallback.
+// Ink is the default CLI and has separate Linux PTY / Windows ConPTY cases.
+process.env.AGENT_CIL_TUI = 'readline';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
