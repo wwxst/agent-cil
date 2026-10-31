@@ -2446,6 +2446,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // Cover every fallible runtime setup operation with the SAME finally
   // that already owns shell cancellation and fsynced journal release.
   let taskManager;
+  let modelJournalFailure=false;
   let onSigint, onSigterm;
   let interactiveQuestionController;
   try {
@@ -2774,7 +2775,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
     // Keep the persisted original /model command exactly as the readline
     // implementation used it. Both hosts write through the same SessionJournal.
-    let modelJournalFailure = false;
     const notify = message => {
       if (tui) tui.pushSystemMessage(message);
       else process.stderr.write(message + '\n');
