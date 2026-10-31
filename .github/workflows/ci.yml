@@ -1,5 +1,10 @@
 name: Node.js CI
 
+# Recheck only the newest source/tree per PR, avoiding stale PTY runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 on:
   pull_request:
   push:
