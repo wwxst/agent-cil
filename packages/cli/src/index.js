@@ -2889,24 +2889,32 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // On bootstrap failure only, the existing readline host remains available.
     // Runtime errors are not caught here: do not replay a committed first
     // prompt or any side-effecting tool through a second frontend.
-    try {
-      const { startAgentTui } = await import('./tui/entry.js');
-      tui = await startAgentTui({
-        locale,
-        model: model.model,
-        permissionMode: permissionContext.mode,
-        onSubmit: handleInteractiveInput,
-        onInterrupt: onTuiInterrupt,
-      });
-      tui.setStatus(t(locale, 'tuiReady'));
-    } catch (error) {
-      if (tui) {
-        tui.close(1);
-        await tui.waitUntilExit();
-        tui = undefined;
+    // Preserve the preexisting readline host as an explicit compatibility
+    // choice for plain terminals and the original readline-focused PTY
+    // regression suite. Default interactive sessions always use source Ink.
+    // This switch does not change AgentLoop, permissions or session ownership.
+    if (env.AGENT_CIL_TUI !== 'readline') {
+      try {
+        const { startAgentTui } = await import('./tui/entry.js');
+        tui = await startAgentTui({
+          locale,
+          model: model.model,
+          permissionMode: permissionContext.mode,
+          onSubmit: handleInteractiveInput,
+          onInterrupt: onTuiInterrupt,
+        });
+        tui.setStatus(t(locale, 'tuiReady'));
+      } catch (error) {
+        if (tui) {
+          tui.close(1);
+          await tui.waitUntilExit();
+          tui = undefined;
+        }
+        printLocalizedError('Could not start the original Ink TUI; falling back to the readline interface: ' +
+          (error instanceof Error ? error.message : String(error)));
       }
-      printLocalizedError('Could not start the original Ink TUI; falling back to the readline interface: ' +
-        (error instanceof Error ? error.message : String(error)));
+    }
+    if (!tui) {
       rl = createInterface({ input: process.stdin, output: process.stdout });
       rl.on('SIGINT', onSigint);
     }
