@@ -4,7 +4,7 @@
   "sourcePackage": "@anthropic-ai/claude-code",
   "sourceVersion": "2.1.88",
   "sourcePackageCliBlob": "397ffc36211479cca414cfb245df35f3db232336",
-  "importedFileCount": 145,
+  "importedFileCount": 146,
   "files": [
     {
       "path": "legacy/2.1.88/restored-src/src/components/App.tsx",
@@ -45,6 +45,10 @@
     {
       "path": "legacy/2.1.88/restored-src/src/components/design-system/ThemeProvider.tsx",
       "gitBlobSha": "8e0de6021cbd83a430683ddde4c235302c5af3f6"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/MarkdownTable.tsx",
+      "gitBlobSha": "d81d16e6cf032be92ffd0e3e6881f403878b654c"
     },
     {
       "path": "legacy/2.1.88/restored-src/src/components/Message.tsx",
@@ -615,6 +619,10 @@
     {
       "path": "legacy/2.1.88/restored-src/src/history.js",
       "gitBlobSha": "0be3b1d6a0bdc5cf188e679d6b4aac4ff94e21c3"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/ink.js",
+      "gitBlobSha": "384cdf4448e36101b2762a45846ac3a444ac6cfe"
     },
     {
       "path": "legacy/2.1.88/restored-src/src/ink/global.d.ts",
