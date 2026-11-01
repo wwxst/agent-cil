@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { marked } from 'marked';
 import Box from '../../../../legacy/2.1.88/restored-src/src/ink/components/Box.js';
 import { Ansi } from '../../../../legacy/2.1.88/restored-src/src/ink/Ansi.js';
-import MarkdownTable from '../../../../legacy/2.1.88/restored-src/src/components/MarkdownTable.js';
+import { MarkdownTable } from '../../../../legacy/2.1.88/restored-src/src/components/MarkdownTable.js';
 import {
   configureMarked,
   formatToken,
