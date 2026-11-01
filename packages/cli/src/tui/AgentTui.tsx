@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import chalk from 'chalk';
 import Box from '../../../../legacy/2.1.88/restored-src/src/ink/components/Box.js';
+import ScrollBox, { type ScrollBoxHandle } from '../../../../legacy/2.1.88/restored-src/src/ink/components/ScrollBox.js';
+import { useTerminalSize } from '../../../../legacy/2.1.88/restored-src/src/hooks/useTerminalSize.js';
 import Text from '../../../../legacy/2.1.88/restored-src/src/ink/components/Text.js';
 import { useTerminalFocus } from '../../../../legacy/2.1.88/restored-src/src/ink/hooks/use-terminal-focus.js';
 import { BaseTextInput } from '../../../../legacy/2.1.88/restored-src/src/components/BaseTextInput.node.js';
@@ -14,6 +16,8 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const locale = snapshot.locale;
   const terminalFocus = useTerminalFocus();
+  const terminalSize = useTerminalSize();
+  const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const [value, setValueState] = useState('');
   const valueRef = useRef('');
   const setValue = useCallback(nextValue => {
@@ -250,6 +254,27 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       return permissionInputTypeRef.current ? input : null;
     }
 
+    // The original 2.1.88 ScrollBox owns transcript history. PageUp/PageDown
+    // scroll only when the prompt is empty; multiline prompt editing keeps its
+    // normal cursor behavior. PageDown restores sticky follow at the bottom.
+    if (valueRef.current.length === 0 && (key.pageUp || key.pageDown)) {
+      const scroll = scrollRef.current;
+      if (scroll) {
+        const viewportHeight = scroll.getViewportHeight();
+        const page = Math.max(1, (viewportHeight || terminalSize.rows) - 2);
+        if (key.pageUp) {
+          scroll.scrollBy(-page);
+        } else if (
+          scroll.getScrollTop() + page >= scroll.getScrollHeight() - viewportHeight
+        ) {
+          scroll.scrollToBottom();
+        } else {
+          scroll.scrollBy(page);
+        }
+      }
+      return null;
+    }
+
     // Ordinary editing is disabled until startup work is complete and while
     // an AgentLoop turn is active.
     if (currentSnapshot.busy || !currentSnapshot.inputEnabled) return null;
@@ -267,7 +292,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       return null;
     }
     return input;
-  }, [controller, onClearInput, resetHistory, onInterrupt, submit]);
+  }, [controller, onClearInput, resetHistory, onInterrupt, submit, terminalSize.rows]);
 
   const activeInputValue = permissionInputType
     ? approvalFeedback[permissionInputType]
@@ -303,10 +328,10 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     cursorChar: ' ',
     invert: text => chalk.inverse(text),
     themeText: text => chalk.white(text),
-    columns: Math.max(10, process.stdout.columns || 80),
+    columns: Math.max(10, terminalSize.columns),
     disableCursorMovementForUpDownKeys: false,
     disableEscapeDoublePress: false,
-    maxVisibleLines: Math.max(2, Math.min(8, (process.stdout.rows || 24) - 10)),
+    maxVisibleLines: Math.max(2, Math.min(8, terminalSize.rows - 10)),
     externalOffset: activeInputOffset,
     onOffsetChange: setActiveInputOffset,
     inputFilter,
@@ -316,7 +341,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     setInputReady(true);
   }, []);
 
-  const visibleMessages = snapshot.messages.slice(-10);
+  const visibleMessages = snapshot.messages;
   const placeholder = translate(locale, 'tuiPlaceholder');
   const permissionLabel = snapshot.permissionMode === 'acceptEdits'
     ? translate(locale, 'tuiPermissionAuto')
@@ -326,12 +351,21 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     : snapshot.notification?.text || snapshot.status || translate(locale, 'tuiReady');
 
   return (
-    <Box flexDirection="column" padding={1} width="100%">
+    <Box flexDirection="column" padding={1} width={terminalSize.columns} height={terminalSize.rows}>
       <Box flexDirection="row" justifyContent="space-between">
         <Text bold color="cyan">agent-cil</Text>
         <Text dimColor>{snapshot.model} · {permissionLabel}</Text>
       </Box>
-      <Box flexDirection="column" marginTop={1}>
+      <ScrollBox
+        ref={scrollRef}
+        flexDirection="column"
+        flexGrow={1}
+        flexShrink={1}
+        minHeight={3}
+        width="100%"
+        marginTop={1}
+        stickyScroll
+      >
         {visibleMessages.map(message => (
           <Box key={message.id} flexDirection="column" marginBottom={1}>
             <Text bold color={message.role === 'user' ? 'green' : message.role === 'assistant' ? 'cyan' : 'yellow'}>
@@ -344,7 +378,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
             <Text>{message.text || ' '}</Text>
           </Box>
         ))}
-      </Box>
+      </ScrollBox>
       {snapshot.pendingApproval ? (
         <PermissionPrompt
           key={snapshot.pendingApproval.id}
