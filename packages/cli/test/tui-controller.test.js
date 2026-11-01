@@ -138,3 +138,51 @@ test('original 2.1.88 Ink root and TUI component load through the Node TSX compa
   assert.equal(typeof root.default, 'function');
   assert.equal(typeof app.default, 'function');
 });
+
+test('TUI controller retains concurrent tool calls and their terminal lifecycle states', () => {
+  const controller = createTuiController();
+  controller.addMessage('user', 'inspect and update files');
+  controller.beginAssistantMessage();
+  controller.appendAssistantText('I will inspect first.');
+  const first = controller.beginToolMessage('tool-read-1', 'Read');
+  const second = controller.beginToolMessage('tool-write-2', 'Write');
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(controller.finishToolMessage({
+    toolUseId: 'tool-read-1',
+  }), true);
+  assert.equal(controller.finishToolMessage({
+    toolUseId: 'tool-write-2',
+    isError: true,
+  }), true);
+  assert.equal(controller.finishToolMessage({
+    toolUseId: 'unknown-tool',
+  }), false);
+  controller.appendAssistantText(' Then report the result.');
+  controller.finishAssistantMessage();
+
+  const messages = controller.getSnapshot().messages;
+  assert.deepEqual(messages.map(message => message.role), [
+    'user', 'assistant', 'tool', 'tool',
+  ]);
+  assert.deepEqual(messages.filter(message => message.role === 'tool').map(message => [
+    message.toolUseId, message.toolName, message.status,
+  ]), [
+    ['tool-read-1', 'Read', 'succeeded'],
+    ['tool-write-2', 'Write', 'failed'],
+  ]);
+  assert.equal(messages[1].text, 'I will inspect first. Then report the result.');
+  controller.close(0);
+});
+
+test('TUI controller marks denied and interrupted tool calls without granting execution', () => {
+  const controller = createTuiController();
+  controller.beginToolMessage('denied-tool', 'Bash');
+  controller.finishToolMessage({ toolUseId: 'denied-tool', denied: true, isError: true });
+  controller.beginToolMessage('interrupted-tool', 'Bash');
+  controller.finishToolMessage({ toolUseId: 'interrupted-tool', interrupted: true, isError: true });
+  assert.deepEqual(controller.getSnapshot().messages.map(message => message.status), [
+    'denied', 'interrupted',
+  ]);
+  controller.close(0);
+});
