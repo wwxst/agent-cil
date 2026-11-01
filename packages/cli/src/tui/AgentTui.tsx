@@ -7,6 +7,7 @@ import { useTerminalFocus } from '../../../../legacy/2.1.88/restored-src/src/ink
 import { useTerminalSize } from '../../../../legacy/2.1.88/restored-src/src/hooks/useTerminalSize.js';
 import { BaseTextInput } from '../../../../legacy/2.1.88/restored-src/src/components/BaseTextInput.node.js';
 import PermissionPrompt from './PermissionPrompt.tsx';
+import MessageContent from './MessageContent.tsx';
 import { useTextInput } from './useTextInput.js';
 import { addToHistory } from '../../../../legacy/2.1.88/restored-src/src/history.js';
 import { getCoalescedEnterText } from './input.js';
@@ -411,7 +412,9 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
                       ? translate(locale, 'tuiRoleAssistant')
                       : 'agent-cil'}
                 </Text>
-                <Text>{message.text || ' '}</Text>
+                {message.role === 'assistant' && message.streaming
+                  ? <Text>{message.text || ' '}</Text>
+                  : <MessageContent text={message.text || ' '} />}
               </>
             )}
           </Box>
