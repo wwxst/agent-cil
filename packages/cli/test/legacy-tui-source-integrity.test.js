@@ -12,9 +12,9 @@ test('2.1.88 TUI source and compatibility boundary match their pinned Git blob m
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   assert.equal(manifest.sourceCommit, '57d4d4d05121f84601af119091455832d37de5df');
   assert.equal(manifest.sourceVersion, '2.1.88');
-  assert.equal(manifest.importedFileCount, 145);
+  assert.equal(manifest.importedFileCount, 146);
   assert.equal(manifest.files.length, manifest.importedFileCount);
-  assert.equal(manifest.compatibilityFiles.length, 20);
+  assert.equal(manifest.compatibilityFiles.length, 21);
 
   let inkFiles = 0;
   for (const entry of [...manifest.files, ...manifest.compatibilityFiles]) {
