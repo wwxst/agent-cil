@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { normalizeTuiOutput } from './tui-test-helpers.js';
+import { createTerminalScreen } from './tui-test-helpers.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -96,11 +96,13 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
     });
     let output = '';
     let stderr = '';
+    const terminalScreen = createTerminalScreen(80, 24);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
-      const visible = normalizeTuiOutput(output);
+      terminalScreen.write(chunk);
+      const visible = terminalScreen.toString();
       if (!sentSessionGrant && visible.includes('Permission required')) {
         sentSessionGrant = true;
         // Original CustomSelect supports immediate 1-based selection:
@@ -125,7 +127,7 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
     // The third command differs. It must be awaiting approval, not executing.
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(calls.length, 3, 'a session grant for one command must not allow a different Bash command');
-    assert.match(normalizeTuiOutput(output).slice(-2500), /Permission required/);
+    assert.match(terminalScreen.toString().slice(-2500), /Permission required/);
     child.stdin.write('\r'); // defaultToNo Deny for the different command
 
     await waitForCallCount(calls, 4);
