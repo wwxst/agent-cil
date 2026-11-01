@@ -389,14 +389,31 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       >
         {visibleMessages.map(message => (
           <Box key={message.id} flexDirection="column" marginBottom={1}>
-            <Text bold color={message.role === 'user' ? 'green' : message.role === 'assistant' ? 'cyan' : 'yellow'}>
-              {message.role === 'user'
-                ? translate(locale, 'tuiRoleYou')
-                : message.role === 'assistant'
-                  ? translate(locale, 'tuiRoleAssistant')
-                  : 'agent-cil'}
-            </Text>
-            <Text>{message.text || ' '}</Text>
+            {message.role === 'tool' ? (
+              <Text
+                bold
+                color={message.status === 'succeeded' ? 'green'
+                  : message.status === 'running' ? 'cyan' : 'yellow'}
+              >
+                {'› ' + message.toolName + ' · ' + translate(locale,
+                  message.status === 'running' ? 'tuiToolRunning'
+                    : message.status === 'succeeded' ? 'tuiToolSucceeded'
+                      : message.status === 'denied' ? 'tuiToolDenied'
+                        : message.status === 'interrupted' ? 'tuiToolInterrupted'
+                          : 'tuiToolFailed')}
+              </Text>
+            ) : (
+              <>
+                <Text bold color={message.role === 'user' ? 'green' : message.role === 'assistant' ? 'cyan' : 'yellow'}>
+                  {message.role === 'user'
+                    ? translate(locale, 'tuiRoleYou')
+                    : message.role === 'assistant'
+                      ? translate(locale, 'tuiRoleAssistant')
+                      : 'agent-cil'}
+                </Text>
+                <Text>{message.text || ' '}</Text>
+              </>
+            )}
           </Box>
         ))}
       </ScrollBox>
