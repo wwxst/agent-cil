@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { normalizeTuiOutput } from './tui-test-helpers.js';
+import { normalizeTuiOutput, normalizeTuiText } from './tui-test-helpers.js';
 
 // This test also runs through the CI npm-pack-installed CLI executable.
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -100,7 +100,7 @@ test('installed original 2.1.88 Select: ArrowDown then Enter explicitly allows a
     assert.equal(signal, null, stderr + output);
     assert.equal(status, 0, stderr + output);
     assert.doesNotMatch(output + stderr, /Could not start the original Ink TUI|falling back to the readline interface/);
-    assert.ok(normalizeTuiOutput(output).includes('Permission required'), output);
+    assert.ok(normalizeTuiText(output).includes('Permission required'), output);
     assert.equal(approvalPrompts, 1, output);
     assert.equal(submittedExits, 1, output);
     assert.equal(await readFile(marker, 'utf8'), 'executed',
