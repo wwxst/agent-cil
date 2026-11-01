@@ -4,6 +4,7 @@ import Box from '../../../../legacy/2.1.88/restored-src/src/ink/components/Box.j
 import ScrollBox, { type ScrollBoxHandle } from '../../../../legacy/2.1.88/restored-src/src/ink/components/ScrollBox.js';
 import Text from '../../../../legacy/2.1.88/restored-src/src/ink/components/Text.js';
 import { useTerminalFocus } from '../../../../legacy/2.1.88/restored-src/src/ink/hooks/use-terminal-focus.js';
+import { useTerminalSize } from '../../../../legacy/2.1.88/restored-src/src/hooks/useTerminalSize.js';
 import { BaseTextInput } from '../../../../legacy/2.1.88/restored-src/src/components/BaseTextInput.node.js';
 import PermissionPrompt from './PermissionPrompt.tsx';
 import { useTextInput } from './useTextInput.js';
@@ -15,6 +16,9 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const locale = snapshot.locale;
   const terminalFocus = useTerminalFocus();
+  const terminalSize = useTerminalSize();
+  const terminalRows = Math.max(5, terminalSize.rows || 24);
+  const terminalColumns = Math.max(10, terminalSize.columns || 80);
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const [value, setValueState] = useState('');
   const valueRef = useRef('');
@@ -259,7 +263,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       const scroll = scrollRef.current;
       if (scroll) {
         const viewportHeight = scroll.getViewportHeight();
-        const page = Math.max(1, (viewportHeight || process.stdout.rows || 24) - 2);
+        const page = Math.max(1, (viewportHeight || terminalRows) - 2);
         if (key.pageUp) {
           scroll.scrollBy(-page);
         } else if (
@@ -291,7 +295,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       return null;
     }
     return input;
-  }, [controller, onClearInput, resetHistory, onInterrupt, submit]);
+  }, [controller, onClearInput, resetHistory, onInterrupt, submit, terminalRows]);
 
   const activeInputValue = permissionInputType
     ? approvalFeedback[permissionInputType]
@@ -327,10 +331,10 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     cursorChar: ' ',
     invert: text => chalk.inverse(text),
     themeText: text => chalk.white(text),
-    columns: Math.max(10, process.stdout.columns || 80),
+    columns: terminalColumns,
     disableCursorMovementForUpDownKeys: false,
     disableEscapeDoublePress: false,
-    maxVisibleLines: Math.max(2, Math.min(8, (process.stdout.rows || 24) - 10)),
+    maxVisibleLines: Math.max(2, Math.min(8, terminalRows - 10)),
     externalOffset: activeInputOffset,
     onOffsetChange: setActiveInputOffset,
     inputFilter,
@@ -341,8 +345,6 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   }, []);
 
   const visibleMessages = snapshot.messages;
-  const terminalRows = process.stdout.rows || 24;
-  const terminalColumns = Math.max(10, process.stdout.columns || 80);
   const maxInputLines = Math.max(2, Math.min(8, terminalRows - 10));
   const promptWrapWidth = Math.max(10, terminalColumns - 16);
   const promptLineCount = value.split('\n').reduce(
