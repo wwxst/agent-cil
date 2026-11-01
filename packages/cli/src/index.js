@@ -14,13 +14,13 @@ import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import { getHelp, languageLabel, loadLanguagePreference, localizeCliMessage, normalizeLanguagePreference, resolveLanguage, saveLanguagePreference, translate as t } from './i18n.js';
+import { getHelp, languageLabel, loadLanguagePreference, localizeCliMessage, normalizeLanguagePreference, normalizeModelPreference, resolveLanguage, saveLanguagePreference, saveModelPreference, clearModelPreference, translate as t } from './i18n.js';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
 import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
 import { bashToolCheckAstPermission } from '../../runtime/src/legacy-permissions/bash-ast-permission.js';
-import { resolveOriginalCliModel } from '../../runtime/src/legacy-original/model-aliases.js';
+import { resolveOriginalCliModel, getDefaultSonnetModel } from '../../runtime/src/legacy-original/model-aliases.js';
 import { getOriginalCliAutoCompactThreshold, isEnvTruthy } from '../../runtime/src/legacy-compact/original-auto-compact-threshold.js';
 import {
   getPerMessageBudgetLimit, generatePreview, buildLargeToolResultMessage,
@@ -54,6 +54,25 @@ export function parseArgs(argv) {
   }
   if (argv.length === 1 && ['--version', '-v', '-V'].includes(argv[0])) {
     return { mode: 'version' };
+  }
+  if (argv[0] === 'config') {
+    const args = argv.slice(1);
+    if (args.length === 0 || args.length === 1 && ['--help', '-h', 'help'].includes(args[0])) {
+      return { mode: 'config-help' };
+    }
+    if (args.length === 1 && args[0] === 'show') return { mode: 'config-show' };
+    if (args.length === 2 && args[0] === 'get' && args[1] === 'model') {
+      return { mode: 'config-get-model' };
+    }
+    if (args.length === 3 && args[0] === 'set' && args[1] === 'model') {
+      const model = normalizeModelPreference(args[2]);
+      if (!model) throw new CliArgumentError('Model preference must be non-empty text of at most 256 characters.');
+      return { mode: 'config-set-model', model };
+    }
+    if (args.length === 2 && args[0] === 'unset' && args[1] === 'model') {
+      return { mode: 'config-unset-model' };
+    }
+    throw new CliArgumentError('Usage: agent-cil config [show | get model | set model <model> | unset model].');
   }
   if (argv.includes('--help') || argv.includes('-h')) {
     let language;
@@ -2178,6 +2197,53 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 0;
   }
 
+  if (options.mode === 'config-help') {
+    process.stdout.write(t(locale, 'configUsage') + '\n');
+    return 0;
+  }
+  if (options.mode === 'config-show' || options.mode === 'config-get-model') {
+    if (languageState.configError) {
+      printLocalizedError('User configuration is invalid: ' +
+        (languageState.configError instanceof Error ? languageState.configError.message : String(languageState.configError)));
+      return 2;
+    }
+    const savedModel = normalizeModelPreference(languageState.config.model);
+    if (options.mode === 'config-get-model') {
+      process.stdout.write((savedModel ?? t(locale, 'configNotSet')) + '\n');
+    } else {
+      process.stdout.write(t(locale, 'configPath', { path: languageState.configPath }) + '\n');
+      process.stdout.write(t(locale, 'configModelCurrent', { model: savedModel ?? t(locale, 'configNotSet') }) + '\n');
+      process.stdout.write(t(locale, 'configLanguageCurrent', { language: languageLabel(locale, languagePreference) }) + '\n');
+    }
+    return 0;
+  }
+  if (options.mode === 'config-set-model') {
+    try {
+      // Validate through the same 2.1.88 model resolver used at runtime.
+      // Store the original alias/ID, not the resolved value, so model-family
+      // environment overrides continue to apply on the next launch.
+      resolveOriginalCliModel({ provider: 'anthropic', model: options.model, env });
+      const saved = await saveModelPreference(options.model, { env });
+      process.stdout.write(t(locale, 'configModelSaved', { model: saved.preference }) + '\n');
+      return 0;
+    } catch (error) {
+      printLocalizedError('Model configuration failed: ' +
+        (error instanceof Error ? error.message : String(error)));
+      return 2;
+    }
+  }
+  if (options.mode === 'config-unset-model') {
+    try {
+      await clearModelPreference({ env });
+      process.stdout.write(t(locale, 'configModelCleared') + '\n');
+      return 0;
+    } catch (error) {
+      printLocalizedError('Could not update user configuration: ' +
+        (error instanceof Error ? error.message : String(error)));
+      return 2;
+    }
+  }
+
   const provider = options.provider;
   const credentialEnvName = provider === 'openai' ? 'OPENAI_API_KEY'
     : provider === 'deepseek' ? 'DEEPSEEK_API_KEY or ANTHROPIC_API_KEY' : 'ANTHROPIC_API_KEY';
@@ -2189,11 +2255,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 2;
   }
 
-  // Pinned 2.1.88 utils/model/model.ts: CLI --model overrides
-  // ANTHROPIC_MODEL, then source alias parsing honors ANTHROPIC_DEFAULT_*
-  // overrides. 2.1.304 retains those aliases, though its dynamic remote
-  // model catalog is not yet ported. Never reinterpret DeepSeek/OpenAI IDs.
-  // Unsupported [1m] mode cannot be sent to the API as a literal model ID.
+  // Pinned 2.1.88 utils/model/model.ts priority:
+  // CLI --model > ANTHROPIC_MODEL > saved settings.model > source default.
+  // /model remains a session override persisted in the session journal.
+  // The dynamic 2.1.304 remote model catalog is not yet ported; never
+  // reinterpret DeepSeek/OpenAI IDs or send unsupported [1m] as an API ID.
   let selectedModel;
   let requestedModel;
   try{
@@ -2201,7 +2267,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       ? options.model
       : provider==='openai' ? (env.OPENAI_MODEL||'gpt-5.1')
       : provider==='deepseek' ? (env.DEEPSEEK_MODEL||'deepseek-flash')
-      : (env.ANTHROPIC_MODEL||'claude-sonnet-4-5');
+      : (env.ANTHROPIC_MODEL || normalizeModelPreference(languageState.config.model) || getDefaultSonnetModel(env));
     selectedModel=resolveOriginalCliModel({
       provider,model:requestedModel,permissionMode:options.permissionMode,env,
     });
