@@ -370,6 +370,10 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
         <Text bold color="cyan">agent-cil</Text>
         <Text dimColor>{snapshot.model} · {permissionLabel}</Text>
       </Box>
+      {/* A pending approval is the active modal task. Keep the full original
+          PermissionPrompt visible on short terminals instead of squeezing it
+          between a transcript viewport and the normal footer. */}
+      {!snapshot.pendingApproval ? (
       <ScrollBox
         ref={scrollRef}
         flexDirection="column"
@@ -394,6 +398,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
           </Box>
         ))}
       </ScrollBox>
+      ) : null}
       {snapshot.pendingApproval ? (
         <PermissionPrompt
           key={snapshot.pendingApproval.id}
@@ -446,10 +451,12 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
           </Box>
         </Box>
       ) : null}
-      <Box flexDirection="column" marginTop={1}>
-        <Text dimColor>{status}</Text>
-        <Text dimColor>{translate(locale, 'tuiFooterHelp')}</Text>
-      </Box>
+{!snapshot.pendingApproval ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text dimColor>{status}</Text>
+          <Text dimColor>{translate(locale, 'tuiFooterHelp')}</Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }
