@@ -2658,17 +2658,19 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // listener Ctrl+C closes input while the active model keeps streaming.
   rl?.on('SIGINT', onSigint);
   process.on('SIGTERM', onSigterm);
-  loop.on('toolCallStarted', ({ toolName }) => {
+  loop.on('toolCallStarted', ({ toolUseId, toolName }) => {
     if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
       const notice = t(locale, 'permissionAutoApproved', { tool: toolName });
       if (tui) tui.pushSystemMessage(notice);
       else process.stderr.write(notice + '\n');
     }
+    if (tui) tui.beginToolMessage(toolUseId, toolName);
     const notice = t(locale, 'toolStarted', { tool: toolName });
     if (tui) tui.setStatus(notice);
     else process.stderr.write('\n' + notice + '\n');
   });
-  loop.on('toolCallFinished', ({ toolName, isError, denied }) => {
+  loop.on('toolCallFinished', ({ toolUseId, toolName, isError, denied, interrupted }) => {
+    if (tui) tui.finishToolMessage({ toolUseId, isError, denied, interrupted });
     if (isError) {
       const notice = t(locale, 'toolFailed', {
         tool: toolName,
