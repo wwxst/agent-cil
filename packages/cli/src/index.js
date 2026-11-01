@@ -2245,6 +2245,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 
   const provider = options.provider;
+  if (provider === 'anthropic' && options.model === undefined &&
+      !env.ANTHROPIC_MODEL && languageState.configError) {
+    printLocalizedError('User configuration is invalid: ' +
+      (languageState.configError instanceof Error ? languageState.configError.message : String(languageState.configError)));
+    return 2;
+  }
   const credentialEnvName = provider === 'openai' ? 'OPENAI_API_KEY'
     : provider === 'deepseek' ? 'DEEPSEEK_API_KEY or ANTHROPIC_API_KEY' : 'ANTHROPIC_API_KEY';
   const apiKey = provider === 'openai' ? env.OPENAI_API_KEY
