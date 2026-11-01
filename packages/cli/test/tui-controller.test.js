@@ -186,3 +186,16 @@ test('TUI controller marks denied and interrupted tool calls without granting ex
   ]);
   controller.close(0);
 });
+
+test('TUI controller marks assistant streaming lifecycle for incremental Markdown rendering', () => {
+  const controller = createTuiController();
+  controller.beginAssistantMessage();
+  controller.appendAssistantText('A growing response');
+  let message = controller.getSnapshot().messages[0];
+  assert.equal(message.streaming, true);
+  assert.equal(message.text, 'A growing response');
+  controller.finishAssistantMessage();
+  message = controller.getSnapshot().messages[0];
+  assert.equal(message.streaming, false);
+  controller.close(0);
+});
