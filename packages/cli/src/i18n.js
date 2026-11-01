@@ -281,6 +281,64 @@ export async function saveLanguagePreference(language, { env = process.env, home
   return { preference, locale: resolveLanguage(preference, env), configPath, config: nextConfig };
 }
 
+
+/** Saved Anthropic model setting. Mirrors 2.1.88 settings.model semantics:
+ * aliases and custom model IDs are stored verbatim; resolution happens at
+ * startup so ANTHROPIC_DEFAULT_* overrides remain effective.
+ */
+export function normalizeModelPreference(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 256 || /[\u0000-\u001f\u007f]/.test(normalized)) return null;
+  return normalized;
+}
+
+async function readUserConfigForWrite(configPath) {
+  try {
+    const parsed = JSON.parse(await readFile(configPath, 'utf8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new TypeError('The user configuration root must be a JSON object.');
+    }
+    return parsed;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+async function writeUserConfigAtomically(configPath, config) {
+  await mkdir(dirname(configPath), { recursive: true });
+  const temporaryPath = configPath + '.' + process.pid + '.' + randomUUID() + '.tmp';
+  try {
+    await writeFile(temporaryPath, JSON.stringify(config, null, 2) + '\n', {
+      encoding: 'utf8', flag: 'wx', mode: 0o600,
+    });
+    await rename(temporaryPath, configPath);
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+export async function saveModelPreference(model, { env = process.env, homeDirectory = homedir() } = {}) {
+  const preference = normalizeModelPreference(model);
+  if (!preference) throw new TypeError('Model preference must be non-empty text of at most 256 characters.');
+  const configPath = getLanguageConfigPath(env, homeDirectory);
+  const config = await readUserConfigForWrite(configPath);
+  const nextConfig = { ...config, model: preference };
+  await writeUserConfigAtomically(configPath, nextConfig);
+  return { preference, configPath, config: nextConfig };
+}
+
+export async function clearModelPreference({ env = process.env, homeDirectory = homedir() } = {}) {
+  const configPath = getLanguageConfigPath(env, homeDirectory);
+  const config = await readUserConfigForWrite(configPath);
+  const nextConfig = { ...config };
+  delete nextConfig.model;
+  await writeUserConfigAtomically(configPath, nextConfig);
+  return { configPath, config: nextConfig };
+}
+
 export function languageLabel(locale, preference = locale) {
   if (preference === 'auto') {
     return translate(locale, 'languageNameAuto', {
