@@ -263,7 +263,8 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
         if (key.pageUp) {
           scroll.scrollBy(-page);
         } else if (
-          scroll.getScrollTop() + page >= scroll.getScrollHeight() - viewportHeight
+          scroll.getScrollTop() + scroll.getPendingDelta() + page >=
+          scroll.getScrollHeight() - viewportHeight
         ) {
           scroll.scrollToBottom();
         } else {
@@ -364,7 +365,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     : snapshot.notification?.text || snapshot.status || translate(locale, 'tuiReady');
 
   return (
-    <Box flexDirection="column" padding={1} width="100%">
+    <Box flexDirection="column" padding={1} width={terminalColumns} height={terminalRows}>
       <Box flexDirection="row" justifyContent="space-between">
         <Text bold color="cyan">agent-cil</Text>
         <Text dimColor>{snapshot.model} · {permissionLabel}</Text>
