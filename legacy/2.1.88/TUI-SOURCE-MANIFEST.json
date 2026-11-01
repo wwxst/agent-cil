@@ -633,6 +633,10 @@
       "gitBlobSha": "4fd4e216ca1e7a6b6be56c410ad21e1fdd531e13"
     },
     {
+      "path": "legacy/2.1.88/restored-src/src/utils/config.js",
+      "gitBlobSha": "75d89d8a0763496d5293d2f8f3834e80a3608333"
+    },
+    {
       "path": "legacy/2.1.88/restored-src/src/utils/debug.ts",
       "gitBlobSha": "b251514df6edf4b7be046816f9fc2dc81d8824b3"
     },
@@ -675,6 +679,10 @@
     {
       "path": "legacy/2.1.88/restored-src/src/utils/platform.js",
       "gitBlobSha": "05ccd36894c6bf8300719396c83a0cce710a7850"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/systemTheme.js",
+      "gitBlobSha": "aab7fc99a1061fa7d7fa44ba52af96bd543e3b9c"
     }
   ]
 }
