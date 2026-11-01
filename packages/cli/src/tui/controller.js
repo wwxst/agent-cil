@@ -50,6 +50,36 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
       });
     },
     finishAssistantMessage() { activeAssistantId = null; },
+    beginToolMessage(toolUseId, toolName) {
+      if (typeof toolUseId !== 'string' || !toolUseId ||
+          typeof toolName !== 'string' || !toolName) return null;
+      const existing = snapshot.messages.find(message => message.role === 'tool' &&
+        message.toolUseId === toolUseId);
+      if (existing) return existing.id;
+      const message = {
+        id: nextMessageId++,
+        role: 'tool',
+        toolUseId,
+        toolName,
+        status: 'running',
+      };
+      publish({ messages: [...snapshot.messages, message] });
+      return message.id;
+    },
+    finishToolMessage({ toolUseId, isError = false, denied = false, interrupted = false } = {}) {
+      if (typeof toolUseId !== 'string' || !toolUseId) return false;
+      const status = interrupted ? 'interrupted'
+        : denied ? 'denied'
+          : isError ? 'failed' : 'succeeded';
+      let found = false;
+      const messages = snapshot.messages.map(message => {
+        if (message.role !== 'tool' || message.toolUseId !== toolUseId) return message;
+        found = true;
+        return message.status === status ? message : { ...message, status };
+      });
+      if (found) publish({ messages });
+      return found;
+    },
     pushSystemMessage(text) { addMessage('system', text); },
     setStatus(status) { publish({ status: String(status ?? '') }); },
     setNotification(notification) {
