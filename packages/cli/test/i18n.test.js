@@ -7,9 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { parseArgs } from '../src/index.js';
 import {
-  detectSystemLanguage, getHelp, getLanguageConfigPath, languageLabel,
-  loadLanguagePreference, localizeCliMessage, normalizeLanguagePreference,
-  resolveLanguage, saveLanguagePreference, translate,
+  clearModelPreference, detectSystemLanguage, getHelp, getLanguageConfigPath, languageLabel,
+  loadLanguagePreference, localizeCliMessage, normalizeLanguagePreference, normalizeModelPreference,
+  resolveLanguage, saveLanguagePreference, saveModelPreference, translate,
 } from '../src/i18n.js';
 
 test('system language detection honors locale environment precedence', () => {
@@ -226,6 +226,64 @@ test('interactive TTY language command switches the live prompt and persists the
   } finally {
     if (!exited && child && child.exitCode === null) child.kill('SIGKILL');
     if (timeout) clearTimeout(timeout);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('model preferences normalize safely and share the atomic user config without overwriting language', async () => {
+  assert.equal(normalizeModelPreference('  opus  '), 'opus');
+  assert.equal(normalizeModelPreference(''), null);
+  assert.equal(normalizeModelPreference('   '), null);
+  assert.equal(normalizeModelPreference(123), null);
+  assert.equal(normalizeModelPreference('model\ninjection'), null);
+  assert.equal(normalizeModelPreference('x'.repeat(257)), null);
+
+  const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-persist-'));
+  const configPath = join(directory, 'config.json');
+  try {
+    await writeFile(configPath, JSON.stringify({ language: 'zh-CN', theme: 'dark' }));
+    const saved = await saveModelPreference('  opus  ', {
+      env: { AGENT_CIL_CONFIG_PATH: configPath },
+    });
+    assert.equal(saved.preference, 'opus');
+    assert.deepEqual(saved.config, { language: 'zh-CN', theme: 'dark', model: 'opus' });
+    const state = await loadLanguagePreference({
+      env: { AGENT_CIL_CONFIG_PATH: configPath, LANG: 'en_US.UTF-8' },
+    });
+    assert.equal(state.preference, 'zh-CN');
+    assert.equal(state.config.model, 'opus');
+    assert.deepEqual(await readdir(directory), ['config.json']);
+    if (process.platform !== 'win32') {
+      const { mode } = await import('node:fs/promises').then(fs => fs.stat(configPath));
+      assert.equal(mode & 0o777, 0o600);
+    }
+
+    const cleared = await clearModelPreference({
+      env: { AGENT_CIL_CONFIG_PATH: configPath },
+    });
+    assert.deepEqual(cleared.config, { language: 'zh-CN', theme: 'dark' });
+    assert.equal((await loadLanguagePreference({
+      env: { AGENT_CIL_CONFIG_PATH: configPath },
+    })).config.model, undefined);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('model preference updates fail closed on malformed config instead of replacing user data', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-invalid-'));
+  const configPath = join(directory, 'config.json');
+  try {
+    await writeFile(configPath, '{invalid json');
+    await assert.rejects(saveModelPreference('opus', {
+      env: { AGENT_CIL_CONFIG_PATH: configPath },
+    }), SyntaxError);
+    await assert.rejects(clearModelPreference({
+      env: { AGENT_CIL_CONFIG_PATH: configPath },
+    }), SyntaxError);
+    assert.equal(await readFile(configPath, 'utf8'), '{invalid json');
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
