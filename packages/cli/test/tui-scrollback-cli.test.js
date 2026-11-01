@@ -12,7 +12,7 @@ import { normalizeTuiOutput } from './tui-test-helpers.js';
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
 const event = (type, payload = {}) =>
-  'event: ' + type + '\\ndata: ' + JSON.stringify({ type, ...payload }) + '\\n\\n';
+  'event: ' + type + '\ndata: ' + JSON.stringify({ type, ...payload }) + '\n\n';
 const finishStream = text => [
   event('message_start', { message: { usage: { input_tokens: 2 } } }),
   event('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
@@ -52,7 +52,7 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
 
   const sendPageUp = () => {
     if (pageUpCount >= 8 || exitSent) return;
-    child.stdin.write('\\x1b[5~');
+    child.stdin.write('\x1b[5~');
     pageUpCount += 1;
     pageUpTimer = setTimeout(sendPageUp, 90);
   };
@@ -92,14 +92,14 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
 
       if (sentPrompts === 0 && visible.includes('you> ')) {
         sentPrompts = 1;
-        child.stdin.write('prompt-01\\r');
+        child.stdin.write('prompt-01\r');
         return;
       }
 
       if (sentPrompts > 0 && sentPrompts < totalTurns &&
           visible.includes('reply-' + pad(sentPrompts)) && visible.includes('you> ')) {
         sentPrompts += 1;
-        child.stdin.write('prompt-' + pad(sentPrompts) + '\\r');
+        child.stdin.write('prompt-' + pad(sentPrompts) + '\r');
         return;
       }
 
@@ -115,7 +115,7 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
           normalizeTuiOutput(output.slice(pageUpStart)).includes('reply-01')) {
         exitSent = true;
         if (pageUpTimer) clearTimeout(pageUpTimer);
-        child.stdin.write('/exit\\r');
+        child.stdin.write('/exit\r');
       }
     });
     child.stderr.on('data', chunk => { stderr += chunk; });
