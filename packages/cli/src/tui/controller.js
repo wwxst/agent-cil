@@ -39,7 +39,15 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
     getSnapshot() { return snapshot; },
     addMessage,
     beginAssistantMessage() {
-      activeAssistantId = addMessage('assistant', '');
+      activeAssistantId = nextMessageId++;
+      publish({
+        messages: [...snapshot.messages, {
+          id: activeAssistantId,
+          role: 'assistant',
+          text: '',
+          streaming: true,
+        }],
+      });
     },
     appendAssistantText(text) {
       if (!activeAssistantId || !text) return;
@@ -49,7 +57,17 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
           : message),
       });
     },
-    finishAssistantMessage() { activeAssistantId = null; },
+    finishAssistantMessage() {
+      if (activeAssistantId !== null) {
+        const finishedId = activeAssistantId;
+        publish({
+          messages: snapshot.messages.map(message => message.id === finishedId
+            ? { ...message, streaming: false }
+            : message),
+        });
+      }
+      activeAssistantId = null;
+    },
     beginToolMessage(toolUseId, toolName) {
       if (typeof toolUseId !== 'string' || !toolUseId ||
           typeof toolName !== 'string' || !toolName) return null;
