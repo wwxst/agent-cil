@@ -4,7 +4,7 @@
   "sourcePackage": "@anthropic-ai/claude-code",
   "sourceVersion": "2.1.88",
   "sourcePackageCliBlob": "397ffc36211479cca414cfb245df35f3db232336",
-  "importedFileCount": 142,
+  "importedFileCount": 141,
   "files": [
     {
       "path": "legacy/2.1.88/restored-src/src/components/App.tsx",
@@ -105,10 +105,6 @@
     {
       "path": "legacy/2.1.88/restored-src/src/hooks/usePasteHandler.ts",
       "gitBlobSha": "d6257b9a2172c9ad11bd8921522203fd529c39de"
-    },
-    {
-      "path": "legacy/2.1.88/restored-src/src/hooks/useTerminalSize.ts",
-      "gitBlobSha": "68e24df8758dd1842d281baaa6bbd80cac4614c6"
     },
     {
       "path": "legacy/2.1.88/restored-src/src/hooks/useTextInput.ts",

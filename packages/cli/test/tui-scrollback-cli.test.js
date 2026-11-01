@@ -51,7 +51,7 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
   const totalTurns = 12;
 
   const sendPageUp = () => {
-    if (pageUpCount >= 8 || exitSent) return;
+    if (pageUpCount >= 16 || exitSent) return;
     child.stdin.write('\x1b[5~');
     pageUpCount += 1;
     pageUpTimer = setTimeout(sendPageUp, 90);

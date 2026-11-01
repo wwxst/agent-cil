@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSy
 import chalk from 'chalk';
 import Box from '../../../../legacy/2.1.88/restored-src/src/ink/components/Box.js';
 import ScrollBox, { type ScrollBoxHandle } from '../../../../legacy/2.1.88/restored-src/src/ink/components/ScrollBox.js';
-import { useTerminalSize } from '../../../../legacy/2.1.88/restored-src/src/hooks/useTerminalSize.js';
 import Text from '../../../../legacy/2.1.88/restored-src/src/ink/components/Text.js';
 import { useTerminalFocus } from '../../../../legacy/2.1.88/restored-src/src/ink/hooks/use-terminal-focus.js';
 import { BaseTextInput } from '../../../../legacy/2.1.88/restored-src/src/components/BaseTextInput.node.js';
@@ -16,7 +15,6 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const locale = snapshot.locale;
   const terminalFocus = useTerminalFocus();
-  const terminalSize = useTerminalSize();
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const [value, setValueState] = useState('');
   const valueRef = useRef('');
@@ -261,7 +259,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       const scroll = scrollRef.current;
       if (scroll) {
         const viewportHeight = scroll.getViewportHeight();
-        const page = Math.max(1, (viewportHeight || terminalSize.rows) - 2);
+        const page = Math.max(1, (viewportHeight || process.stdout.rows || 24) - 2);
         if (key.pageUp) {
           scroll.scrollBy(-page);
         } else if (
@@ -292,7 +290,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       return null;
     }
     return input;
-  }, [controller, onClearInput, resetHistory, onInterrupt, submit, terminalSize.rows]);
+  }, [controller, onClearInput, resetHistory, onInterrupt, submit]);
 
   const activeInputValue = permissionInputType
     ? approvalFeedback[permissionInputType]
@@ -328,10 +326,10 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     cursorChar: ' ',
     invert: text => chalk.inverse(text),
     themeText: text => chalk.white(text),
-    columns: Math.max(10, terminalSize.columns),
+    columns: Math.max(10, process.stdout.columns || 80),
     disableCursorMovementForUpDownKeys: false,
     disableEscapeDoublePress: false,
-    maxVisibleLines: Math.max(2, Math.min(8, terminalSize.rows - 10)),
+    maxVisibleLines: Math.max(2, Math.min(8, (process.stdout.rows || 24) - 10)),
     externalOffset: activeInputOffset,
     onOffsetChange: setActiveInputOffset,
     inputFilter,
@@ -342,6 +340,21 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   }, []);
 
   const visibleMessages = snapshot.messages;
+  const terminalRows = process.stdout.rows || 24;
+  const terminalColumns = Math.max(10, process.stdout.columns || 80);
+  const maxInputLines = Math.max(2, Math.min(8, terminalRows - 10));
+  const promptWrapWidth = Math.max(10, terminalColumns - 16);
+  const promptLineCount = value.split('\n').reduce(
+    (total, line) => total + Math.max(1, Math.ceil(line.length / promptWrapWidth)),
+    0,
+  );
+  const visiblePromptLines = Math.max(1, Math.min(maxInputLines, promptLineCount));
+  const transcriptHeight = Math.max(
+    snapshot.pendingApproval ? 1 : 3,
+    terminalRows - (
+      snapshot.pendingApproval ? 23 : canInput ? 13 + visiblePromptLines : 7
+    ),
+  );
   const placeholder = translate(locale, 'tuiPlaceholder');
   const permissionLabel = snapshot.permissionMode === 'acceptEdits'
     ? translate(locale, 'tuiPermissionAuto')
@@ -351,7 +364,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     : snapshot.notification?.text || snapshot.status || translate(locale, 'tuiReady');
 
   return (
-    <Box flexDirection="column" padding={1} width={terminalSize.columns} height={terminalSize.rows}>
+    <Box flexDirection="column" padding={1} width="100%">
       <Box flexDirection="row" justifyContent="space-between">
         <Text bold color="cyan">agent-cil</Text>
         <Text dimColor>{snapshot.model} · {permissionLabel}</Text>
@@ -359,9 +372,10 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       <ScrollBox
         ref={scrollRef}
         flexDirection="column"
-        flexGrow={1}
-        flexShrink={1}
-        minHeight={3}
+        height={transcriptHeight}
+        flexGrow={0}
+        flexShrink={0}
+        minHeight={snapshot.pendingApproval ? 1 : 3}
         width="100%"
         marginTop={1}
         stickyScroll
