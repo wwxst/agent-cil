@@ -131,10 +131,30 @@ test('original 2.1.88 Ink root and TUI component load through the Node TSX compa
   process.env.TSX_TSCONFIG_PATH = fileURLToPath(new URL('../../../tsconfig.json', import.meta.url));
   const { register } = await import('tsx/esm/api');
   register();
-  const [root, app] = await Promise.all([
-    import('../../../legacy/2.1.88/restored-src/src/ink/root.ts'),
-    import('../src/tui/AgentTui.tsx'),
-  ]);
+  let root;
+  try {
+    root = await import('../../../legacy/2.1.88/restored-src/src/ink/root.ts');
+  } catch (error) {
+    assert.fail(`Original 2.1.88 Ink root failed to load: ${JSON.stringify({
+      message: error?.message,
+      code: error?.code,
+      url: error?.url,
+      cause: error?.cause?.message,
+      stack: error?.stack,
+    })}`);
+  }
+  let app;
+  try {
+    app = await import('../src/tui/AgentTui.tsx');
+  } catch (error) {
+    assert.fail(`agent-cil AgentTui failed to load: ${JSON.stringify({
+      message: error?.message,
+      code: error?.code,
+      url: error?.url,
+      cause: error?.cause?.message,
+      stack: error?.stack,
+    })}`);
+  }
   assert.equal(typeof root.default, 'function');
   assert.equal(typeof app.default, 'function');
 });
