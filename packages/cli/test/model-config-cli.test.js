@@ -177,12 +177,39 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
     assert.equal(await runModel({ savedModel: 'opus' }), 'claude-opus-4-6');
     assert.equal(await runModel({ savedModel: 'opus', envModel: 'haiku' }), 'claude-haiku-4-5-20251001');
     assert.equal(await runModel({ savedModel: 'opus', envModel: 'haiku', cliModel: 'sonnet' }), 'claude-sonnet-4-6');
+    assert.equal(await runModel({}), 'claude-sonnet-4-6');
     assert.equal(await runModel({ defaultSonnet: 'custom-sonnet-default' }), 'custom-sonnet-default');
-    assert.equal(requests.length, 4);
+    assert.equal(requests.length, 5);
   } finally {
     if (watchdog) clearTimeout(watchdog);
     server.closeAllConnections?.();
     if (server.listening) await new Promise(resolve => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('normal startup refuses to silently discard an unreadable saved model setting', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-config-corrupt-start-'));
+  const configPath = join(directory, 'config.json');
+  try {
+    await writeFile(configPath, '{invalid json');
+    const result = spawnSync(process.execPath, [
+      cli, '--print', '--cwd', directory, 'Do not make a model request.',
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ANTHROPIC_API_KEY: 'model-config-test-key',
+        AGENT_CIL_CONFIG_PATH: configPath,
+        ANTHROPIC_MODEL: '',
+      },
+    });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /User configuration is invalid/);
+    assert.equal(result.stdout, '');
+    assert.equal(await readFile(configPath, 'utf8'), '{invalid json');
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
