@@ -59,9 +59,12 @@ test('original 2.1.88 useTerminalSize follows Ink terminal resize events', {
     assert.deepEqual(observedSize, { columns: 60, rows: 12 },
       'the original Ink App must publish new dimensions through TerminalSizeContext');
   } finally {
-    instance?.unmount();
-    if (instance) await instance.waitUntilExit();
-    instance?.cleanup?.();
+    if (instance) {
+      const exitPromise = instance.waitUntilExit();
+      instance.unmount();
+      await exitPromise;
+      instance.cleanup();
+    }
     stdin.destroy();
     stdout.destroy();
     stderr.destroy();
