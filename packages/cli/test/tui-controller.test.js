@@ -143,6 +143,33 @@ test('original 2.1.88 Ink root and TUI component load through the Node TSX compa
       stack: error?.stack,
     })}`);
   }
+  const dependencies = [
+    ['Ink Box', '../../../legacy/2.1.88/restored-src/src/ink/components/Box.js'],
+    ['Ink ScrollBox', '../../../legacy/2.1.88/restored-src/src/ink/components/ScrollBox.js'],
+    ['Ink Text', '../../../legacy/2.1.88/restored-src/src/ink/components/Text.js'],
+    ['Ink terminal focus hook', '../../../legacy/2.1.88/restored-src/src/ink/hooks/use-terminal-focus.js'],
+    ['original terminal size hook', '../../../legacy/2.1.88/restored-src/src/hooks/useTerminalSize.js'],
+    ['Node BaseTextInput adapter', '../../../legacy/2.1.88/restored-src/src/components/BaseTextInput.node.js'],
+    ['agent-cil PermissionPrompt', '../src/tui/PermissionPrompt.tsx'],
+    ['agent-cil MessageContent', '../src/tui/MessageContent.tsx'],
+    ['agent-cil useTextInput', '../src/tui/useTextInput.ts'],
+    ['original prompt history', '../../../legacy/2.1.88/restored-src/src/history.js'],
+    ['agent-cil input adapter', '../src/tui/input.js'],
+    ['agent-cil i18n', '../src/i18n.js'],
+  ];
+  for (const [label, specifier] of dependencies) {
+    try {
+      await import(specifier);
+    } catch (error) {
+      assert.fail(`${label} failed to load: ${JSON.stringify({
+        message: error?.message,
+        code: error?.code,
+        url: error?.url,
+        cause: error?.cause?.message,
+        stack: error?.stack,
+      })}`);
+    }
+  }
   let app;
   try {
     app = await import('../src/tui/AgentTui.tsx');
