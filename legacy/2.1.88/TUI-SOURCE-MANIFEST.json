@@ -4,7 +4,7 @@
   "sourcePackage": "@anthropic-ai/claude-code",
   "sourceVersion": "2.1.88",
   "sourcePackageCliBlob": "397ffc36211479cca414cfb245df35f3db232336",
-  "importedFileCount": 142,
+  "importedFileCount": 145,
   "files": [
     {
       "path": "legacy/2.1.88/restored-src/src/components/App.tsx",
@@ -27,6 +27,26 @@
       "gitBlobSha": "7ecb4e71074703ab633e6a8134c978639547c1f7"
     },
     {
+      "path": "legacy/2.1.88/restored-src/src/components/design-system/color.ts",
+      "gitBlobSha": "d21e5127958c64cdd0a78a5f926e32dccb4b1e64"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/design-system/ListItem.tsx",
+      "gitBlobSha": "7f77dda12ab54535d6871da268969af1265ac793"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/design-system/ThemedBox.tsx",
+      "gitBlobSha": "c92b733ef896f9353df9c4e80901de5f7d6065bc"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/design-system/ThemedText.tsx",
+      "gitBlobSha": "1c65b5c4d6e429d49b8c012408585d9a17c20ba9"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/design-system/ThemeProvider.tsx",
+      "gitBlobSha": "8e0de6021cbd83a430683ddde4c235302c5af3f6"
+    },
+    {
       "path": "legacy/2.1.88/restored-src/src/components/Message.tsx",
       "gitBlobSha": "ca2ef768686577d987c3525414355452cf0371fa"
     },
@@ -35,16 +55,24 @@
       "gitBlobSha": "81f38a17426123268bfd4dc1247728424063015b"
     },
     {
+      "path": "legacy/2.1.88/restored-src/src/components/permissions/PermissionPrompt.tsx",
+      "gitBlobSha": "cc04708a866bca60b3c4fabbfa7d6060671ef97e"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/permissions/PermissionRequest.tsx",
+      "gitBlobSha": "2def623e9527d5b0850257111a3aee6a6b47a92e"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/components/PromptInput/inputModes.ts",
+      "gitBlobSha": "f464a206159005b84e27af37426094e82a2ac618"
+    },
+    {
       "path": "legacy/2.1.88/restored-src/src/components/PromptInput/PromptInput.tsx",
       "gitBlobSha": "128e73cb3f4070bef7c8c770edfbfab2fe7ac28f"
     },
     {
       "path": "legacy/2.1.88/restored-src/src/components/PromptInput/ShimmeredInput.tsx",
       "gitBlobSha": "b6890e5971dd8176ee243a0135427a67595a5007"
-    },
-    {
-      "path": "legacy/2.1.88/restored-src/src/components/PromptInput/inputModes.ts",
-      "gitBlobSha": "f464a206159005b84e27af37426094e82a2ac618"
     },
     {
       "path": "legacy/2.1.88/restored-src/src/components/Spinner/ShimmerChar.tsx",
@@ -59,32 +87,8 @@
       "gitBlobSha": "7c2e6c552f6afd22749160e33f6435ada2297e4c"
     },
     {
-      "path": "legacy/2.1.88/restored-src/src/components/design-system/ListItem.tsx",
-      "gitBlobSha": "7f77dda12ab54535d6871da268969af1265ac793"
-    },
-    {
-      "path": "legacy/2.1.88/restored-src/src/components/design-system/ThemeProvider.tsx",
-      "gitBlobSha": "8e0de6021cbd83a430683ddde4c235302c5af3f6"
-    },
-    {
-      "path": "legacy/2.1.88/restored-src/src/components/design-system/ThemedBox.tsx",
-      "gitBlobSha": "c92b733ef896f9353df9c4e80901de5f7d6065bc"
-    },
-    {
-      "path": "legacy/2.1.88/restored-src/src/components/design-system/ThemedText.tsx",
-      "gitBlobSha": "1c65b5c4d6e429d49b8c012408585d9a17c20ba9"
-    },
-    {
-      "path": "legacy/2.1.88/restored-src/src/components/design-system/color.ts",
-      "gitBlobSha": "d21e5127958c64cdd0a78a5f926e32dccb4b1e64"
-    },
-    {
-      "path": "legacy/2.1.88/restored-src/src/components/permissions/PermissionPrompt.tsx",
-      "gitBlobSha": "cc04708a866bca60b3c4fabbfa7d6060671ef97e"
-    },
-    {
-      "path": "legacy/2.1.88/restored-src/src/components/permissions/PermissionRequest.tsx",
-      "gitBlobSha": "2def623e9527d5b0850257111a3aee6a6b47a92e"
+      "path": "legacy/2.1.88/restored-src/src/constants/figures.ts",
+      "gitBlobSha": "b0e84fa2317838cff55370a1e5c7b8bcf88b80d9"
     },
     {
       "path": "legacy/2.1.88/restored-src/src/dialogLaunchers.tsx",
@@ -547,8 +551,16 @@
       "gitBlobSha": "9d344177feee805c6ad637234690164ee229d355"
     },
     {
+      "path": "legacy/2.1.88/restored-src/src/utils/hyperlink.ts",
+      "gitBlobSha": "306dd93ad8956c438c5e3a491b57621259c7f285"
+    },
+    {
       "path": "legacy/2.1.88/restored-src/src/utils/intl.ts",
       "gitBlobSha": "53b900d18743c7456dda4e313e31c27f7dd0238c"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/markdown.ts",
+      "gitBlobSha": "b2c673e6d53a197a478189b5fadc18c876a61955"
     },
     {
       "path": "legacy/2.1.88/restored-src/src/utils/semver.ts",
@@ -643,6 +655,10 @@
     {
       "path": "legacy/2.1.88/restored-src/src/utils/log.ts",
       "gitBlobSha": "125d035898b456f611c53cfb71666db9e09bf674"
+    },
+    {
+      "path": "legacy/2.1.88/restored-src/src/utils/messages.js",
+      "gitBlobSha": "400f3e6a9651fc1017108aed3ad5ab54651fc495"
     },
     {
       "path": "legacy/2.1.88/restored-src/src/utils/modifiers.js",
