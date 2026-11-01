@@ -57,7 +57,7 @@ test('installed Ink TUI renders completed assistant messages with original 2.1.8
   let sentExit = false;
   let output = '';
   let stderr = '';
-  const terminalScreen = createTerminalScreen(80, 24);
+  const terminalScreen = createTerminalScreen(120, 40);
 
   try {
     await new Promise((resolve, reject) => {
@@ -72,15 +72,15 @@ test('installed Ink TUI renders completed assistant messages with original 2.1.8
       '--model', 'markdown-tty-fixture', 'Render this Markdown response.',
     ];
     const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-    const command = 'stty rows 24 cols 80; ' + args.map(quote).join(' ');
+    const command = 'stty rows 40 cols 120; ' + args.map(quote).join(' ');
     child = spawn('script', ['-q', '-e', '-c', command, '/dev/null'], {
       env: {
         ...process.env,
         ANTHROPIC_API_KEY: 'markdown-tty-key',
         LANG: 'en_US.UTF-8',
         TERM: 'xterm-256color',
-        COLUMNS: '80',
-        LINES: '24',
+        COLUMNS: '120',
+        LINES: '40',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
