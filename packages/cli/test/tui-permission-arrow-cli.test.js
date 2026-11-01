@@ -101,6 +101,8 @@ test('installed original 2.1.88 Select: ArrowDown then Enter explicitly allows a
     assert.equal(status, 0, stderr + output);
     assert.doesNotMatch(output + stderr, /Could not start the original Ink TUI|falling back to the readline interface/);
     assert.ok(normalizeTuiText(output).includes('Permission required'), output);
+    assert.ok(normalizeTuiText(output).includes('Bash'), output);
+    assert.ok(normalizeTuiText(output).includes('completed'), output);
     assert.equal(approvalPrompts, 1, output);
     assert.equal(submittedExits, 1, output);
     assert.equal(await readFile(marker, 'utf8'), 'executed',
