@@ -45,14 +45,14 @@ test('real config commands persist, inspect and clear only the Anthropic model s
     ANTHROPIC_API_KEY: '',
   };
   try {
-    await writeFile(configPath, JSON.stringify({ language: 'zh-CN', theme: 'dark' }));
+    await writeFile(configPath, JSON.stringify({ language: 'en', theme: 'dark' }));
     const set = spawnSync(process.execPath, [cli, 'config', 'set', 'model', 'opus'], {
       encoding: 'utf8', env,
     });
     assert.equal(set.status, 0, set.stderr);
     assert.match(set.stdout, /Saved default Anthropic model setting: opus/);
     assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
-      language: 'zh-CN', theme: 'dark', model: 'opus',
+      language: 'en', theme: 'dark', model: 'opus',
     });
 
     const get = spawnSync(process.execPath, [cli, 'config', 'get', 'model'], {
@@ -66,7 +66,7 @@ test('real config commands persist, inspect and clear only the Anthropic model s
     });
     assert.equal(show.status, 0, show.stderr);
     assert.match(show.stdout, /Saved Anthropic model setting: opus/);
-    assert.match(show.stdout, /Interface language: Simplified Chinese/);
+    assert.match(show.stdout, /Interface language: English/);
     assert.doesNotMatch(show.stdout, /API_KEY|theme|dark/);
 
     const unset = spawnSync(process.execPath, [cli, 'config', 'unset', 'model'], {
@@ -75,7 +75,7 @@ test('real config commands persist, inspect and clear only the Anthropic model s
     assert.equal(unset.status, 0, unset.stderr);
     assert.match(unset.stdout, /Cleared saved Anthropic model setting/);
     assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
-      language: 'zh-CN', theme: 'dark',
+      language: 'en', theme: 'dark',
     });
 
     const missing = spawnSync(process.execPath, [cli, 'config', 'get', 'model'], {
