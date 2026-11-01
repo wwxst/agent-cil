@@ -40,7 +40,6 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
 
   let child;
   let watchdog;
-  let pageUpTimer;
   let output = '';
   let stderr = '';
   let sentPrompts = 0;
@@ -49,12 +48,31 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
   let pageUpCount = 0;
   let exitSent = false;
   const totalTurns = 12;
-
+  const timers = new Set();
+  const later = (callback, delay) => {
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      callback();
+    }, delay);
+    timers.add(timer);
+    return timer;
+  };
+  const sendPrompt = number => {
+    child.stdin.write('prompt-' + pad(number));
+    const submitWhenReady = () => {
+      if (calls.length >= number || exitSent || child.exitCode !== null || child.killed) return;
+      child.stdin.write('\r');
+      later(submitWhenReady, 250);
+    };
+    // The prompt can be painted before the TUI has re-enabled submission.
+    // Retry Enter until the fixture server observes this exact turn.
+    later(submitWhenReady, 300);
+  };
   const sendPageUp = () => {
     if (pageUpCount >= 16 || exitSent) return;
     child.stdin.write('\x1b[5~');
     pageUpCount += 1;
-    pageUpTimer = setTimeout(sendPageUp, 90);
+    later(sendPageUp, 90);
   };
 
   try {
@@ -92,14 +110,14 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
 
       if (sentPrompts === 0 && visible.includes('you> ')) {
         sentPrompts = 1;
-        child.stdin.write('prompt-01\r');
+        sendPrompt(1);
         return;
       }
 
       if (sentPrompts > 0 && sentPrompts < totalTurns &&
           visible.includes('reply-' + pad(sentPrompts)) && visible.includes('you> ')) {
         sentPrompts += 1;
-        child.stdin.write('prompt-' + pad(sentPrompts) + '\r');
+        sendPrompt(sentPrompts);
         return;
       }
 
@@ -114,7 +132,8 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
       if (pageUpStarted && !exitSent &&
           normalizeTuiOutput(output.slice(pageUpStart)).includes('reply-01')) {
         exitSent = true;
-        if (pageUpTimer) clearTimeout(pageUpTimer);
+        for (const timer of timers) clearTimeout(timer);
+        timers.clear();
         child.stdin.write('/exit\r');
       }
     });
@@ -133,10 +152,14 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
     assert.ok(pageUpCount > 0, 'no PageUp keypresses were sent');
     assert.ok(exitSent, 'the first turn did not become visible after PageUp: ' + stderr + output);
     assert.equal(calls.length, totalTurns, stderr + output);
+    assert.ok(calls.every((call, index) =>
+      JSON.stringify(call).includes('prompt-' + pad(index + 1)),
+    'every interactive prompt must reach the model in order');
     assert.doesNotMatch(output + stderr,
       /Could not start the original Ink TUI|falling back to the readline interface/);
   } finally {
-    if (pageUpTimer) clearTimeout(pageUpTimer);
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
     if (watchdog) clearTimeout(watchdog);
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
     server.closeAllConnections?.();
