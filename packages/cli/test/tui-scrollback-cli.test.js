@@ -152,9 +152,12 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
     assert.ok(pageUpCount > 0, 'no PageUp keypresses were sent');
     assert.ok(exitSent, 'the first turn did not become visible after PageUp: ' + stderr + output);
     assert.equal(calls.length, totalTurns, stderr + output);
-    assert.ok(calls.every((call, index) =>
-      JSON.stringify(call).includes('prompt-' + pad(index + 1)),
-    'every interactive prompt must reach the model in order');
+    assert.ok(
+      calls.every((call, index) =>
+        JSON.stringify(call).includes('prompt-' + pad(index + 1)),
+      ),
+      'every interactive prompt must reach the model in order',
+    );
     assert.doesNotMatch(output + stderr,
       /Could not start the original Ink TUI|falling back to the readline interface/);
   } finally {
