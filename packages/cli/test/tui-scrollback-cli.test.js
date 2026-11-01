@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { normalizeTuiOutput } from './tui-test-helpers.js';
+import { createTerminalScreen, normalizeTuiOutput } from './tui-test-helpers.js';
 
 // This test also runs against the npm-pack-installed CLI executable.
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -42,9 +42,9 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
   let watchdog;
   let output = '';
   let stderr = '';
+  const terminalScreen = createTerminalScreen(100, 24);
   let sentPrompts = 0;
   let pageUpStarted = false;
-  let pageUpStart = -1;
   let pageUpCount = 0;
   let exitSent = false;
   const totalTurns = 12;
@@ -106,7 +106,9 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
+      terminalScreen.write(chunk);
       const visible = normalizeTuiOutput(output);
+      const screenText = terminalScreen.toString();
 
       if (sentPrompts === 0 && visible.includes('you> ')) {
         sentPrompts = 1;
@@ -124,13 +126,15 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
       if (sentPrompts === totalTurns && !pageUpStarted &&
           visible.includes('reply-' + pad(totalTurns)) && visible.includes('you> ')) {
         pageUpStarted = true;
-        pageUpStart = output.length;
+        assert.ok(screenText.includes('reply-' + pad(totalTurns)),
+          'the newest turn must be visible before scrolling: ' + screenText);
+        assert.ok(!screenText.includes('reply-01'),
+          'the oldest turn must be outside the bottom viewport before PageUp: ' + screenText);
         sendPageUp();
         return;
       }
 
-      if (pageUpStarted && !exitSent &&
-          normalizeTuiOutput(output.slice(pageUpStart)).includes('reply-01')) {
+      if (pageUpStarted && !exitSent && screenText.includes('reply-01')) {
         exitSent = true;
         for (const timer of timers) clearTimeout(timer);
         timers.clear();
