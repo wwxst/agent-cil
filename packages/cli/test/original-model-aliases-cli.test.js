@@ -65,6 +65,10 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   assert.equal(parseUserSpecifiedModel('best',{env,deniedModels:['fable']}),
     'claude-opus-5-5',
     'best falls back to Opus when Fable is explicitly denied');
+  assert.equal(isModelAllowed('best',{availableModels:['best']}),true,
+    'the best alias can appear in an allowlist without recursive resolution');
+  assert.equal(isModelAllowed('claude-fable-5-1',{availableModels:['best']}),true,
+    'the best alias resolves to the selected Fable catalog model');
   assert.equal(resolveOriginalCliModel({
     provider:'anthropic',model:'opusplan',permissionMode:'plan',env:overrideEnv,
   }),'opus-local-id');
