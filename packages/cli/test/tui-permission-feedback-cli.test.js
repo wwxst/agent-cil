@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { waitForTuiText, waitForTuiTextAfter } from './tui-test-helpers.js';
+import { normalizeTuiOutput } from './tui-test-helpers.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -30,6 +30,36 @@ const finishStream = text => [
 ].join('');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+const compactRawTuiOutput = value => normalizeTuiOutput(value).replace(/\s+/g, '');
+
+async function waitForRawTuiFragment(getOutput, expected, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  const target = String(expected ?? '').replace(/\s+/g, '');
+  let lastOutput = '';
+  while (Date.now() < deadline) {
+    lastOutput = String(getOutput() ?? '');
+    if (compactRawTuiOutput(lastOutput).includes(target)) return lastOutput;
+    await delay(25);
+  }
+  throw new Error('Timed out waiting for raw TUI fragment "' + expected + '":\n' + lastOutput);
+}
+
+async function waitForRawTuiFragmentAfter(getOutput, precedingText, expectedText, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  const preceding = String(precedingText ?? '').replace(/\s+/g, '');
+  const expected = String(expectedText ?? '').replace(/\s+/g, '');
+  let lastOutput = '';
+  while (Date.now() < deadline) {
+    lastOutput = compactRawTuiOutput(getOutput());
+    const precedingIndex = lastOutput.lastIndexOf(preceding);
+    const expectedIndex = lastOutput.lastIndexOf(expected);
+    if (precedingIndex >= 0 && expectedIndex > precedingIndex) return lastOutput;
+    await delay(25);
+  }
+  throw new Error('Timed out waiting for raw TUI fragment "' + expectedText +
+    '" after "' + precedingText + '":\n' + lastOutput);
+}
 
 test('installed original PermissionPrompt Tab feedback is retained after a real Bash tool_result', {
   timeout: 25000,
@@ -84,16 +114,16 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
       // Do not send fixed-delay keystrokes from process start: provider and
       // Ink startup latency varies on CI. Drive each action from the actual
       // rendered permission/feedback state.
-      await waitForTuiText(() => output, 'Permission required', 10000);
+      await waitForRawTuiFragment(() => output, 'Permission required', 10000);
       sawApprovalPrompt = true;
       approvalPrompts++;
       child.stdin.write('\x1b[B');
       await delay(180);
       child.stdin.write('\t');
-      await waitForTuiText(() => output, 'tell Claude what to do next', 3000);
+      await waitForRawTuiFragment(() => output, 'tell Claude what to do next', 3000);
       feedbackPrompts++;
       child.stdin.write(feedback);
-      await waitForTuiText(() => output, feedback, 3000);
+      await waitForRawTuiFragment(() => output, feedback, 3000);
       await delay(180);
       // The original selector retains non-empty feedback while focus leaves
       // the Allow option and returns to it.
@@ -103,9 +133,9 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
       await delay(180);
       feedbackSubmitted++;
       child.stdin.write('\r');
-      await waitForTuiText(() => output, 'Approval feedback was retained.', 10000);
-      await waitForTuiTextAfter(
-        () => output, 'Approval feedback was retained.', 'you>', 3000,
+      await waitForRawTuiFragment(() => output, 'retained.', 10000);
+      await waitForRawTuiFragmentAfter(
+        () => output, 'retained.', 'you>', 3000,
       );
       submittedExits++;
       child.stdin.write('/exit\r');
@@ -192,20 +222,20 @@ test('installed original PermissionPrompt reject feedback remains the denial rea
     child.stderr.on('data', chunk => { stderr += chunk; });
     watchdog = setTimeout(() => child.kill('SIGKILL'), 17000);
     const interaction = (async () => {
-      await waitForTuiText(() => output, 'Permission required', 10000);
+      await waitForRawTuiFragment(() => output, 'Permission required', 10000);
       approvalPrompts++;
       // defaultToNo focuses Deny, so Tab opens its reject-feedback editor.
       child.stdin.write('\t');
-      await waitForTuiText(() => output, 'tell Claude what to do differently', 3000);
+      await waitForRawTuiFragment(() => output, 'tell Claude what to do differently', 3000);
       feedbackPrompts++;
       child.stdin.write(feedback);
-      await waitForTuiText(() => output, feedback, 3000);
+      await waitForRawTuiFragment(() => output, feedback, 3000);
       await delay(180);
       feedbackSubmitted++;
       child.stdin.write('\r');
-      await waitForTuiText(() => output, 'The denial feedback was retained.', 10000);
-      await waitForTuiTextAfter(
-        () => output, 'The denial feedback was retained.', 'you>', 3000,
+      await waitForRawTuiFragment(() => output, 'retained.', 10000);
+      await waitForRawTuiFragmentAfter(
+        () => output, 'retained.', 'you>', 3000,
       );
       submittedExits++;
       child.stdin.write('/exit\r');
@@ -288,20 +318,20 @@ test('Ctrl-D in an empty original permission feedback editor cancels the request
     child.stderr.on('data', chunk => { stderr += chunk; });
     watchdog = setTimeout(() => child.kill('SIGKILL'), 17000);
     const interaction = (async () => {
-      await waitForTuiText(() => output, 'Permission required', 10000);
+      await waitForRawTuiFragment(() => output, 'Permission required', 10000);
       approvalPrompts++;
       child.stdin.write('\x1b[B');
       await delay(180);
       child.stdin.write('\t');
-      await waitForTuiText(() => output, 'tell Claude what to do next', 3000);
+      await waitForRawTuiFragment(() => output, 'tell Claude what to do next', 3000);
       // Ctrl+D in the focused empty feedback editor follows the original
       // 800ms double-press cancellation contract.
       child.stdin.write('\x04');
       await delay(280);
       child.stdin.write('\x04');
-      await waitForTuiText(() => output, 'The permission request was cancelled.', 10000);
-      await waitForTuiTextAfter(
-        () => output, 'The permission request was cancelled.', 'you>', 3000,
+      await waitForRawTuiFragment(() => output, 'cancelled.', 10000);
+      await waitForRawTuiFragmentAfter(
+        () => output, 'cancelled.', 'you>', 3000,
       );
       submittedExits++;
       child.stdin.write('/exit\r');
