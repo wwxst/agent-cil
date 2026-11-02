@@ -232,6 +232,36 @@ test('real TTY /model rolls back the session checkpoint when persisted settings 
       sessionId,'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
     assert.deepEqual(records.filter(x=>x.kind==='model_override').map(x=>x.setting),
       ['opus','sonnet'],'failed persistence must restore the actual startup model');
+    // Restart with a different --model: the durable rollback must retain
+    // the actual pre-failure model rather than accidentally choosing Default.
+    const resumed=await new Promise((resolve,reject)=>{
+      const next=spawn(process.execPath,[cli,'--print','--cwd',root,
+        '--resume',sessionId,'--model','haiku',
+        '--max-retries','0','--compact-threshold','0',
+        '--base-url','http://127.0.0.1:'+server.address().port,
+        'Third prompt after restarting the failed model switch'],{
+        env:{...process.env,ANTHROPIC_API_KEY:'fixture-model-save-failure-key',
+          ANTHROPIC_MODEL:'',
+          ANTHROPIC_DEFAULT_SONNET_MODEL:'',
+          ANTHROPIC_DEFAULT_OPUS_MODEL:'',
+          ANTHROPIC_DEFAULT_HAIKU_MODEL:'',
+          AGENT_CIL_CONFIG_PATH:configPath},
+        stdio:['ignore','pipe','pipe'],
+      });
+      const output=[];
+      next.stdout.on('data',chunk=>output.push(chunk));
+      next.stderr.on('data',chunk=>output.push(chunk));
+      next.once('error',reject);
+      next.once('close',(code,signal)=>resolve({
+        code,signal,output:Buffer.concat(output).toString('utf8'),
+      }));
+    });
+    assert.equal(resumed.signal,null,resumed.output);
+    assert.equal(resumed.code,0,resumed.output);
+    assert.match(resumed.output,/Restored session model: claude-sonnet-5-5/);
+    assert.deepEqual(requests.map(x=>x.model),[
+      'claude-sonnet-5-5','claude-sonnet-5-5','claude-sonnet-5-5',
+    ],'failed persistence must retain the pre-failure model after process restart');
   }finally{
     if(watchdog)clearTimeout(watchdog);
     if(child&&child.exitCode===null)child.kill('SIGKILL');
