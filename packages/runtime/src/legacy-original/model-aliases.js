@@ -150,8 +150,12 @@ export function parseUserSpecifiedModel(modelInput, {
 
   if (!oneMEnabled) return value;
   const metadata = getCatalogModel(withoutOneM);
-  // Native 1M model IDs do not need an explicit suffix on first-party URLs.
-  if (firstPartyBaseUrl && metadata?.context?.native_1m === true) {
+  // 2.1.304 keeps the explicit [1m] selection marker for native Sonnet,
+  // Opus and Mythos IDs; only native Fable IDs drop it on first-party URLs.
+  // The adapter strips the marker from the wire model and omits the beta.
+  if (firstPartyBaseUrl &&
+      metadata?.family === 'fable' &&
+      metadata?.context?.native_1m === true) {
     return withoutOneM;
   }
   return withoutOneM + '[1m]';
