@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createTerminalScreen } from './tui-test-helpers.js';
+import { createTerminalScreen, normalizeTuiText } from './tui-test-helpers.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -105,6 +105,10 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
       output += chunk;
       terminalScreen.write(chunk);
       const visible = terminalScreen.toString();
+      // The PTY renderer can emit cursor-forward control sequences between
+      // adjacent text runs. Use normalized scrollback text for completion
+      // detection; the screen model remains authoritative for live prompts.
+      const visibleText = normalizeTuiText(output);
       if (!grantScheduled &&
           visible.includes('Permission required') &&
           visible.includes('2.Allow this exact Bash command for this session') &&
@@ -118,8 +122,8 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
         }, 150);
       }
       if (!sentExit &&
-          visible.includes('Exact session permission was preserved.') &&
-          visible.includes('you> ')) {
+          visibleText.includes('Exact session permission was preserved.') &&
+          visibleText.includes('you>')) {
         sentExit = true;
         child.stdin.write('/exit\r');
       }
