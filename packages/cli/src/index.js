@@ -20,7 +20,7 @@ import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissi
 import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
 import { bashToolCheckAstPermission } from '../../runtime/src/legacy-permissions/bash-ast-permission.js';
-import { resolveOriginalCliModel, getDefaultSonnetModel, isModelAllowed } from '../../runtime/src/legacy-original/model-aliases.js';
+import { resolveOriginalCliModel, getDefaultSonnetModel, getModelMaxOutputTokens, isModelAllowed } from '../../runtime/src/legacy-original/model-aliases.js';
 import { getOriginalCliAutoCompactThreshold, isEnvTruthy } from '../../runtime/src/legacy-compact/original-auto-compact-threshold.js';
 import {
   getPerMessageBudgetLimit, generatePreview, buildLargeToolResultMessage,
@@ -100,7 +100,7 @@ export function parseArgs(argv) {
     model: undefined,
     baseUrl: undefined,
     provider: 'anthropic',
-    maxTokens: 4096,
+    maxTokens: undefined,
     maxTurns: 8,
     compactThreshold: undefined,
     maxRetries: 2,
@@ -2292,6 +2292,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
       deniedModels:provider==='anthropic'?languageState.config.deniedModels:[],
     });
+    if (provider === 'anthropic' && options.maxTokens !== undefined) {
+      const limits = getModelMaxOutputTokens(selectedModel);
+      if (options.maxTokens > limits.upperLimit) {
+        throw new RangeError(
+          '--max-tokens exceeds this model\'s catalog upper limit of ' + limits.upperLimit + '.',
+        );
+      }
+    }
   }catch(error){
     printLocalizedError('Model configuration failed: '+
       (error instanceof Error?error.message:String(error)));
@@ -2369,7 +2377,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       baseUrl: options.baseUrl || (provider === 'deepseek'
         ? (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/anthropic')
         : (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com')),
-      maxTokens: options.maxTokens,
+      maxTokens: options.maxTokens ?? (provider === 'deepseek' ? 4096 : undefined),
       maxRetries: options.maxRetries,
       system: options.system,
     });
