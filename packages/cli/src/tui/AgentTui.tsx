@@ -23,7 +23,7 @@ function formatToolResultContent(content, locale) {
     return translate(locale, 'tuiToolOtherResult', {
       type: String(block?.type ?? 'unknown'),
     });
-  }).filter(Boolean).join('\\n');
+  }).filter(Boolean).join('\n');
 }
 
 export default function AgentTui({ controller, initialHistory = [], onSubmit, onInterrupt, onExit }) {
