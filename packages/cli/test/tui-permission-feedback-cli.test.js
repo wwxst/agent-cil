@@ -87,9 +87,9 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
       await waitForTuiText(() => output, 'Permission required', 10000);
       sawApprovalPrompt = true;
       approvalPrompts++;
-      child.stdin.write('\\x1b[B');
+      child.stdin.write('\x1b[B');
       await delay(180);
-      child.stdin.write('\\t');
+      child.stdin.write('\t');
       await waitForTuiText(() => output, 'tell Claude what to do next', 3000);
       feedbackPrompts++;
       child.stdin.write(feedback);
@@ -97,18 +97,18 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
       await delay(180);
       // The original selector retains non-empty feedback while focus leaves
       // the Allow option and returns to it.
-      child.stdin.write('\\x1b[A');
+      child.stdin.write('\x1b[A');
       await delay(180);
-      child.stdin.write('\\x1b[B');
+      child.stdin.write('\x1b[B');
       await delay(180);
       feedbackSubmitted++;
-      child.stdin.write('\\r');
+      child.stdin.write('\r');
       await waitForTuiText(() => output, 'Approval feedback was retained.', 10000);
       await waitForTuiTextAfter(
         () => output, 'Approval feedback was retained.', 'you>', 3000,
       );
       submittedExits++;
-      child.stdin.write('/exit\\r');
+      child.stdin.write('/exit\r');
     })();
     interaction.catch(() => {
       if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
@@ -195,20 +195,20 @@ test('installed original PermissionPrompt reject feedback remains the denial rea
       await waitForTuiText(() => output, 'Permission required', 10000);
       approvalPrompts++;
       // defaultToNo focuses Deny, so Tab opens its reject-feedback editor.
-      child.stdin.write('\\t');
+      child.stdin.write('\t');
       await waitForTuiText(() => output, 'tell Claude what to do differently', 3000);
       feedbackPrompts++;
       child.stdin.write(feedback);
       await waitForTuiText(() => output, feedback, 3000);
       await delay(180);
       feedbackSubmitted++;
-      child.stdin.write('\\r');
+      child.stdin.write('\r');
       await waitForTuiText(() => output, 'The denial feedback was retained.', 10000);
       await waitForTuiTextAfter(
         () => output, 'The denial feedback was retained.', 'you>', 3000,
       );
       submittedExits++;
-      child.stdin.write('/exit\\r');
+      child.stdin.write('/exit\r');
     })();
     interaction.catch(() => {
       if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
@@ -290,21 +290,21 @@ test('Ctrl-D in an empty original permission feedback editor cancels the request
     const interaction = (async () => {
       await waitForTuiText(() => output, 'Permission required', 10000);
       approvalPrompts++;
-      child.stdin.write('\\x1b[B');
+      child.stdin.write('\x1b[B');
       await delay(180);
-      child.stdin.write('\\t');
+      child.stdin.write('\t');
       await waitForTuiText(() => output, 'tell Claude what to do next', 3000);
       // Ctrl+D in the focused empty feedback editor follows the original
       // 800ms double-press cancellation contract.
-      child.stdin.write('\\x04');
+      child.stdin.write('\x04');
       await delay(280);
-      child.stdin.write('\\x04');
+      child.stdin.write('\x04');
       await waitForTuiText(() => output, 'The permission request was cancelled.', 10000);
       await waitForTuiTextAfter(
         () => output, 'The permission request was cancelled.', 'you>', 3000,
       );
       submittedExits++;
-      child.stdin.write('/exit\\r');
+      child.stdin.write('/exit\r');
     })();
     interaction.catch(() => {
       if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
