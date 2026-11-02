@@ -170,7 +170,9 @@ export async function main({ turnTimeoutMs = 120_000 } = {}) {
     const firstTurnTranscript = normalizeOutput(output);
     const firstTurnReads = firstTurnTranscript.match(/Read · completed/g) || [];
     assert.ok(firstTurnReads.length >= 2,
-      'the first live TUI turn must complete two Read tool calls');
+      'the first live TUI turn must complete two Read tool calls; found ' +
+      firstTurnReads.length + '. Recent transcript: ' +
+      redact(firstTurnTranscript.slice(-5000)));
     assert.match(firstTurnTranscript, /Edit · completed/,
       'the first live TUI turn must complete an Edit tool call');
     assert.doesNotMatch(firstTurnTranscript, /Bash ·/,
