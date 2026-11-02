@@ -82,6 +82,7 @@ test('Ink TUI switches live between Simplified Chinese and English and persists 
   let outputMark = 0;
   let sentExit = false;
   let promptRetryTimer;
+  let escapeTimer;
   const terminalScreen = createTerminalScreen(110, 32);
 
   try {
@@ -143,9 +144,22 @@ test('Ink TUI switches live between Simplified Chinese and English and persists 
       if (stage === 1 &&
           normalizeTuiOutput(output.slice(outputMark)).includes('界面语言已切换为 简体中文。') &&
           normalizeTuiOutput(output.slice(outputMark)).includes('输入任务')) {
+        // The original 2.1.88 useTextInput hook emits an English internal
+        // notification. The live TUI must translate it using the current
+        // language, not the language captured when Ink first mounted.
+        stage = 1.5;
+        outputMark = output.length;
+        child.stdin.write('draft for Escape translation');
+        escapeTimer = setTimeout(() => child.stdin.write('\x1b'), 250);
+        return;
+      }
+
+      if (stage === 1.5 &&
+          normalizeTuiOutput(output.slice(outputMark)).includes('再次按 Esc 清空输入内容。')) {
         stage = 2;
         outputMark = output.length;
-        child.stdin.write('/language\r');
+        child.stdin.write('\x1b'); // Complete original double-Escape clear.
+        escapeTimer = setTimeout(() => child.stdin.write('/language\r'), 150);
         return;
       }
 
@@ -208,6 +222,7 @@ test('Ink TUI switches live between Simplified Chinese and English and persists 
     assert.doesNotMatch(JSON.stringify(requests[1].messages), /\/language/);
     assert.match(normalizeTuiOutput(output), /界面语言已切换为 简体中文。/);
     assert.match(normalizeTuiOutput(output), /当前界面语言：简体中文/);
+    assert.match(normalizeTuiOutput(output), /再次按 Esc 清空输入内容。/);
     assert.match(normalizeTuiOutput(output), /Interface language set to English\./);
     assert.doesNotMatch(output + stderr,
       /Could not start the original Ink TUI|falling back to the readline interface/);
@@ -216,6 +231,7 @@ test('Ink TUI switches live between Simplified Chinese and English and persists 
   } finally {
     if (watchdog) clearTimeout(watchdog);
     if (promptRetryTimer) clearTimeout(promptRetryTimer);
+    if (escapeTimer) clearTimeout(escapeTimer);
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
     else child?.cleanup?.();
     server.closeAllConnections?.();
