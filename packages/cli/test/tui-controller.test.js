@@ -290,6 +290,32 @@ test('TUI controller keeps assistant messages in model-turn order around committ
   controller.close(0);
 });
 
+test('TUI controller removes empty assistant placeholders for tool-only model messages', () => {
+  const controller = createTuiController();
+  controller.addMessage('user', 'run the requested command');
+  controller.beginAssistantMessage();
+  controller.beginToolMessage('tool-only-bash', 'Bash');
+  controller.setToolMessageResult({
+    toolUseId: 'tool-only-bash',
+    toolName: 'Bash',
+    content: 'command completed',
+  });
+  controller.finishToolMessage({ toolUseId: 'tool-only-bash' });
+  controller.finishAssistantMessage();
+  controller.beginAssistantMessage();
+  controller.appendAssistantText('The command completed successfully.');
+  controller.finishAssistantMessage();
+
+  assert.deepEqual(controller.getSnapshot().messages.map(message => [
+    message.role, message.text ?? message.resultContent,
+  ]), [
+    ['user', 'run the requested command'],
+    ['tool', 'command completed'],
+    ['assistant', 'The command completed successfully.'],
+  ]);
+  controller.close(0);
+});
+
 test('TUI controller marks assistant streaming lifecycle for incremental Markdown rendering', () => {
   const controller = createTuiController();
   controller.beginAssistantMessage();

@@ -60,11 +60,18 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
     finishAssistantMessage() {
       if (activeAssistantId !== null) {
         const finishedId = activeAssistantId;
-        publish({
-          messages: snapshot.messages.map(message => message.id === finishedId
-            ? { ...message, streaming: false }
-            : message),
-        });
+        const activeMessage = snapshot.messages.find(message => message.id === finishedId);
+        if (activeMessage) {
+          // The adapter renders tool_use as dedicated tool rows. When a
+          // model response contains no text, retaining its empty assistant
+          // placeholder adds a phantom transcript row above those results.
+          const messages = activeMessage.text.length === 0
+            ? snapshot.messages.filter(message => message.id !== finishedId)
+            : snapshot.messages.map(message => message.id === finishedId
+              ? { ...message, streaming: false }
+              : message);
+          publish({ messages });
+        }
       }
       activeAssistantId = null;
     },

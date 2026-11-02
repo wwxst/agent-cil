@@ -546,6 +546,13 @@ export async function query({
             await onSessionCheckpoint?.({
               messages: structuredClone(history), kind: 'output_recovery',
             });
+            // A max_tokens response is a completed model message even though
+            // the enclosing agent turn continues. Close its transcript row
+            // after the recovery prompt is durable and before the next request.
+            emit('turnFinished', {
+              turn, stopReason, toolResultCount: 0,
+              committedMessages: structuredClone(history),
+            });
             emit('outputLimitRecovery', {
               turn, attempt: outputLimitRecoveryCount,
             });

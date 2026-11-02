@@ -42,6 +42,7 @@ test('ported 2.1.88 query follows actual tool_use despite misleading end_turn', 
   const originalRead = tools.get('Read').execute;
   const before = [];
   const toolResults = [];
+  const lifecycle = [];
   const model = { async *stream({ messages }) {
     requests++;
     if (requests === 1) {
@@ -61,10 +62,22 @@ test('ported 2.1.88 query follows actual tool_use despite misleading end_turn', 
     model, tools,
     permissionPolicy: async () => ({ behavior: 'allow' }),
   });
-  loop.on('turnStarted', event => before.push(event.turn));
-  loop.on('toolResult', event => toolResults.push(event));
+  loop.on('turnStarted', event => {
+    before.push(event.turn);
+    lifecycle.push('start:' + event.turn);
+  });
+  loop.on('assistantMessage', event => lifecycle.push('assistant:' + event.turn));
+  loop.on('toolResult', event => {
+    toolResults.push(event);
+    lifecycle.push('result:' + event.turn + ':' + event.toolUseId);
+  });
+  loop.on('turnFinished', event => lifecycle.push('finish:' + event.turn));
   const result = await loop.run({ input: 'Read the file' });
   assert.deepEqual(before, [1, 2]);
+  assert.deepEqual(lifecycle, [
+    'start:1', 'assistant:1', 'result:1:old-query-1', 'finish:1',
+    'start:2', 'assistant:2', 'finish:2',
+  ], 'each provider response has its own assistant-message lifecycle around committed tool results');
   assert.equal(result.stopReason, 'end_turn');
   assert.equal(result.turns, 2);
   assert.equal(result.messages[1].stop_reason, 'end_turn');
@@ -216,6 +229,7 @@ test('ported Query resumes max_tokens with the original bounded continuation pro
   let requests = 0;
   const checkpoints = [];
   const recoveryEvents = [];
+  const lifecycle = [];
   const model = { async *stream({ messages }) {
     requests++;
     if (requests === 1) {
@@ -236,9 +250,24 @@ test('ported Query resumes max_tokens with the original bounded continuation pro
     permissionPolicy: async () => ({ behavior: 'allow' }),
     onSessionCheckpoint: checkpoint => checkpoints.push(checkpoint),
   });
+  loop.on('turnStarted', event => lifecycle.push({ type: 'start', turn: event.turn }));
+  loop.on('turnFinished', event => lifecycle.push({
+    type: 'finish',
+    turn: event.turn,
+    stopReason: event.stopReason,
+    committedMessages: event.committedMessages,
+  }));
   loop.on('outputLimitRecovery', event => recoveryEvents.push(event));
   const result = await loop.run({ input: 'Finish the answer.' });
   assert.equal(requests, 2);
+  assert.deepEqual(lifecycle.map(({ type, turn, stopReason }) => [type, turn, stopReason]), [
+    ['start', 1, undefined],
+    ['finish', 1, 'max_tokens'],
+    ['start', 1, undefined],
+    ['finish', 1, 'end_turn'],
+  ], 'output recovery closes the partial model message before starting the continuation request');
+  assert.equal(lifecycle[1].committedMessages.at(-1).content, recovery,
+    'the finished partial message is paired with the already-durable continuation prompt');
   assert.equal(result.stopReason, 'end_turn');
   assert.equal(result.turns, 1, 'output recovery does not consume an agent tool turn');
   assert.equal(result.messages.at(-2).content, recovery);
