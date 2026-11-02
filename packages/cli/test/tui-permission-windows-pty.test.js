@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { normalizeTuiOutput } from './tui-test-helpers.js';
+import { createTerminalScreen, normalizeTuiOutput } from './tui-test-helpers.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -212,10 +212,22 @@ test('Windows ConPTY: exact Bash session grant applies before recheck and does n
     assert.equal(requests.length, 3,
       'the exact session rule must not authorize a different Bash command');
     session.terminal.write('\r');
+    // Ink emits terminal-diff control sequences. Cursor-forward may skip cells
+    // that already contain characters from a prior frame; replacing it with a
+    // literal space corrupts words such as "session". Reconstruct the actual
+    // ConPTY screen before asserting that the response and prompt are visible.
+    const readVisibleScreen = () => {
+      const screen = createTerminalScreen(110, 32);
+      screen.write(session.output);
+      return screen.toString();
+    };
     await waitUntil(
-      () => normalizeTuiOutput(session.output).includes('Exact session permission was preserved on Windows.') &&
-        normalizeTuiOutput(session.output).includes('you>'),
-      10000, 'the final response and resumed input prompt', () => session.output,
+      () => {
+        const visible = readVisibleScreen();
+        return visible.includes('Exact session permission was preserved on Windows.') &&
+          visible.includes('you>');
+      },
+      10000, 'the final response and resumed input prompt', () => readVisibleScreen(),
     );
     session.terminal.write('/exit\r');
     const exit = await waitForExit(session.exitPromise, 5000);
