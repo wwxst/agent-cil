@@ -35,10 +35,10 @@ const DEFAULT_OUTPUT_TOKENS = 32_000;
 const DEFAULT_OUTPUT_TOKENS_UPPER = 128_000;
 
 function stripOneMSuffix(model) {
-  return model.replace(/(?:\\[1m\\])+$/i, '');
+  return model.replace(/(?:\[1m\])+$/i, '');
 }
 function hasOneMSuffix(model) {
-  return /(?:\\[1m\\])+$/i.test(model);
+  return /(?:\[1m\])+$/i.test(model);
 }
 function envTruthy(value) {
   return typeof value === 'string' &&
@@ -51,7 +51,7 @@ function normalizeModelInput(modelInput) {
   if (typeof modelInput !== 'string') throw new TypeError('Model setting must be text.');
   const value = modelInput.trim();
   if (!value) throw new TypeError('Model setting cannot be empty.');
-  if (value.length > 256 || /[\\u0000-\\u001f\\u007f]/.test(value)) {
+  if (value.length > 256 || /[\u0000-\u001f\u007f]/.test(value)) {
     throw new TypeError('Model setting must be at most 256 characters without control characters.');
   }
   return value;
@@ -109,7 +109,7 @@ export function parseUserSpecifiedModel(modelInput, {
   const resolved = resolveAlias(alias, { env, apiProvider });
   if (resolved === undefined) return value;
   if (alias === 'best') return resolved;
-  return withOneM ? resolved.replace(/(?:\\[1m\\])+$/i, '') + '[1m]' : resolved;
+  return withOneM ? resolved.replace(/(?:\[1m\])+$/i, '') + '[1m]' : resolved;
 }
 
 /** Resolve the 2.1.304 catalog entry for a canonical ID or provider ID. */
@@ -119,7 +119,7 @@ export function getModelMetadata(model) {
 export function getCanonicalModelName(model) {
   const metadata = getCatalogModel(model);
   if (metadata) return metadata.id;
-  return stripOneMSuffix(String(model ?? '').trim()).replace(/-\\d{8}$/, '').toLowerCase();
+  return stripOneMSuffix(String(model ?? '').trim()).replace(/-\d{8}$/, '').toLowerCase();
 }
 export function getModelFamily(model) {
   const metadata = getCatalogModel(model);
