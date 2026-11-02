@@ -167,16 +167,17 @@ export async function main({ turnTimeoutMs = 120_000 } = {}) {
     const afterEdit = await readFile(source, 'utf8');
     assert.equal(afterEdit, expected,
       'the live TUI model did not complete the required Read -> Edit -> Read task');
-    // Ink's incremental renderer rewrites status cells in place. The raw
-    // stream is not a final-screen snapshot, so assert that the two Reads
-    // and Edit were started, then rely on the exact post-edit file contents
-    // and the assistant's completion marker to prove the task completed.
+    // Ink's incremental renderer rewrites status cells in place, and a fast
+    // second Read can complete before a "running" frame is ever painted.
+    // Assert both durable completion rows instead of requiring a transient
+    // frame. The local-fixture harness separately verifies both tool_result
+    // IDs and their exact contents in the next provider request.
     const firstTurnTranscript = normalizeOutput(output);
-    const readStarted = firstTurnTranscript.match(/Read · running/g) || [];
+    const readCompleted = firstTurnTranscript.match(/Read\\s*·\\s*completed/g) || [];
     const editStarted = firstTurnTranscript.match(/Edit · running/g) || [];
-    assert.ok(readStarted.length >= 2,
-      'the first live TUI turn must start two Read tool calls; found ' +
-      readStarted.length + '. Recent transcript: ' +
+    assert.ok(readCompleted.length >= 2,
+      'the first live TUI turn must render two completed Read tool calls; found ' +
+      readCompleted.length + '. Recent transcript: ' +
       redact(firstTurnTranscript.slice(-5000)));
     assert.ok(editStarted.length >= 1,
       'the first live TUI turn must start an Edit tool call; found ' +
