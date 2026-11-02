@@ -28,6 +28,8 @@ const MESSAGES = {
     permissionAutoApproved: '[permission] auto-approved {tool} (--allow-edits)',
     toolStarted: '[tool] {tool}', toolFailed: '[tool] {tool} {status}',
     tuiToolRunning: 'running', tuiToolSucceeded: 'completed', tuiToolFailed: 'failed', tuiToolDenied: 'denied', tuiToolInterrupted: 'interrupted',
+    tuiToolImageResult: '[image result]',
+    tuiToolOtherResult: '[{type} result]',
     toolDenied: 'denied', toolError: 'failed',
     contextCompacted: '[context] compacted {before} → {after} messages; recent tool turns preserved.',
     interrupted: 'Interrupted.', sessionStarted: '[session] {id} {state}',
@@ -61,6 +63,8 @@ const MESSAGES = {
     helpLimitations: 'The full official CLI configuration, OAuth and MCP contract is not implemented.',
   },
   'zh-CN': {
+    tuiToolImageResult: '[图片结果]',
+    tuiToolOtherResult: '[{type} 结果]',
     tuiReady: '就绪', tuiWorking: '执行中…', pressCtrlCAgain: '请在 800 毫秒内再次按 Ctrl+C 退出。', pressCtrlDAgain: '请在 800 毫秒内再次按 Ctrl+D 退出。', pressEscAgainToClear: '再次按 Esc 清空输入内容。', tuiPlaceholder: '输入任务，Enter 发送，Shift+Enter 换行…', tuiPermissionAuto: '自动允许编辑', tuiPermissionApproval: '逐项审批', tuiPermissionRequired: '需要权限确认', tuiPermissionQuestion: '是否继续执行？', tuiPermissionAllowOnce: '仅允许本次工具调用', tuiPermissionAllowSession: '本次会话允许此 Bash 命令', tuiPermissionDeny: '拒绝本次工具调用', tuiPermissionApprove: '↑/↓ 选择 · Enter 确认 · Y 允许、N 拒绝', tuiPermissionSelectHint: '↑/↓ 选择 · Enter 确认 · 输入数字直接选择', tuiPermissionDefaultAllow: '默认：允许', tuiPermissionDefaultDeny: '默认：拒绝', tuiPermissionAcceptFeedbackPlaceholder: '告诉模型接下来要做什么', tuiPermissionRejectFeedbackPlaceholder: '告诉模型需要如何调整', tuiPermissionTabHint: '按 Tab 添加说明', tuiPermissionEscHint: '按 Esc 取消', tuiRoleYou: '你', tuiRoleAssistant: '助手', tuiFooterHelp: 'Enter 发送 · Shift+Enter 换行 · Ctrl+C 中断/退出 · /exit 退出', tuiJumpToLatest: '按 End 跳转到最新消息', tuiNewMessage: '1 条新消息 · 按 End 跳转到最新消息', tuiNewMessages: '{count} 条新消息 · 按 End 跳转到最新消息', tuiPasting: '正在粘贴…', 
         errorPrefix: 'agent-cil：', languageInvalid: '语言必须是 auto、zh-CN 或 en。',
     languageUsage: '用法：/language [auto|zh-CN|en]', languageCurrent: '当前界面语言：{language}',
