@@ -47,9 +47,14 @@ async function spawnWindowsConpty(cliPath, args, { cwd, env, cols, rows }) {
   child.stdin = { write: value => terminal.write(value) };
   child.exitCode = null;
   child.killed = false;
+  child.cleanup = () => {
+    // Match the existing Windows permission harness: disposing the native
+    // ConPTY handle is required even after the child has already exited.
+    try { terminal.kill(); } catch {}
+  };
   child.kill = () => {
     child.killed = true;
-    try { terminal.kill(); } catch {}
+    child.cleanup();
   };
   terminal.onData(data => child.stdout.write(data));
   terminal.onExit(({ exitCode, signal }) => {
@@ -322,6 +327,7 @@ test('original 2.1.88 ScrollBox supports PageUp/PageDown and the 2.1.304 Home/En
     timers.clear();
     if (watchdog) clearTimeout(watchdog);
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
+    else child?.cleanup?.();
     server.closeAllConnections?.();
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await rm(workspace, { recursive: true, force: true });
