@@ -124,6 +124,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   const [feedbackOffset, setFeedbackOffsetState] = useState(0);
   const feedbackOffsetRef = useRef(0);
   const permissionKeyHandlerRef = useRef(null);
+  const permissionSubmitHandlerRef = useRef(null);
   const setApprovalFeedback = useCallback((type, nextValue) => {
     if (type !== 'accept' && type !== 'reject') return;
     const current = approvalFeedbackRef.current;
@@ -146,6 +147,9 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   }, []);
   const registerPermissionKeyHandler = useCallback(handler => {
     permissionKeyHandlerRef.current = typeof handler === 'function' ? handler : null;
+  }, []);
+  const registerPermissionSubmitHandler = useCallback(handler => {
+    permissionSubmitHandlerRef.current = typeof handler === 'function' ? handler : null;
   }, []);
   const resolvePermissionSelection = useCallback((selectedValue, feedback, permissionUpdates) => {
     const approved = selectedValue === 'allow' || selectedValue === 'allow-session';
@@ -393,7 +397,9 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   }, [setFeedbackOffset, setOffset]);
   const handleInputSubmit = useCallback(submittedValue => {
     if (permissionInputTypeRef.current) {
-      permissionKeyHandlerRef.current?.('', { return: true, submit: true });
+      // Original SelectInputOption delegates Enter to its TextInput onSubmit,
+      // which selects the currently focused option with the retained feedback.
+      permissionSubmitHandlerRef.current?.();
       return;
     }
     submit(submittedValue);
@@ -561,6 +567,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
           onFeedbackChange={setApprovalFeedback}
           onFeedbackModeChange={setPermissionInputType}
           onKeyHandlerChange={registerPermissionKeyHandler}
+          onSubmitHandlerChange={registerPermissionSubmitHandler}
           onSelect={resolvePermissionSelection}
           onCancel={cancelPermission}
           onPaste={onPaste}

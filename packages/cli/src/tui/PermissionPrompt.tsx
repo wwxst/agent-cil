@@ -23,6 +23,7 @@ export default function PermissionPrompt({
   onFeedbackChange,
   onFeedbackModeChange,
   onKeyHandlerChange,
+  onSubmitHandlerChange,
   onSelect,
   onCancel,
   onPaste,
@@ -153,6 +154,18 @@ export default function PermissionPrompt({
   const handleCancel = useCallback(() => {
     return onCancel();
   }, [onCancel]);
+
+  // Original 2.1.88 SelectInputOption delegates Enter to TextInput.onSubmit.
+  // Select then calls onChange for the currently focused option, including
+  // when feedback is empty (PermissionPrompt sets allowEmptySubmitToCancel).
+  const handleInputSubmit = useCallback(() => {
+    if (focusedValue !== undefined) handleSelect(focusedValue);
+  }, [focusedValue, handleSelect]);
+
+  useLayoutEffect(() => {
+    onSubmitHandlerChange(handleInputSubmit);
+    return () => onSubmitHandlerChange(null);
+  }, [onSubmitHandlerChange, handleInputSubmit]);
 
   // AgentTui owns the single terminal input stream. The original selector
   // navigation reducer owns focus; this adapter routes only the same
