@@ -141,8 +141,10 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
     default:128_000,upperLimit:128_000,
   });
   assert.equal(isModelAllowed('claude-opus-5-5',{availableModels:['opus']}),true);
-  assert.equal(isModelAllowed('mysonnet-custom',{availableModels:['sonnet']}),true,
-    'legacy prefix-mode family matching preserves the 2.1.88 includes() behavior');
+  assert.equal(isModelAllowed('mysonnet-custom',{availableModels:['sonnet']}),false,
+    '2.1.304 family matching requires an alphanumeric segment boundary');
+  assert.equal(isModelAllowed('my-sonnet-custom',{availableModels:['sonnet']}),true,
+    '2.1.304 family matching accepts a family after a punctuation boundary');
   assert.equal(isModelAllowed('claude-opus-4-6',{
     availableModels:['opus','opus-5-5'],
   }),false,'a version-qualified entry narrows the family wildcard');
@@ -174,6 +176,14 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
     'a versioned deniedModels entry blocks only that major/minor family version');
   assert.equal(isModelAllowed('claude-mysonnet-custom',{deniedModels:['sonnet']}),true,
     'denied family matching observes alphanumeric segment boundaries');
+  assert.equal(isModelAllowed('us.anthropic.claude-opus-5-5',{
+    deniedModels:['opus-5-5'],
+  }),false,'denied model matching parses provider-qualified Anthropic IDs');
+  assert.equal(isModelAllowed('claude-opus-5-5[1m]',{
+    deniedModels:['opus-5-5[2m]'],
+  }),false,'deniedModels ignores context-size tags on both the entry and model');
+  assert.equal(isModelAllowed('opus',{deniedModels:['claude-opus-5-5']}),true,
+    'denied model matching does not independently resolve dynamic aliases');
   assert.equal(isModelAllowed('my-custom',{deniedModels:['my-custom']}),false,
     'unknown denied model entries are exact literals');
   assert.equal(isModelAllowed('my-custom-model',{deniedModels:['my-custom']}),true,
