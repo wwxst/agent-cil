@@ -223,6 +223,38 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
 });
 
 
+test('invalid saved model policy cannot be bypassed by an explicit --model', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-policy-invalid-start-'));
+  const configPath = join(directory, 'config.json');
+  try {
+    for (const config of [
+      { language: 'en', availableModels: ['opus'], availableModelsMatch: 'loose' },
+      { language: 'en', availableModels: 'opus' },
+      { language: 'en', deniedModels: [123] },
+    ]) {
+      await writeFile(configPath, JSON.stringify(config));
+      const result = spawnSync(process.execPath, [
+        cli, '--print', '--model', 'sonnet', '--max-retries', '0',
+        '--cwd', directory, '--base-url', 'http://127.0.0.1:1',
+        'Invalid policy must fail before a provider request.',
+      ], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          ANTHROPIC_API_KEY: 'model-policy-test-key',
+          AGENT_CIL_CONFIG_PATH: configPath,
+          ANTHROPIC_MODEL: '',
+        },
+      });
+      assert.equal(result.status, 2, result.stderr);
+      assert.match(result.stderr, /User configuration is invalid: Saved/);
+      assert.equal(result.stdout, '');
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('empty model allowlist fails closed before a provider request', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-policy-empty-'));
   const configPath = join(directory, 'config.json');
