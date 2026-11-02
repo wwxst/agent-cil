@@ -59,6 +59,23 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   };
   assert.equal(parseUserSpecifiedModel('sonnet',{env:overrideEnv}),'sonnet-local-id');
   assert.equal(parseUserSpecifiedModel('best',{env:overrideEnv}),'fable-local-id');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514',{env}),
+    'claude-opus-5-5','2.1.304 remaps legacy first-party Opus IDs to the current default');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-1-20250805',{env}),
+    'claude-opus-5-5','the dated Opus 4.1 ID follows the same legacy remap');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514[1m]',{env}),
+    'claude-opus-5-5[1m]','legacy Opus remapping preserves an explicit 1M selection');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514',{env:overrideEnv}),
+    'opus-local-id','legacy remapping respects ANTHROPIC_DEFAULT_OPUS_MODEL');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514',{
+    env:{CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP:'1'},
+  }),'claude-opus-4-20250514','the legacy remap opt-out preserves the requested model ID');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514',{
+    env,apiProvider:'bedrock',
+  }),'claude-opus-4-20250514','legacy remapping is limited to the source provider families');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514',{
+    env,apiProvider:'gateway',
+  }),'claude-opus-4-7','the gateway provider uses its own current Opus default');
   assert.equal(getDefaultFableModel(overrideEnv),'fable-local-id');
   assert.equal(getDefaultSonnetModel({}, {apiProvider:'bedrock'}),'claude-sonnet-4-5');
   assert.equal(getDefaultOpusModel({}, {apiProvider:'gateway'}),'claude-opus-4-7');
