@@ -15,8 +15,8 @@ import {
 } from './model-catalog.js';
 
 export const MODEL_ALIASES = Object.freeze([
-  'sonnet', 'opus', 'haiku', 'fable', 'best',
-  'sonnet[1m]', 'opus[1m]', 'opusplan',
+  'sonnet', 'opus', 'haiku', 'fable', 'fable', 'best',
+  'sonnet[1m]', 'opus[1m]', 'fable[1m]', 'opusplan',
 ]);
 export const MODEL_FAMILY_ALIASES = Object.freeze([
   'sonnet', 'opus', 'haiku', 'fable',
@@ -61,8 +61,12 @@ function familyDefault(family, { env = process.env, apiProvider = 'firstParty' }
   if (typeof env[envName] === 'string' && env[envName].trim()) return env[envName].trim();
   const entry = MODEL_CATALOG_ALIASES[family];
   if (!entry) throw new TypeError('Unknown model family: ' + family);
-  const providerValue = apiProvider === 'anthropic' ? 'firstParty' : apiProvider;
-  return entry.perProvider?.[providerValue] ?? entry.default;
+  const providerValue = apiProvider === 'anthropic' || apiProvider === 'firstParty'
+    ? 'first_party'
+    : apiProvider === 'anthropicAws' ? 'anthropic_aws'
+    : apiProvider === 'anthropicGoogleCloud' ? 'anthropic_google_cloud'
+    : apiProvider;
+  return entry.per_provider?.[providerValue] ?? entry.default;
 }
 export const getDefaultSonnetModel = (env = process.env, options = {}) =>
   familyDefault('sonnet', { ...options, env });
@@ -100,23 +104,34 @@ function resolveAlias(alias, { env = process.env, apiProvider = 'firstParty' } =
  *   the provider request (native 1M models do not need the beta header).
  */
 export function parseUserSpecifiedModel(modelInput, {
-  env = process.env, apiProvider = 'firstParty',
+  env = process.env, apiProvider = 'firstParty', firstPartyBaseUrl = true,
 } = {}) {
   const value = normalizeModelInput(modelInput);
   const withOneM = hasOneMSuffix(value);
-  if (withOneM && is1mContextDisabled(env)) {
-    throw new TypeError('1M context is disabled by CLAUDE_CODE_DISABLE_1M_CONTEXT.');
-  }
+  const oneMEnabled = withOneM && !is1mContextDisabled(env);
   const withoutOneM = stripOneMSuffix(value);
   const alias = withoutOneM.toLowerCase();
   const resolved = resolveAlias(alias, { env, apiProvider });
-  if (resolved === undefined) return value;
-  if (!withOneM || alias === 'best') return resolved;
-  const base = stripOneMSuffix(resolved);
-  // 2.1.304 strips the opt-in suffix for models whose catalog entry is
-  // already native_1m; their context window remains 1M without a beta.
-  return getCatalogModel(base)?.context?.native_1m === true
-    ? base : base + '[1m]';
+
+  if (resolved !== undefined) {
+    // 2.1.304 treats [1m] family aliases as a model-selection attribute.
+    // opusplan/sonnet/haiku/opus append it; best resolves dynamically.
+    if (!oneMEnabled || alias === 'best') return stripOneMSuffix(resolved);
+    if (alias === 'fable') {
+      // Fable only appends the suffix for a non-first-party API base URL.
+      return firstPartyBaseUrl ? stripOneMSuffix(resolved)
+        : stripOneMSuffix(resolved) + '[1m]';
+    }
+    return stripOneMSuffix(resolved) + '[1m]';
+  }
+
+  if (!oneMEnabled) return value;
+  const metadata = getCatalogModel(withoutOneM);
+  // Native 1M model IDs do not need an explicit suffix on first-party URLs.
+  if (firstPartyBaseUrl && metadata?.context?.native_1m === true) {
+    return withoutOneM;
+  }
+  return withoutOneM + '[1m]';
 }
 
 /** Resolve the 2.1.304 catalog entry for a canonical ID or provider ID. */
@@ -141,13 +156,13 @@ export function getModelFamily(model) {
 }
 export function modelSupports1M(model) {
   const context = getCatalogModel(model)?.context;
-  return context?.native_1m === true || context?.supports_1m_beta === true;
+  return context?.native_1m === true ||
+    context?.supports_1m_beta === true ||
+    context?.supports_1m_suffix === true;
 }
 export function getModelContextWindow(model, { env = process.env } = {}) {
   const context = getCatalogModel(model)?.context;
-  if (is1mContextDisabled(env) && (context?.window ?? 0) > DEFAULT_CONTEXT_WINDOW) {
-    return DEFAULT_CONTEXT_WINDOW;
-  }
+  if (is1mContextDisabled(env)) return DEFAULT_CONTEXT_WINDOW;
   if (hasOneMSuffix(String(model ?? ''))) return 1_000_000;
   return context?.window ?? DEFAULT_CONTEXT_WINDOW;
 }
@@ -170,19 +185,25 @@ export function resolveModelRequest(modelInput, {
   if (provider !== 'anthropic') {
     throw new TypeError('The [1m] context option is supported only by the Anthropic provider.');
   }
-  if (is1mContextDisabled(env)) {
-    throw new TypeError('1M context is disabled by CLAUDE_CODE_DISABLE_1M_CONTEXT.');
-  }
   const apiModel = stripOneMSuffix(model);
+  if (is1mContextDisabled(env)) {
+    return { model: apiModel, betaHeaders: [] };
+  }
   const metadata = getCatalogModel(apiModel);
   const context = metadata?.context;
   if (context?.native_1m === true) {
     return { model: apiModel, betaHeaders: [] };
   }
-  if (metadata && context?.supports_1m_beta !== true) {
-    throw new TypeError('Model ' + apiModel + ' does not support the 1M context beta.');
+  if (metadata &&
+      context?.supports_1m_beta !== true &&
+      context?.supports_1m_suffix !== true) {
+    throw new TypeError('Model ' + apiModel + ' does not support 1M context.');
   }
-  return { model: apiModel, betaHeaders: [CONTEXT_1M_BETA_HEADER] };
+  return {
+    model: apiModel,
+    betaHeaders: context?.supports_1m_beta === true || !metadata
+      ? [CONTEXT_1M_BETA_HEADER] : [],
+  };
 }
 
 function normalizedPolicyValue(value) {
@@ -291,14 +312,14 @@ function getAllowedDefaultModel({ env, availableModels, deniedModels }) {
 export function getRuntimeMainLoopModel({
   permissionMode, mainLoopModel, userSpecifiedModel, env = process.env,
   availableModels, deniedModels = [], exceeds200kTokens = false,
+  firstPartyBaseUrl = true,
 } = {}) {
   const chosen = typeof userSpecifiedModel === 'string'
     ? userSpecifiedModel.trim().toLowerCase() : '';
   if (permissionMode !== 'plan') return mainLoopModel;
   if ((chosen === 'opusplan' || chosen === 'opusplan[1m]') && !exceeds200kTokens) {
     let candidate = getDefaultOpusModel(env);
-    if (chosen === 'opusplan[1m]' &&
-        getCatalogModel(candidate)?.context?.native_1m !== true) {
+    if (chosen === 'opusplan[1m]') {
       candidate = stripOneMSuffix(candidate) + '[1m]';
     }
     return isModelAllowed(candidate, { availableModels, deniedModels, env })
@@ -327,7 +348,7 @@ export function resolveOriginalCliModel({
     }
     return model;
   }
-  const requested = parseUserSpecifiedModel(model, { env });
+  const requested = parseUserSpecifiedModel(model, { env, firstPartyBaseUrl });
   const allowed = isModelAllowed(requested, { availableModels, deniedModels, env });
   const mainLoopModel = allowed
     ? requested
