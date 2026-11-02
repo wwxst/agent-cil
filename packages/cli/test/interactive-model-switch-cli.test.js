@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -110,6 +110,74 @@ test('real interactive CLI /model changes next streamed request without losing o
     assert.equal(records.at(-1).kind,'finished');
     const config=JSON.parse(await readFile(configPath,'utf8'));
     assert.equal(config.model,undefined,'/model default must remove the saved model preference');
+  }finally{
+    if(watchdog)clearTimeout(watchdog);
+    if(child&&child.exitCode===null)child.kill('SIGKILL');
+    if(closed)await closed.catch(()=>{});
+    server.closeAllConnections?.();
+    if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
+  }
+});
+
+
+test('real TTY /model rolls back the session checkpoint when persisted settings cannot be written',{
+  timeout:50000,skip:process.platform==='win32',
+},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'agent-cil-model-save-failure-'));
+  const sessionId=randomUUID();
+  const configPath=join(root,'blocked-config');
+  await mkdir(configPath);
+  const requests=[];
+  const server=createServer(async(req,res)=>{
+    const chunks=[];
+    for await(const chunk of req)chunks.push(chunk);
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.end(finalStream(requests.length));
+  });
+  let child,closed,watchdog;
+  let output='',sent=0;
+  const commands=['/model opus','Second prompt after failed persistence','/exit'];
+  try{
+    await new Promise((resolve,reject)=>{
+      server.once('error',reject);server.listen(0,'127.0.0.1',resolve);
+    });
+    const args=[process.execPath,cli,'--model','sonnet','--cwd',root,
+      '--session-id',sessionId,'--max-retries','0','--compact-threshold','0',
+      '--base-url','http://127.0.0.1:'+server.address().port,
+      'First prompt before failed model switch'];
+    child=spawn('script',['-q','-e','-c',args.map(shellQuote).join(' '),'/dev/null'],{
+      env:{...process.env,ANTHROPIC_API_KEY:'fixture-model-save-failure-key',
+        AGENT_CIL_CONFIG_PATH:configPath},
+      stdio:['pipe','pipe','pipe'],
+    });
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data',chunk=>{
+      output+=chunk;
+      const prompts=output.split('you> ').length-1;
+      if(prompts>sent && sent<commands.length){
+        child.stdin.write(commands[sent]+'\\n');
+        sent++;
+      }
+    });
+    closed=new Promise((resolve,reject)=>{
+      child.once('error',reject);
+      child.once('close',(code,signal)=>resolve({code,signal}));
+    });
+    watchdog=setTimeout(()=>child.kill('SIGKILL'),32000);
+    const result=await closed;
+    assert.equal(result.signal,null,output);
+    assert.equal(result.code,0,output);
+    assert.equal(sent,commands.length,output);
+    assert.match(output,/Model unchanged: Could not persist model preference:.*EISDIR/);
+    assert.deepEqual(requests.map(x=>x.model),[
+      'claude-sonnet-4-6','claude-sonnet-4-6',
+    ]);
+    const records=(await readFile(join(root,'.agent-cil','sessions',
+      sessionId,'transcript.jsonl'),'utf8')).trim().split('\\n').map(JSON.parse);
+    assert.deepEqual(records.filter(x=>x.kind==='model_override').map(x=>x.setting),
+      ['opus',null],'failed persistence must append a rollback checkpoint');
   }finally{
     if(watchdog)clearTimeout(watchdog);
     if(child&&child.exitCode===null)child.kill('SIGKILL');
