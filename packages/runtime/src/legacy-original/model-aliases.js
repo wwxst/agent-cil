@@ -327,7 +327,11 @@ function getAllowedDefaultModel({ env, availableModels, deniedModels }) {
   }
   for (const entry of availableModels ?? []) {
     if (!entry || isModelFamilyAlias(entry.toLowerCase())) continue;
-    const candidate = parseUserSpecifiedModel(entry, { env });
+    const parsed = parseUserSpecifiedModel(entry, { env });
+    const metadata = getCatalogModel(parsed) ??
+      (!String(parsed).toLowerCase().startsWith('claude-')
+        ? getCatalogModel('claude-' + parsed) : undefined);
+    const candidate = metadata?.id ?? parsed;
     if (isModelAllowed(candidate, { availableModels, deniedModels, env })) return candidate;
   }
   throw new TypeError('No model remains available after applying availableModels and deniedModels.');
