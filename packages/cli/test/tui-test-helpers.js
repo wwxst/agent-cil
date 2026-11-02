@@ -18,6 +18,40 @@ export function normalizeTuiText(output) {
   return normalizeTuiOutput(output).replace(/\s+/g, ' ').trim();
 }
 
+export async function waitForTuiText(getOutput, expected, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastOutput = '';
+  while (Date.now() < deadline) {
+    lastOutput = String(getOutput() ?? '');
+    if (normalizeTuiText(lastOutput).includes(expected)) return lastOutput;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error(
+    'Timed out waiting for TUI text "' + expected + '":\n' + lastOutput,
+  );
+}
+
+export async function waitForTuiTextAfter(
+  getOutput,
+  precedingText,
+  expectedText,
+  timeoutMs = 5000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  let lastOutput = '';
+  while (Date.now() < deadline) {
+    lastOutput = normalizeTuiText(getOutput());
+    const precedingIndex = lastOutput.lastIndexOf(precedingText);
+    const expectedIndex = lastOutput.lastIndexOf(expectedText);
+    if (precedingIndex >= 0 && expectedIndex > precedingIndex) return lastOutput;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error(
+    'Timed out waiting for TUI text "' + expectedText +
+    '" after "' + precedingText + '":\n' + lastOutput,
+  );
+}
+
 // Minimal VT screen for PTY assertions. Unlike stripAnsi(), this applies
 // cursor movement and erase operations, so assertions inspect what a user
 // actually sees instead of searching the renderer's incremental byte stream.

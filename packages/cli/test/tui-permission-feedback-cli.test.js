@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createTerminalScreen } from './tui-test-helpers.js';
+import { waitForTuiText, waitForTuiTextAfter } from './tui-test-helpers.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -29,6 +29,8 @@ const finishStream = text => [
   event('message_stop'),
 ].join('');
 
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 test('installed original PermissionPrompt Tab feedback is retained after a real Bash tool_result', {
   timeout: 25000,
   skip: process.platform === 'win32' && 'util-linux script PTY is for Linux; Windows runs the native ConPTY harness',
@@ -49,7 +51,6 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
   });
   let child;
   let watchdog;
-  const timers = [];
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -69,7 +70,6 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
     });
     let output = '';
     let stderr = '';
-    const screen = createTerminalScreen(80, 24);
     let sawApprovalPrompt = false;
     let approvalPrompts = 0;
     let feedbackPrompts = 0;
@@ -77,34 +77,47 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
     let submittedExits = 0;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => {
-      output += chunk;
-      screen.write(chunk);
-      const visible = screen.toString();
-      if (visible.includes('Permission required')) sawApprovalPrompt = true;
-      // Permission keys are scheduled after the local SSE response below.
-
-      if (submittedExits === 0 &&
-          visible.includes('Approval feedback was retained.') &&
-          visible.includes('you> ')) {
-        submittedExits++;
-        child.stdin.write('/exit\r');
-      }
-    });
+    child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
-    timers.push(setTimeout(() => { approvalPrompts++; child.stdin.write('\x1b[B'); }, 2000));
-    timers.push(setTimeout(() => child.stdin.write('\t'), 2240));
-    timers.push(setTimeout(() => { feedbackPrompts++; child.stdin.write(feedback); }, 2480));
-    // The original 2.1.88 selector retains non-empty feedback when focus
-    // leaves its option; move to Deny, return to Allow, then submit it.
-    timers.push(setTimeout(() => child.stdin.write('\x1b[A'), 2760));
-    timers.push(setTimeout(() => child.stdin.write('\x1b[B'), 3000));
-    timers.push(setTimeout(() => { feedbackSubmitted++; child.stdin.write('\r'); }, 3240));
     watchdog = setTimeout(() => child.kill('SIGKILL'), 17000);
+    const interaction = (async () => {
+      // Do not send fixed-delay keystrokes from process start: provider and
+      // Ink startup latency varies on CI. Drive each action from the actual
+      // rendered permission/feedback state.
+      await waitForTuiText(() => output, 'Permission required', 10000);
+      sawApprovalPrompt = true;
+      approvalPrompts++;
+      child.stdin.write('\\x1b[B');
+      await delay(180);
+      child.stdin.write('\\t');
+      await waitForTuiText(() => output, 'tell Claude what to do next', 3000);
+      feedbackPrompts++;
+      child.stdin.write(feedback);
+      await waitForTuiText(() => output, feedback, 3000);
+      await delay(180);
+      // The original selector retains non-empty feedback while focus leaves
+      // the Allow option and returns to it.
+      child.stdin.write('\\x1b[A');
+      await delay(180);
+      child.stdin.write('\\x1b[B');
+      await delay(180);
+      feedbackSubmitted++;
+      child.stdin.write('\\r');
+      await waitForTuiText(() => output, 'Approval feedback was retained.', 10000);
+      await waitForTuiTextAfter(
+        () => output, 'Approval feedback was retained.', 'you>', 3000,
+      );
+      submittedExits++;
+      child.stdin.write('/exit\\r');
+    })();
+    interaction.catch(() => {
+      if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
+    });
     const [status, signal] = await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('close', (code, sig) => resolve([code, sig]));
     });
+    await interaction;
     assert.equal(signal, null, stderr + output);
     assert.equal(status, 0, stderr + output);
     assert.doesNotMatch(output + stderr, /Could not start the original Ink TUI|falling back to the readline interface/);
@@ -122,7 +135,6 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
     assert.ok(blocks.some(block => block.type === 'text' && block.text === feedback),
       'original acceptFeedback must be appended after the authenticated tool_result');
   } finally {
-    for (const timer of timers) clearTimeout(timer);
     if (watchdog) clearTimeout(watchdog);
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
     server.closeAllConnections?.();
@@ -151,7 +163,6 @@ test('installed original PermissionPrompt reject feedback remains the denial rea
   });
   let child;
   let watchdog;
-  const timers = [];
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -171,37 +182,42 @@ test('installed original PermissionPrompt reject feedback remains the denial rea
     });
     let output = '';
     let stderr = '';
-    const screen = createTerminalScreen(80, 24);
-    let sawApprovalPrompt = false;
     let approvalPrompts = 0;
     let feedbackPrompts = 0;
     let feedbackSubmitted = 0;
     let submittedExits = 0;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => {
-      output += chunk;
-      screen.write(chunk);
-      const visible = screen.toString();
-      if (visible.includes('Permission required')) sawApprovalPrompt = true;
-      // Permission keys are scheduled after the local SSE response below.
-
-      if (submittedExits === 0 &&
-          visible.includes('The denial feedback was retained.') &&
-          visible.includes('you> ')) {
-        submittedExits++;
-        child.stdin.write('/exit\r');
-      }
-    });
+    child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
-    timers.push(setTimeout(() => { approvalPrompts++; child.stdin.write('\t'); }, 2000));
-    timers.push(setTimeout(() => { feedbackPrompts++; child.stdin.write(feedback); }, 2240));
-    timers.push(setTimeout(() => { feedbackSubmitted++; child.stdin.write('\r'); }, 2480));
     watchdog = setTimeout(() => child.kill('SIGKILL'), 17000);
+    const interaction = (async () => {
+      await waitForTuiText(() => output, 'Permission required', 10000);
+      approvalPrompts++;
+      // defaultToNo focuses Deny, so Tab opens its reject-feedback editor.
+      child.stdin.write('\\t');
+      await waitForTuiText(() => output, 'tell Claude what to do differently', 3000);
+      feedbackPrompts++;
+      child.stdin.write(feedback);
+      await waitForTuiText(() => output, feedback, 3000);
+      await delay(180);
+      feedbackSubmitted++;
+      child.stdin.write('\\r');
+      await waitForTuiText(() => output, 'The denial feedback was retained.', 10000);
+      await waitForTuiTextAfter(
+        () => output, 'The denial feedback was retained.', 'you>', 3000,
+      );
+      submittedExits++;
+      child.stdin.write('/exit\\r');
+    })();
+    interaction.catch(() => {
+      if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
+    });
     const [status, signal] = await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('close', (code, sig) => resolve([code, sig]));
     });
+    await interaction;
     assert.equal(signal, null, stderr + output);
     assert.equal(status, 0, stderr + output);
     assert.doesNotMatch(output + stderr, /Could not start the original Ink TUI|falling back to the readline interface/);
@@ -217,7 +233,6 @@ test('installed original PermissionPrompt reject feedback remains the denial rea
     assert.equal(blocks[0].is_error, true, JSON.stringify(blocks));
     assert.match(blocks[0].content, /I did not ask to run this command\./);
   } finally {
-    for (const timer of timers) clearTimeout(timer);
     if (watchdog) clearTimeout(watchdog);
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
     server.closeAllConnections?.();
@@ -246,7 +261,6 @@ test('Ctrl-D in an empty original permission feedback editor cancels the request
   });
   let child;
   let watchdog;
-  const timers = [];
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -266,34 +280,40 @@ test('Ctrl-D in an empty original permission feedback editor cancels the request
     });
     let output = '';
     let stderr = '';
-    const screen = createTerminalScreen(80, 24);
-    let sawApprovalPrompt = false;
     let approvalPrompts = 0;
     let submittedExits = 0;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => {
-      output += chunk;
-      screen.write(chunk);
-      const visible = screen.toString();
-      if (visible.includes('Permission required')) sawApprovalPrompt = true;
-      if (submittedExits === 0 &&
-          visible.includes('The permission request was cancelled.') &&
-          visible.includes('you> ')) {
-        submittedExits++;
-        child.stdin.write('/exit\r');
-      }
-    });
+    child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
-    timers.push(setTimeout(() => { approvalPrompts++; child.stdin.write('\x1b[B'); }, 2000));
-    timers.push(setTimeout(() => child.stdin.write('\t'), 2240));
-    timers.push(setTimeout(() => child.stdin.write('\x04'), 2480));
-    timers.push(setTimeout(() => child.stdin.write('\x04'), 2760));
     watchdog = setTimeout(() => child.kill('SIGKILL'), 17000);
+    const interaction = (async () => {
+      await waitForTuiText(() => output, 'Permission required', 10000);
+      approvalPrompts++;
+      child.stdin.write('\\x1b[B');
+      await delay(180);
+      child.stdin.write('\\t');
+      await waitForTuiText(() => output, 'tell Claude what to do next', 3000);
+      // Ctrl+D in the focused empty feedback editor follows the original
+      // 800ms double-press cancellation contract.
+      child.stdin.write('\\x04');
+      await delay(280);
+      child.stdin.write('\\x04');
+      await waitForTuiText(() => output, 'The permission request was cancelled.', 10000);
+      await waitForTuiTextAfter(
+        () => output, 'The permission request was cancelled.', 'you>', 3000,
+      );
+      submittedExits++;
+      child.stdin.write('/exit\\r');
+    })();
+    interaction.catch(() => {
+      if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
+    });
     const [status, signal] = await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('close', (code, sig) => resolve([code, sig]));
     });
+    await interaction;
     assert.equal(signal, null, stderr + output);
     assert.equal(status, 0, stderr + output);
     assert.equal(approvalPrompts, 1, output);
@@ -306,7 +326,6 @@ test('Ctrl-D in an empty original permission feedback editor cancels the request
     assert.equal(blocks[0].is_error, true, JSON.stringify(blocks));
     assert.match(blocks[0].content, /User denied the tool call/);
   } finally {
-    for (const timer of timers) clearTimeout(timer);
     if (watchdog) clearTimeout(watchdog);
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
     server.closeAllConnections?.();
