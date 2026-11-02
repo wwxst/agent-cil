@@ -182,6 +182,9 @@ export async function main({ turnTimeoutMs = 120_000 } = {}) {
       'the first live TUI turn must start an Edit tool call; found ' +
       editStarted.length + '. Recent transcript: ' +
       redact(firstTurnTranscript.slice(-5000)));
+    assert.ok(firstTurnTranscript.includes('export function add(a, b)'),
+      'the TUI must render the committed Read tool_result, not only its status. Recent transcript: ' +
+      redact(firstTurnTranscript.slice(-5000)));
     assert.doesNotMatch(firstTurnTranscript, /Bash ·/,
       'the first live TUI turn must not invoke Bash');
     process.stdout.write('PASS: real Ink TUI completed Read -> Edit -> Read and verified workspace content.\n');
