@@ -10,7 +10,6 @@ import { openSessionJournal } from '../../runtime/src/legacy-session/session-sto
 import { normalizeTuiOutput } from './tui-test-helpers.js';
 
 const cli = fileURLToPath(new URL('../src/index.js', import.meta.url));
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 test('real Ink TUI restores the committed conversation when resuming a session', {
   timeout: 25000,
@@ -61,11 +60,11 @@ test('real Ink TUI restores the committed conversation when resuming a session',
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
-      const visible = normalizeTuiOutput(output).replace(/\\s+/g, '');
+      const visible = normalizeTuiOutput(output).replace(/\s+/g, '');
       if (!exitSent && visible.includes('previousturn?') &&
           visible.includes('originalAgentLoop.') && visible.includes('you>')) {
         exitSent = true;
-        child.stdin.write('/exit\\r');
+        child.stdin.write('/exit\r');
       }
     });
     child.stderr.on('data', chunk => { stderr += chunk; });
@@ -77,7 +76,7 @@ test('real Ink TUI restores the committed conversation when resuming a session',
     assert.equal(signal, null, stderr + output);
     assert.equal(status, 0, stderr + output);
     assert.equal(exitSent, true, stderr + output);
-    const visible = normalizeTuiOutput(output).replace(/\\s+/g, '');
+    const visible = normalizeTuiOutput(output).replace(/\s+/g, '');
     assert.ok(visible.indexOf('previousturn?') < visible.indexOf('originalAgentLoop.'));
     assert.equal(requests.length, 0, 'promptless interactive resume only restores the transcript; it must not invent a model request');
   } finally {
