@@ -145,11 +145,11 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
         return;
       }
 
-      // The VT test screen intentionally models cursor movement, but the
-      // renderer emits the pill's spaces as CSI cursor-forward sequences.
-      // Normalize the actual PTY stream for the pill text and use the VT
-      // screen only for transcript position assertions.
-      if (pageUpStarted && !endSent && screenText.includes('reply-01') &&
+      // The minimal VT grid cannot faithfully model the original renderer's
+      // scroll-region redraws. Assert the actual post-key PTY frame instead:
+      // it must repaint the oldest transcript row and the viewport pill.
+      if (pageUpStarted && !endSent &&
+          normalizeTuiText(output.slice(outputAtPageUp)).includes('reply-01') &&
           normalizeTuiText(output.slice(outputAtPageUp)).includes('End to jump to latest')) {
         endSent = true;
         // Stop the recursive PageUp sender before testing End/Home. The
@@ -160,18 +160,21 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
         return;
       }
 
+      const endOutput = normalizeTuiText(output.slice(outputAtEnd));
       if (endSent && !homeSent &&
-          screenText.includes('reply-' + pad(totalTurns)) &&
-          !screenText.includes('reply-01') && inputReady &&
-          !normalizeTuiText(output.slice(outputAtEnd)).includes('End to jump to latest')) {
+          endOutput.includes('reply-' + pad(totalTurns)) &&
+          !endOutput.includes('reply-01') && inputReady &&
+          !endOutput.includes('End to jump to latest')) {
         homeSent = true;
         outputAtHome = output.length;
         child.stdin.write('\x1b[1~');
         return;
       }
 
-      if (homeSent && !exitSent && screenText.includes('reply-01') &&
-          normalizeTuiText(output.slice(outputAtHome)).includes('End to jump to latest')) {
+      const homeOutput = normalizeTuiText(output.slice(outputAtHome));
+      if (homeSent && !exitSent &&
+          homeOutput.includes('reply-01') &&
+          homeOutput.includes('End to jump to latest')) {
         exitSent = true;
         for (const timer of timers) clearTimeout(timer);
         timers.clear();
