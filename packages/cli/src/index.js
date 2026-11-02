@@ -2795,8 +2795,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // tool-result checkpoint is retained when a later model turn fails, so
       // the interactive shell can safely continue without replaying tools.
     }
-    // Pinned 2.1.88 commands/model/model.tsx:
-    // /model [model] sets the session override, while /model --help
+    // Pinned 2.1.88 commands/model/model.tsx + onChangeAppState.ts:
+    // /model [model] changes the active model and persists userSettings.model;
+    // selecting Default removes that setting. /model --help
     // and information actions are local CLI commands, NOT model prompts.
     // The original UI picker has no headless equivalent, so /model with
     // no args reports the selected model rather than inventing a picker.
@@ -2806,7 +2807,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if(!match)return false;
       const argument=(match[1]??'').trim();
       if(!argument||['--current','current','--info','info'].includes(argument)){
-        process.stderr.write(t(locale, 'modelCurrent', { model: model.model, setting: activeModelSetting }) + '\n');
+        process.stderr.write(t(locale, 'modelCurrent', { model: model.model, setting: activeModelSetting ?? t(locale, 'configNotSet') }) + '\n');
         return true;
       }
       if(['--help','-h','help'].includes(argument)){
@@ -2865,7 +2866,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           }
         }
         model.setModel(resolved);
-        activeModelSetting=setting;
+        activeModelSetting=isDefault
+          ? (provider==='anthropic' ? (env.ANTHROPIC_MODEL||null)
+            : provider==='openai' ? (env.OPENAI_MODEL||null) : (env.DEEPSEEK_MODEL||null))
+          : setting;
         sessionModelOverrideSetting=setting;
         process.stderr.write(t(locale, 'modelSet', { model: model.model }) + '\\n');
       }catch(error){
