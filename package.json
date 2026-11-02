@@ -10,7 +10,8 @@
   "scripts": {
     "test": "node scripts/run-tests.mjs",
     "check": "node scripts/run-tests.mjs",
-    "start": "node packages/cli/src/index.js"
+    "start": "node packages/cli/src/index.js",
+    "verify:live-tui": "node scripts/verify-live-tui.mjs"
   },
   "bin": {
     "agent-cil": "./packages/cli/src/index.js"
