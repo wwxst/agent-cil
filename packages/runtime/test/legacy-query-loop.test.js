@@ -41,6 +41,7 @@ test('ported 2.1.88 query follows actual tool_use despite misleading end_turn', 
   const tools = registry();
   const originalRead = tools.get('Read').execute;
   const before = [];
+  const toolResults = [];
   const model = { async *stream({ messages }) {
     requests++;
     if (requests === 1) {
@@ -61,12 +62,20 @@ test('ported 2.1.88 query follows actual tool_use despite misleading end_turn', 
     permissionPolicy: async () => ({ behavior: 'allow' }),
   });
   loop.on('turnStarted', event => before.push(event.turn));
+  loop.on('toolResult', event => toolResults.push(event));
   const result = await loop.run({ input: 'Read the file' });
   assert.deepEqual(before, [1, 2]);
   assert.equal(result.stopReason, 'end_turn');
   assert.equal(result.turns, 2);
   assert.equal(result.messages[1].stop_reason, 'end_turn');
   assert.equal(result.messages[2].content[0].content, 'value:file');
+  assert.deepEqual(toolResults, [{
+    turn: 1,
+    toolUseId: 'old-query-1',
+    toolName: 'Read',
+    content: 'value:file',
+    isError: false,
+  }], 'the live TUI receives the authenticated, committed tool result');
   assert.equal(result.finalMessage.content[0].text, 'done');
 });
 
