@@ -260,7 +260,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     // The original 2.1.88 ScrollBox owns transcript history. PageUp/PageDown
     // scroll only when the prompt is empty; multiline prompt editing keeps its
     // normal cursor behavior. PageDown restores sticky follow at the bottom.
-    if (valueRef.current.length === 0 &&
+    if (valueRef.current.length === 0 && !key.ctrl && !key.meta && !key.shift &&
         (key.pageUp || key.pageDown || key.home || key.end)) {
       const scroll = scrollRef.current;
       if (scroll) {
