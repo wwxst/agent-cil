@@ -146,6 +146,17 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   }),true);
   assert.equal(isModelAllowed('claude-sonnet-5-5',{availableModels:[]}),false);
   assert.equal(isModelAllowed('claude-sonnet-5-5',{deniedModels:['sonnet']}),false);
+  assert.equal(isModelAllowed('claude-opus-5-5',{deniedModels:['opus-5-5']}),false);
+  assert.equal(isModelAllowed('claude-opus-4-6',{deniedModels:['opus-5-5']}),true,
+    'a versioned deniedModels entry blocks only that major/minor family version');
+  assert.equal(isModelAllowed('my-custom',{deniedModels:['my-custom']}),false,
+    'unknown denied model entries are exact literals');
+  assert.equal(isModelAllowed('my-custom-model',{deniedModels:['my-custom']}),true,
+    'unknown denied literals do not become accidental prefix rules');
+  assert.equal(isModelAllowed('claude-fable-5-1',{deniedModels:['best']}),true,
+    'dynamic aliases are ignored in deniedModels, as in 2.1.304');
+  assert.equal(isModelAllowed('claude-opus-5-5',{deniedModels:['default']}),true,
+    'the default alias is ignored in deniedModels');
   assert.equal(resolveOriginalCliModel({
     provider:'anthropic',model:'opus',availableModels:['sonnet'],env,
   }),'claude-sonnet-5-5','a disallowed saved selection falls back to the permitted default');
