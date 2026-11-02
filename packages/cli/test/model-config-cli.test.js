@@ -189,6 +189,41 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
 });
 
 
+test('normal startup rejects an invalid saved model value instead of silently using the default', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-config-invalid-value-start-'));
+  const configPath = join(directory, 'config.json');
+  const env = {
+    ...process.env,
+    ANTHROPIC_API_KEY: 'model-config-test-key',
+    AGENT_CIL_CONFIG_PATH: configPath,
+    ANTHROPIC_MODEL: '',
+  };
+  try {
+    const original = JSON.stringify({ language: 'en', theme: 'dark', model: 123 });
+    await writeFile(configPath, original);
+    const result = spawnSync(process.execPath, [
+      cli, '--print', '--max-retries', '0', '--cwd', directory,
+      '--base-url', 'http://127.0.0.1:1', 'Do not make a model request.',
+    ], { encoding: 'utf8', env });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /User configuration is invalid/);
+    assert.equal(result.stdout, '');
+    assert.equal(await readFile(configPath, 'utf8'), original);
+
+    // The explicit config command can repair the field without losing other
+    // user settings, so fail-closed does not strand the user.
+    const repair = spawnSync(process.execPath, [cli, 'config', 'set', 'model', 'opus'], {
+      encoding: 'utf8', env,
+    });
+    assert.equal(repair.status, 0, repair.stderr);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
+      language: 'en', theme: 'dark', model: 'opus',
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('normal startup refuses to silently discard an unreadable saved model setting', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-config-corrupt-start-'));
   const configPath = join(directory, 'config.json');
