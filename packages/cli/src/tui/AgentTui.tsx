@@ -40,16 +40,26 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       setScrollMetrics(null);
       return;
     }
-    const update = () => setScrollMetrics({
-      scrollTop: handle.getScrollTop(),
-      pendingDelta: handle.getPendingDelta(),
-      viewportHeight: handle.getViewportHeight(),
-      scrollHeight: handle.getScrollHeight(),
-      sticky: handle.isSticky(),
-    });
+    const update = () => {
+      const scrollTop = handle.getScrollTop();
+      const pendingDelta = handle.getPendingDelta();
+      const viewportHeight = handle.getViewportHeight();
+      const scrollHeight = handle.getScrollHeight();
+      const atBottom = handle.isSticky() ||
+        scrollTop + pendingDelta >= Math.max(0, scrollHeight - viewportHeight);
+      if (atBottom) onRepin();
+      else onScrollAway(handle);
+      setScrollMetrics({
+        scrollTop,
+        pendingDelta,
+        viewportHeight,
+        scrollHeight,
+        sticky: handle.isSticky(),
+      });
+    };
     update();
     return handle.subscribe(update);
-  }, [snapshot.pendingApproval]);
+  }, [snapshot.pendingApproval, onRepin, onScrollAway]);
   const repinScroll = useCallback(() => {
     jumpToNew(scrollRef.current);
     onRepin();
@@ -406,8 +416,9 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   // Match 2.1.304 FullscreenLayout: the bottom pill is visible only while
   // the viewport remains above the original scroll-away snapshot.
   const showJumpHint = !snapshot.pendingApproval && scrollMetrics !== null &&
+    scrollHandle !== null && !scrollHandle.isSticky() &&
     dividerY !== null && scrollBottom < dividerY &&
-    scrollBottom < (scrollHandle?.getScrollHeight() ?? 0);
+    scrollBottom < scrollHandle.getScrollHeight();
   const unseenAssistantCount = dividerIndex === null
     ? 0
     : countUnseenAssistantTurns(visibleMessages, dividerIndex);
