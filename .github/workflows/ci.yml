@@ -24,6 +24,9 @@ jobs:
       - name: Verify actual Windows ConPTY Ctrl+C path
         timeout-minutes: 1
         run: node --test packages/cli/test/ctrl-c-interrupt-windows-pty.test.js
+      - name: Verify original Ink TUI permission flow on native Windows ConPTY
+        timeout-minutes: 2
+        run: node --test packages/cli/test/tui-permission-windows-pty.test.js
       - name: Preflight cold Windows Bash Job Object startup
         run: |
           node --test packages/cli/test/windows-job-supervisor-smoke.test.js
