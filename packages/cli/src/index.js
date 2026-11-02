@@ -2941,6 +2941,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         locale,
         model: model.model,
         permissionMode: permissionContext.mode,
+        initialMessages: history,
         onSubmit: handleInteractiveInput,
         onInterrupt: onTuiInterrupt,
       });
@@ -2960,9 +2961,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
     if (tui) {
       if (prompt) {
-        // The startup user prompt is already fsynced by the current core.
-        // Display it in Ink without inserting a duplicate model input.
-        tui.addMessage('user', prompt);
+        // The startup user prompt is already present in the hydrated journal
+        // transcript when initialInputCommitted is true. Do not append a
+        // second visible copy; a resumed session with a new prompt is added
+        // by runPrompt() through the normal input path.
         const status = await runPrompt(initialInputCommitted ? undefined : prompt);
         if (status === 130) tui.pushSystemMessage(t(locale, 'interrupted'));
       }

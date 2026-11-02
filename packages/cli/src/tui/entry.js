@@ -4,7 +4,9 @@ import { translate } from '../i18n.js';
 
 let tsxRegistered = false;
 
-export async function startAgentTui({ locale, model, permissionMode, onSubmit, onInterrupt }) {
+export async function startAgentTui({
+  locale, model, permissionMode, onSubmit, onInterrupt, initialMessages = [],
+}) {
   if (!tsxRegistered) {
     process.env.TSX_TSCONFIG_PATH = fileURLToPath(new URL('../../../../tsconfig.json', import.meta.url));
     const { register } = await import('tsx/esm/api');
@@ -32,6 +34,7 @@ export async function startAgentTui({ locale, model, permissionMode, onSubmit, o
     import('../../../../legacy/2.1.88/restored-src/src/history.js'),
   ]);
   const controller = createTuiController({ locale, model, permissionMode });
+  controller.loadTranscript(initialMessages);
   const initialHistory = await loadPromptHistory({ limit: 100 }).catch(() => []);
   const onNotification = notification => {
     const localized = notification?.text === 'Esc again to clear'

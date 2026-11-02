@@ -316,6 +316,76 @@ test('TUI controller removes empty assistant placeholders for tool-only model me
   controller.close(0);
 });
 
+test('TUI controller hydrates resumed provider history with tool results in transcript order', () => {
+  const controller = createTuiController();
+  const history = [
+    { role: 'user', content: 'Inspect the source file.' },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'I will inspect it first.' },
+        { type: 'tool_use', id: 'resume-read-1', name: 'Read', input: { file_path: 'src/index.js' } },
+        { type: 'tool_use', id: 'resume-grep-2', name: 'Grep', input: { pattern: 'TODO' } },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'resume-read-1', content: 'export const value = 1;' },
+        { type: 'tool_result', tool_use_id: 'resume-grep-2', content: 'No matches found.', is_error: true },
+      ],
+    },
+    { role: 'assistant', content: 'The source is clean apart from the failed search.' },
+  ];
+
+  assert.equal(controller.loadTranscript(history), true);
+  assert.equal(controller.loadTranscript([]), false, 'initial history is applied once');
+  assert.deepEqual(controller.getSnapshot().messages.map(message => [
+    message.role, message.text ?? message.toolName, message.status,
+  ]), [
+    ['user', 'Inspect the source file.', undefined],
+    ['assistant', 'I will inspect it first.', undefined],
+    ['tool', 'Read', 'succeeded'],
+    ['tool', 'Grep', 'failed'],
+    ['assistant', 'The source is clean apart from the failed search.', undefined],
+  ]);
+  const tools = controller.getSnapshot().messages.filter(message => message.role === 'tool');
+  assert.deepEqual(tools.map(message => [message.toolUseId, message.resultContent, message.resultIsError]), [
+    ['resume-read-1', 'export const value = 1;', false],
+    ['resume-grep-2', 'No matches found.', true],
+  ]);
+  assert.deepEqual(tools[0].input, { file_path: 'src/index.js' });
+  controller.close(0);
+});
+
+test('TUI controller hydrates tool-only history without phantom assistant rows and preserves image markers', () => {
+  const controller = createTuiController();
+  controller.loadTranscript([
+    { role: 'user', content: 'Review this image.' },
+    {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'resume-tool-only', name: 'Read', input: { file_path: 'a.txt' } }],
+    },
+    {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'resume-tool-only', content: 'file contents' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } },
+      ],
+    },
+    { role: 'assistant', content: 'The image is visible in the resumed context.' },
+  ]);
+  assert.deepEqual(controller.getSnapshot().messages.map(message => [
+    message.role, message.text ?? message.resultContent,
+  ]), [
+    ['user', 'Review this image.'],
+    ['tool', 'file contents'],
+    ['user', '[1 image attachment]'],
+    ['assistant', 'The image is visible in the resumed context.'],
+  ]);
+  controller.close(0);
+});
+
 test('TUI controller marks assistant streaming lifecycle for incremental Markdown rendering', () => {
   const controller = createTuiController();
   controller.beginAssistantMessage();

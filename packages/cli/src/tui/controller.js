@@ -38,6 +38,118 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
     },
     getSnapshot() { return snapshot; },
     addMessage,
+    loadTranscript(messages) {
+      if (!Array.isArray(messages)) {
+        throw new TypeError('Initial transcript must be an array of model messages.');
+      }
+      if (snapshot.messages.length !== 0) return false;
+
+      const rows = [];
+      const toolRows = new Map();
+      const toolNames = new Map();
+      for (const source of messages) {
+        if (source?.role !== 'assistant' || !Array.isArray(source.content)) continue;
+        for (const block of source.content) {
+          if (block?.type === 'tool_use' && typeof block.id === 'string' && block.id) {
+            toolNames.set(block.id, typeof block.name === 'string' && block.name
+              ? block.name : 'Tool');
+          }
+        }
+      }
+
+      const appendText = (role, text) => {
+        if (typeof text !== 'string' || text.length === 0) return;
+        rows.push({ id: nextMessageId++, role, text });
+      };
+      const appendToolUse = block => {
+        if (typeof block?.id !== 'string' || !block.id ||
+            toolRows.has(block.id)) return;
+        const row = {
+          id: nextMessageId++,
+          role: 'tool',
+          toolUseId: block.id,
+          toolName: toolNames.get(block.id) ?? 'Tool',
+          status: 'running',
+          ...(block.input !== undefined ? { input: structuredClone(block.input) } : {}),
+        };
+        rows.push(row);
+        toolRows.set(block.id, row);
+      };
+      const appendToolResult = block => {
+        if (typeof block?.tool_use_id !== 'string' || !block.tool_use_id) return;
+        let row = toolRows.get(block.tool_use_id);
+        if (!row) {
+          row = {
+            id: nextMessageId++,
+            role: 'tool',
+            toolUseId: block.tool_use_id,
+            toolName: toolNames.get(block.tool_use_id) ?? 'Tool',
+            status: 'running',
+          };
+          rows.push(row);
+          toolRows.set(block.tool_use_id, row);
+        }
+        const resultContent = block.content === undefined
+          ? '' : structuredClone(block.content);
+        Object.assign(row, {
+          resultContent,
+          resultIsError: block.is_error === true,
+          status: block.is_error === true ? 'failed' : 'succeeded',
+        });
+      };
+
+      for (const source of messages) {
+        if (source?.role !== 'user' && source?.role !== 'assistant') continue;
+        const content = typeof source.content === 'string'
+          ? [{ type: 'text', text: source.content }]
+          : Array.isArray(source.content) ? source.content : [];
+
+        if (source.role === 'assistant') {
+          let text = '';
+          const flushText = () => {
+            appendText('assistant', text);
+            text = '';
+          };
+          for (const block of content) {
+            if (block?.type === 'text' && typeof block.text === 'string') {
+              text += block.text;
+            } else if (block?.type === 'tool_use') {
+              flushText();
+              appendToolUse(block);
+            }
+          }
+          flushText();
+          continue;
+        }
+
+        let text = '';
+        let imageCount = 0;
+        const flushUserText = () => {
+          if (imageCount > 0) {
+            text += (text ? '\n' : '') + '[' + imageCount + ' image attachment' +
+              (imageCount === 1 ? '' : 's') + ']';
+            imageCount = 0;
+          }
+          appendText(text.startsWith('<task_notification>') ? 'system' : 'user', text);
+          text = '';
+        };
+        for (const block of content) {
+          if (block?.type === 'tool_result') {
+            flushUserText();
+            appendToolResult(block);
+          } else if (block?.type === 'text' && typeof block.text === 'string') {
+            text += block.text;
+          } else if (block?.type === 'image') {
+            imageCount += 1;
+          }
+        }
+        flushUserText();
+      }
+
+      if (rows.length === 0) return false;
+      publish({ messages: rows });
+      return true;
+    },
     beginAssistantMessage() {
       activeAssistantId = nextMessageId++;
       publish({
