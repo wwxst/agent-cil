@@ -50,6 +50,22 @@ function envTruthy(value) {
   return typeof value === 'string' &&
     ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
+/**
+ * 2.1.304 provider selection order for Anthropic-compatible deployments.
+ * The model alias resolver must use the same provider family as the request
+ * adapter; otherwise "sonnet"/"opus" silently select first-party defaults
+ * when the CLI is configured for Bedrock, Vertex, Foundry, or a gateway.
+ */
+export function getApiProviderFromEnv(env = process.env) {
+  if (envTruthy(env.CLAUDE_CODE_USE_GATEWAY)) return 'gateway';
+  if (envTruthy(env.CLAUDE_CODE_USE_BEDROCK)) return 'bedrock';
+  if (envTruthy(env.CLAUDE_CODE_USE_FOUNDRY)) return 'foundry';
+  if (envTruthy(env.CLAUDE_CODE_USE_ANTHROPIC_AWS)) return 'anthropicAws';
+  if (envTruthy(env.CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD)) return 'anthropicGoogleCloud';
+  if (envTruthy(env.CLAUDE_CODE_USE_MANTLE)) return 'mantle';
+  if (envTruthy(env.CLAUDE_CODE_USE_VERTEX)) return 'vertex';
+  return 'firstParty';
+}
 export function is1mContextDisabled(env = process.env) {
   return envTruthy(env.CLAUDE_CODE_DISABLE_1M_CONTEXT);
 }
@@ -130,7 +146,7 @@ function resolveAlias(alias, {
  *   the provider request (native 1M models do not need the beta header).
  */
 export function parseUserSpecifiedModel(modelInput, {
-  env = process.env, apiProvider = 'firstParty', firstPartyBaseUrl = true,
+  env = process.env, apiProvider = getApiProviderFromEnv(env), firstPartyBaseUrl = true,
   availableModels, deniedModels = [], availableModelsMatch,
 } = {}) {
   const value = normalizeModelInput(modelInput);
@@ -539,13 +555,15 @@ export function isModelAllowed(model, {
 }
 
 function getAllowedDefaultModel({
-  env, availableModels, deniedModels, availableModelsMatch,
+  env, apiProvider = getApiProviderFromEnv(env),
+  availableModels, deniedModels, availableModelsMatch,
 }) {
+  const providerOptions = { apiProvider };
   const candidates = [
-    getDefaultSonnetModel(env),
-    getDefaultOpusModel(env),
-    getDefaultHaikuModel(env),
-    getDefaultFableModel(env),
+    getDefaultSonnetModel(env, providerOptions),
+    getDefaultOpusModel(env, providerOptions),
+    getDefaultHaikuModel(env, providerOptions),
+    getDefaultFableModel(env, providerOptions),
   ];
   for (const candidate of candidates) {
     if (isModelAllowed(candidate, {
@@ -555,7 +573,7 @@ function getAllowedDefaultModel({
   for (const entry of availableModels ?? []) {
     if (!entry || isModelFamilyAlias(entry.toLowerCase())) continue;
     const parsed = parseUserSpecifiedModel(entry, {
-      env, availableModels, deniedModels, availableModelsMatch,
+      env, apiProvider, availableModels, deniedModels, availableModelsMatch,
     });
     const metadata = getCatalogModel(parsed) ??
       (!String(parsed).toLowerCase().startsWith('claude-')
@@ -588,6 +606,7 @@ function getNewestAllowedFamilyModel(family, {
 /** Original 2.1.304 plan-mode model adjustment with policy-safe step-down. */
 export function getRuntimeMainLoopModel({
   permissionMode, mainLoopModel, userSpecifiedModel, env = process.env,
+  apiProvider = getApiProviderFromEnv(env),
   availableModels, deniedModels = [], availableModelsMatch,
   exceeds200kTokens = false,
 } = {}) {
@@ -602,8 +621,8 @@ export function getRuntimeMainLoopModel({
   const family = isOpusPlan ? 'opus' : 'sonnet';
   const wantsOneM = chosen === 'opusplan[1m]';
   const preferred = family === 'opus'
-    ? getDefaultOpusModel(env)
-    : getDefaultSonnetModel(env);
+    ? getDefaultOpusModel(env, { apiProvider })
+    : getDefaultSonnetModel(env, { apiProvider });
   if (isModelAllowed(preferred, {
     availableModels, deniedModels, availableModelsMatch, env,
   })) {
@@ -630,6 +649,7 @@ export function getRuntimeMainLoopModel({
  */
 export function resolveOriginalCliModel({
   provider, model, permissionMode = 'default', env = process.env,
+  apiProvider = getApiProviderFromEnv(env),
   availableModels, deniedModels = [], availableModelsMatch,
   exceeds200kTokens = false, firstPartyBaseUrl = true,
 } = {}) {
@@ -640,7 +660,7 @@ export function resolveOriginalCliModel({
     return model;
   }
   const requested = parseUserSpecifiedModel(model, {
-    env, firstPartyBaseUrl, availableModels, deniedModels, availableModelsMatch,
+    env, apiProvider, firstPartyBaseUrl, availableModels, deniedModels, availableModelsMatch,
   });
   const allowed = isModelAllowed(requested, {
     availableModels, deniedModels, availableModelsMatch, env,
@@ -648,7 +668,7 @@ export function resolveOriginalCliModel({
   const mainLoopModel = allowed
     ? requested
     : getAllowedDefaultModel({
-      env, availableModels, deniedModels, availableModelsMatch,
+      env, apiProvider, availableModels, deniedModels, availableModelsMatch,
     });
   if (hasOneMSuffix(mainLoopModel)) resolveModelRequest(mainLoopModel, { provider, env });
   return getRuntimeMainLoopModel({
@@ -656,6 +676,7 @@ export function resolveOriginalCliModel({
     mainLoopModel,
     userSpecifiedModel: allowed ? model : undefined,
     env,
+    apiProvider,
     availableModels,
     deniedModels,
     availableModelsMatch,
