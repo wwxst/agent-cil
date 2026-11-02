@@ -561,7 +561,7 @@ test('2.1.304 catalog controls default output limits and 1M request headers acro
   adapter.setModel('claude-sonnet-4-6[1m]');
   await run();
   assert.equal(requests[2].body.model,'claude-sonnet-4-6');
-  assert.equal(requests[2].headers['anthropic-beta'],'context-1m-2025-08-07');
+  assert.equal(requests[2].headers.get('anthropic-beta'),'context-1m-2025-08-07');
   assert.equal(requests[2].body.max_tokens,32000);
 
   const activeBeforeRejectedSwitch=adapter.model;
