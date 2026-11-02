@@ -124,10 +124,15 @@ async function main() {
     }
     throw timeoutError(label + ': timed out after ' + timeoutMs + ' ms');
   };
-  const completedMarker = marker => {
-    const normalized = normalizeOutput(output);
-    const index = normalized.lastIndexOf(marker);
-    return index >= 0 && normalized.slice(index + marker.length).includes('Ready');
+  const completedMarker = (segment, marker) => {
+    const normalized = normalizeOutput(segment);
+    const first = normalized.indexOf(marker);
+    const last = normalized.lastIndexOf(marker);
+    // Each marker is deliberately present once in the user prompt. Require a
+    // second occurrence in assistant output, followed by Ready, so the input
+    // echo cannot be mistaken for a completed model response.
+    return first >= 0 && last > first &&
+      normalized.slice(last + marker.length).includes('Ready');
   };
 
   try {
@@ -152,7 +157,7 @@ async function main() {
     });
 
     await waitFor(
-      () => completedMarker('LIVE_TUI_FIXED'),
+      () => completedMarker(output, 'LIVE_TUI_FIXED'),
       'first interactive coding turn did not complete',
       120_000,
     );
@@ -177,14 +182,19 @@ async function main() {
     }
     assert.ok(submitted, timeoutError('second interactive prompt was not accepted').message);
     await waitFor(
-      () => completedMarker('LIVE_TUI_SECOND_TURN:5'),
+      () => completedMarker(output.slice(secondPromptStart), 'LIVE_TUI_SECOND_TURN:5'),
       'second interactive model turn did not complete',
       120_000,
     );
 
     const normalized = normalizeOutput(output);
-    assert.match(normalized, /Read/, 'the TUI transcript should show Read tool activity');
-    assert.match(normalized, /Edit/, 'the TUI transcript should show Edit tool activity');
+    const completedReads = normalized.match(/Read · completed/g) || [];
+    assert.ok(completedReads.length >= 2,
+      'the live TUI must show both original Read tool completions');
+    assert.match(normalized, /Edit · completed/,
+      'the live TUI must show the original Edit tool completion');
+    assert.doesNotMatch(normalized, /Bash ·/,
+      'the coding acceptance task must not execute or request Bash');
     assert.doesNotMatch(output,
       /Could not start the original Ink TUI|falling back to the readline interface/);
     terminal.write('/exit\r');
@@ -206,6 +216,12 @@ async function main() {
     process.stdout.write('Credentialed live TUI acceptance completed; credentials were not printed.\n');
   } finally {
     if (terminal) {
+      if (!exitInfo) {
+        try { terminal.kill(); } catch {}
+        await Promise.race([exitPromise, sleep(5000)]);
+      }
+      // node-pty needs an explicit final kill to release the native PTY handle
+      // even after onExit has fired (especially on Windows ConPTY).
       try { terminal.kill(); } catch {}
     }
     await rm(workspace, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
