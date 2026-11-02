@@ -79,6 +79,10 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
   let grantScheduled = false;
   let grantTimer;
   let sentExit = false;
+  let pagingForToolInput = false;
+  let sawRenderedToolInput = false;
+  let pageUpCount = 0;
+  let pagerTimer;
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -99,6 +103,34 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
     let output = '';
     let stderr = '';
     const terminalScreen = createTerminalScreen(80, 24);
+    // A completed conversation can scroll tool arguments above the 24-row
+    // viewport. Navigate the real original ScrollBox instead of asserting
+    // that older arguments remain on the final screen.
+    const inspectToolInput = () => {
+      if (!pagingForToolInput || sentExit || child.exitCode !== null) return;
+      const visible = terminalScreen.toString().replace(/\s+/g, '');
+      if (visible.includes('different-command')) {
+        sawRenderedToolInput = true;
+        pagingForToolInput = false;
+        child.stdin.write('\x1b[4~'); // Original End binding, return to newest turn.
+        pagerTimer = setTimeout(() => {
+          sentExit = true;
+          child.stdin.write('/exit\r');
+        }, 180);
+        return;
+      }
+      if (pagerTimer || pageUpCount >= 8) return;
+      pagerTimer = setTimeout(() => {
+        pagerTimer = null;
+        if (!pagingForToolInput || sentExit) return;
+        pageUpCount += 1;
+        child.stdin.write('\x1b[5~'); // Original PageUp transcript pager.
+        pagerTimer = setTimeout(() => {
+          pagerTimer = null;
+          inspectToolInput();
+        }, 160);
+      }, 120);
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
@@ -121,11 +153,13 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
           child.stdin.write('２');
         }, 150);
       }
-      if (!sentExit &&
+      if (!pagingForToolInput && !sentExit &&
           visibleText.includes('Exact session permission was preserved.') &&
-          visibleText.includes('you>')) {
-        sentExit = true;
-        child.stdin.write('/exit\r');
+          visible.includes('you>')) {
+        pagingForToolInput = true;
+        inspectToolInput();
+      } else if (pagingForToolInput) {
+        inspectToolInput();
       }
     });
     child.stderr.on('data', chunk => { stderr += chunk; });
@@ -151,10 +185,9 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
     assert.equal(status, 0, stderr + output);
     assert.equal(sentSessionGrant, true, output);
     assert.equal(sentExit, true, output);
-    assert.ok(
-      terminalScreen.toString().includes('different-command'),
-      'the transcript retains tool-call arguments after the approval prompt closes',
-    );
+    assert.equal(sawRenderedToolInput, true,
+      'PageUp must reveal committed different-command tool-use arguments after permission closes. Final screen: ' +
+      terminalScreen.toString());
     assert.doesNotMatch(output + stderr, /Could not start the original Ink TUI|falling back to the readline interface/);
     assert.equal(await readFile(firstMarker, 'utf8'), 'executed');
     await assert.rejects(readFile(secondMarker), { code: 'ENOENT' });
@@ -169,6 +202,7 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
     assert.equal(differentResult.tool_use_id, 'session-grant-different');
     assert.equal(differentResult.is_error, true, JSON.stringify(differentResult));
   } finally {
+    if (pagerTimer) clearTimeout(pagerTimer);
     if (watchdog) clearTimeout(watchdog);
     if (grantTimer) clearTimeout(grantTimer);
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
