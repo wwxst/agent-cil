@@ -92,14 +92,14 @@ test('real interactive CLI /model changes next streamed request without losing o
     assert.equal(result.code,0,errors+output);
     assert.equal(sent,commands.length,errors+output);
     assert.deepEqual(requests.map(x=>x.model),[
-      'claude-haiku-4-5-20251001',
-      'claude-opus-4-6',
-      'claude-sonnet-4-6',
+      'claude-haiku-5-5',
+      'claude-opus-5-5',
+      'claude-sonnet-5-5',
     ],'Default must clear the startup --model override and return to the runtime default');
-    assert.match(output,/Set model to claude-opus-4-6/);
+    assert.match(output,/Set model to claude-opus-5-5/);
     assert.match(output,/Model unchanged:.*\[1m\]/);
-    assert.match(output,/Current model: claude-opus-4-6/);
-    assert.match(output,/Set model to claude-sonnet-4-6/);
+    assert.match(output,/Current model: claude-opus-5-5/);
+    assert.match(output,/Set model to claude-sonnet-5-5/);
     assert.match(output,/MODEL_SESSION_ROUND_3/);
     const second=JSON.stringify(requests[1].messages);
     const third=JSON.stringify(requests[2].messages);
@@ -180,7 +180,7 @@ test('real TTY /model rolls back the session checkpoint when persisted settings 
     assert.equal(sent,commands.length,output);
     assert.match(output,/Model unchanged: Could not persist model preference:.*EISDIR/);
     assert.deepEqual(requests.map(x=>x.model),[
-      'claude-sonnet-4-6','claude-sonnet-4-6',
+      'claude-sonnet-5-5','claude-sonnet-5-5',
     ]);
     const records=(await readFile(join(root,'.agent-cil','sessions',
       sessionId,'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
@@ -288,7 +288,7 @@ test('real TTY /model persists the default and --resume restores its session ove
     assert.equal(first.signal,null,output);
     assert.equal(first.code,0,output);
     assert.equal(sent,2,output);
-    assert.match(output,/Set model to claude-opus-4-6/);
+    assert.match(output,/Set model to claude-opus-5-5/);
     assert.equal(requests.length,1,output);
     const savedConfig=JSON.parse(await readFile(configPath,'utf8'));
     assert.equal(savedConfig.model,'opus','interactive /model must persist the default for future sessions');
@@ -297,7 +297,7 @@ test('real TTY /model persists the default and --resume restores its session ove
     assert.equal(fresh.signal,null,fresh.output);
     assert.equal(fresh.code,0,fresh.output);
     assert.deepEqual(requests.map(x=>x.model),[
-      'claude-sonnet-4-6','claude-opus-4-6',
+      'claude-sonnet-5-5','claude-opus-5-5',
     ]);
 
     const transcriptPath=join(root,'.agent-cil','sessions',id,'transcript.jsonl');
@@ -314,9 +314,9 @@ test('real TTY /model persists the default and --resume restores its session ove
     ]);
     assert.equal(continued.signal,null,continued.output);
     assert.equal(continued.code,0,continued.output);
-    assert.match(continued.output,/Restored session model: claude-opus-4-6/);
+    assert.match(continued.output,/Restored session model: claude-opus-5-5/);
     assert.deepEqual(requests.map(x=>x.model),[
-      'claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-6',
+      'claude-sonnet-5-5','claude-opus-5-5','claude-opus-5-5',
     ]);
     assert.match(JSON.stringify(requests[2].messages),
       /First conversation before switching/);
