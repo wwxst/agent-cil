@@ -147,11 +147,31 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   assert.equal(isModelAllowed('claude-opus-5-5',{
     availableModels:['opus','opus-5-5'],
   }),true);
+  assert.equal(isModelAllowed('claude-opus-5-5',{
+    availableModels:['opus-5-5'],availableModelsMatch:'exact',
+  }),true,'exact mode accepts the same model version across dated provider spellings');
+  assert.equal(isModelAllowed('claude-opus-4-6',{
+    availableModels:['opus-5-5'],availableModelsMatch:'exact',
+  }),false,'exact mode does not widen a version entry to its family');
+  assert.equal(isModelAllowed('claude-opus-4-6',{
+    availableModels:['opus'],availableModelsMatch:'exact',
+  }),true,'family aliases remain explicit wildcards in exact mode');
+  assert.equal(isModelAllowed('my-custom-model-v2',{
+    availableModels:['my-custom-model'],availableModelsMatch:'exact',
+  }),false,'exact mode does not turn literal custom IDs into prefixes');
+  assert.equal(isModelAllowed('us.anthropic.claude-opus-5-5',{
+    availableModels:['opus-5-5'],availableModelsMatch:'exact',
+  }),true,'exact mode parses supported provider-qualified Anthropic IDs');
+  assert.equal(isModelAllowed('xx.anthropic.claude-opus-5-5',{
+    availableModels:['opus-5-5'],availableModelsMatch:'exact',
+  }),false,'exact mode rejects unrecognized provider regions');
   assert.equal(isModelAllowed('claude-sonnet-5-5',{availableModels:[]}),false);
   assert.equal(isModelAllowed('claude-sonnet-5-5',{deniedModels:['sonnet']}),false);
   assert.equal(isModelAllowed('claude-opus-5-5',{deniedModels:['opus-5-5']}),false);
   assert.equal(isModelAllowed('claude-opus-4-6',{deniedModels:['opus-5-5']}),true,
     'a versioned deniedModels entry blocks only that major/minor family version');
+  assert.equal(isModelAllowed('claude-mysonnet-custom',{deniedModels:['sonnet']}),true,
+    'denied family matching observes alphanumeric segment boundaries');
   assert.equal(isModelAllowed('my-custom',{deniedModels:['my-custom']}),false,
     'unknown denied model entries are exact literals');
   assert.equal(isModelAllowed('my-custom-model',{deniedModels:['my-custom']}),true,
