@@ -88,7 +88,7 @@ test('real config commands persist, inspect and clear only the Anthropic model s
   }
 });
 
-test('config rejects unsupported [1m] and never replaces malformed user configuration', async () => {
+test('config accepts catalog-supported 1M settings and rejects unsupported model capabilities without replacing config', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agent-cil-config-invalid-'));
   const configPath = join(directory, 'config.json');
   const env = { ...process.env, AGENT_CIL_CONFIG_PATH: configPath, ANTHROPIC_API_KEY: '' };
@@ -102,12 +102,20 @@ test('config rejects unsupported [1m] and never replaces malformed user configur
     assert.equal(await readFile(configPath, 'utf8'), '{invalid json');
 
     await writeFile(configPath, JSON.stringify({ language: 'en' }));
-    const unsupported = spawnSync(process.execPath, [cli, 'config', 'set', 'model', 'sonnet[1m]'], {
+    const supported = spawnSync(process.execPath, [cli, 'config', 'set', 'model', 'sonnet[1m]'], {
       encoding: 'utf8', env,
     });
+    assert.equal(supported.status, 0, supported.stderr);
+    assert.match(supported.stdout, /Saved default Anthropic model setting: sonnet\[1m\]/);
+    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(saved, { language: 'en', model: 'sonnet[1m]' });
+
+    const unsupported = spawnSync(process.execPath, [
+      cli, 'config', 'set', 'model', 'claude-haiku-4-5[1m]',
+    ], { encoding: 'utf8', env });
     assert.equal(unsupported.status, 2);
-    assert.match(unsupported.stderr, /\[1m\].*not yet available/);
-    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), { language: 'en' });
+    assert.match(unsupported.stderr, /does not support the 1M context beta/);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), saved);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
