@@ -235,12 +235,16 @@ const MODEL_PROVIDER_REGIONS = new Set([
 function stripContextSizeTags(value) {
   return value.replace(/\[(1|2)m\]/gi, '');
 }
+// 2.1.304's Dt removes exactly one trailing [1m] marker in allowlist paths.
+function stripPolicyOneMSuffix(value) {
+  return value.replace(/\[1m\]$/i, '');
+}
 function normalizedPolicyValue(value) {
-  return stripOneMSuffix(value.trim()).toLowerCase();
+  return stripPolicyOneMSuffix(value.trim()).toLowerCase();
 }
 function canonicalPolicyModel(value, env, availableModels, deniedModels, availableModelsMatch) {
   const normalized = normalizedPolicyValue(value);
-  const parsed = isModelAlias(normalized) || isModelAlias(stripOneMSuffix(normalized))
+  const parsed = isModelAlias(normalized)
     ? parseUserSpecifiedModel(value, {
       env, availableModels, deniedModels, availableModelsMatch,
     })
@@ -323,7 +327,7 @@ function modelVersionMatchesExact(entry, model, modelLatest) {
     (!modelLatest || entry.latest === true);
 }
 function parseAvailableModelEntry(value) {
-  const normalized = stripOneMSuffix(value.trim().toLowerCase());
+  const normalized = stripPolicyOneMSuffix(value.trim().toLowerCase());
   if (!normalized) return { kind: 'ignored' };
   if (isModelFamilyAlias(normalized)) return { kind: 'family', family: normalized };
   if (normalized.startsWith('claude-') &&
@@ -360,7 +364,7 @@ function containsFamilyBoundary(value, family) {
 function isAllowedByExactModelList(model, allowlist, {
   env, availableModels, deniedModels, availableModelsMatch,
 } = {}) {
-  const entries = allowlist.map(value => stripOneMSuffix(value.trim().toLowerCase()));
+  const entries = allowlist.map(value => stripPolicyOneMSuffix(value.trim().toLowerCase()));
   if (entries.length === 0) return false;
   const normalized = normalizedPolicyValue(model);
   if (entries.includes(normalized) &&
@@ -468,7 +472,9 @@ export function isModelAllowed(model, {
   if (denies.some(entry => modelIsDenied(model, entry))) return false;
   if (availableModels === undefined || availableModels === null) return true;
   if (!Array.isArray(availableModels) || availableModels.some(x => typeof x !== 'string')) return false;
-  const allowlist = availableModels.map(x => x.trim().toLowerCase()).filter(Boolean);
+  const allowlist = availableModels.map(x =>
+    stripPolicyOneMSuffix(x.trim().toLowerCase()),
+  ).filter(Boolean);
   if (allowlist.length === 0) return false;
   if (availableModelsMatch === 'exact') {
     return isAllowedByExactModelList(model, allowlist, {
