@@ -199,21 +199,17 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
     'a disallowed explicit selection falls back to the permitted default');
     assert.equal(await runModel({
       cliModel: 'opus', deniedModels: ['opus'],
-    }), 'claude-sonnet-5-5',
-    'deniedModels blocks a family even when no allowlist is configured');
+    }), 'claude-opus-5-5',
+    'user-editable deniedModels is not promoted into the 2.1.304 managed policy layer');
     assert.equal(await runModel({
       cliModel: 'opus', availableModels: ['opus', 'opus-5-5'],
     }), 'claude-opus-5-5',
-    'a version-qualified allowlist narrows the family alias to that version');
+    'a version-qualified user allowlist narrows the family alias to that version');
     assert.equal(await runModel({
-      cliModel: 'opus', availableModels: ['opus-4-6'], availableModelsMatch: 'exact',
-    }), 'claude-opus-4-6',
-    'exact model policy steps a disallowed family default down to the listed version');
-    assert.equal(await runModel({
-      cliModel: 'opus', availableModels: ['opus-5-5'], availableModelsMatch: 'exact',
+      cliModel: 'opus', availableModels: ['claude-opus-5'], availableModelsMatch: 'exact',
     }), 'claude-opus-5-5',
-    'exact model policy keeps a listed model version unchanged');
-    assert.equal(requests.length, 10);
+    'availableModelsMatch is managed-policy-only; user allowlists retain prefix matching');
+    assert.equal(requests.length, 9);
   } finally {
     if (watchdog) clearTimeout(watchdog);
     server.closeAllConnections?.();
@@ -223,14 +219,12 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
 });
 
 
-test('invalid saved model policy cannot be bypassed by an explicit --model', async () => {
+test('invalid saved user allowlist cannot be bypassed by an explicit --model', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-policy-invalid-start-'));
   const configPath = join(directory, 'config.json');
   try {
     for (const config of [
-      { language: 'en', availableModels: ['opus'], availableModelsMatch: 'loose' },
       { language: 'en', availableModels: 'opus' },
-      { language: 'en', deniedModels: [123] },
     ]) {
       await writeFile(configPath, JSON.stringify(config));
       const result = spawnSync(process.execPath, [
@@ -247,7 +241,7 @@ test('invalid saved model policy cannot be bypassed by an explicit --model', asy
         },
       });
       assert.equal(result.status, 2, result.stderr);
-      assert.match(result.stderr, /User configuration is invalid: Saved/);
+      assert.match(result.stderr, /User configuration is invalid: Saved availableModels/);
       assert.equal(result.stdout, '');
     }
   } finally {
