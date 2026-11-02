@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -39,13 +40,10 @@ async function spawnWindowsConpty(cliPath, args, { cwd, env, cols, rows }) {
     env,
   });
   const child = new EventEmitter();
-  const stream = () => {
-    const value = new EventEmitter();
-    value.setEncoding = () => value;
-    return value;
-  };
-  child.stdout = stream();
-  child.stderr = stream();
+  // PassThrough buffers ConPTY output emitted between spawn and the caller's
+  // data-listener registration, matching child_process pipe semantics.
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
   child.stdin = { write: value => terminal.write(value) };
   child.exitCode = null;
   child.killed = false;
@@ -53,9 +51,11 @@ async function spawnWindowsConpty(cliPath, args, { cwd, env, cols, rows }) {
     child.killed = true;
     try { terminal.kill(); } catch {}
   };
-  terminal.onData(data => child.stdout.emit('data', data));
+  terminal.onData(data => child.stdout.write(data));
   terminal.onExit(({ exitCode, signal }) => {
     child.exitCode = exitCode;
+    child.stdout.end();
+    child.stderr.end();
     child.emit('close', exitCode, signal ?? null);
   });
   return child;
