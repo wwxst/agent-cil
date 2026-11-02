@@ -142,6 +142,7 @@ test('saved model allowlists and denylists are validated without dropping entrie
       { language: 'en', availableModels: 'opus' },
       { language: 'en', availableModels: ['sonnet', ''] },
       { language: 'en', deniedModels: [123] },
+      { language: 'en', availableModelsMatch: 'loose' },
     ]) {
       await writeFile(configPath, JSON.stringify(config));
       const state = await loadLanguagePreference({
