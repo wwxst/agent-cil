@@ -2235,19 +2235,19 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // preference that silently resolves to a different model at startup.
       if (!isModelAllowed(options.model, {
         availableModels: languageState.config.availableModels,
-        deniedModels: languageState.config.deniedModels,
-        availableModelsMatch: languageState.config.availableModelsMatch,
+        deniedModels: [],
+        availableModelsMatch: undefined,
         env,
       })) {
-        throw new TypeError('Model ' + options.model + ' is not permitted by availableModels/deniedModels.');
+        throw new TypeError('Model ' + options.model + ' is not permitted by availableModels.');
       }
       // Store the original alias/ID, not the resolved value, so model-family
       // environment overrides continue to apply on the next launch.
       resolveOriginalCliModel({
         provider: 'anthropic', model: options.model, env,
         availableModels: languageState.config.availableModels,
-        deniedModels: languageState.config.deniedModels,
-        availableModelsMatch: languageState.config.availableModelsMatch,
+        deniedModels: [],
+        availableModelsMatch: undefined,
         firstPartyBaseUrl: isFirstPartyAnthropicBaseUrl(env.ANTHROPIC_BASE_URL, env),
       });
       const saved = await saveModelPreference(options.model, { env });
@@ -2306,8 +2306,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     selectedModel=resolveOriginalCliModel({
       provider,model:requestedModel,permissionMode:options.permissionMode,env,
       availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
-      deniedModels:provider==='anthropic'?languageState.config.deniedModels:[],
-      availableModelsMatch:provider==='anthropic'?languageState.config.availableModelsMatch:undefined,
+      deniedModels:[],
+      availableModelsMatch:undefined,
       firstPartyBaseUrl:provider==='anthropic'&&isFirstPartyAnthropicBaseUrl(
         options.baseUrl||env.ANTHROPIC_BASE_URL,env,
       ),
@@ -2468,8 +2468,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       const restoredModel=resolveOriginalCliModel({
         provider,model:saved.setting,permissionMode:options.permissionMode,env,
         availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
-        deniedModels:provider==='anthropic'?languageState.config.deniedModels:[],
-        availableModelsMatch:provider==='anthropic'?languageState.config.availableModelsMatch:undefined,
+        deniedModels:[],
+        availableModelsMatch:undefined,
         firstPartyBaseUrl:provider==='anthropic'&&isFirstPartyAnthropicBaseUrl(
           options.baseUrl||env.ANTHROPIC_BASE_URL,env,
         ),
@@ -2870,17 +2870,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         // validate 1M capability before touching session or user settings.
         if (!isDefault && provider === 'anthropic' && !isModelAllowed(setting, {
           availableModels: languageState.config.availableModels,
-          deniedModels: languageState.config.deniedModels,
-          availableModelsMatch: languageState.config.availableModelsMatch,
+          deniedModels: [],
+          availableModelsMatch: undefined,
           env,
         })) {
-          throw new TypeError('Model ' + setting + ' is not permitted by availableModels/deniedModels.');
+          throw new TypeError('Model ' + setting + ' is not permitted by availableModels.');
         }
         const resolved=resolveOriginalCliModel({
           provider,model:candidateSetting,permissionMode:permissionContext.mode,env,
           availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
-          deniedModels:provider==='anthropic'?languageState.config.deniedModels:[],
-          availableModelsMatch:provider==='anthropic'?languageState.config.availableModelsMatch:undefined,
+          deniedModels:[],
+          availableModelsMatch:undefined,
           firstPartyBaseUrl:provider==='anthropic'&&isFirstPartyAnthropicBaseUrl(
             options.baseUrl||env.ANTHROPIC_BASE_URL,env,
           ),
