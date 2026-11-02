@@ -101,7 +101,7 @@ export function getBestModel(env = process.env, options = {}) {
 
 function resolveAlias(alias, {
   env = process.env, apiProvider = 'firstParty',
-  availableModels, deniedModels = [],
+  availableModels, deniedModels = [], availableModelsMatch,
 } = {}) {
   const options = { apiProvider, availableModels, deniedModels };
   switch (alias) {
@@ -124,14 +124,16 @@ function resolveAlias(alias, {
  */
 export function parseUserSpecifiedModel(modelInput, {
   env = process.env, apiProvider = 'firstParty', firstPartyBaseUrl = true,
-  availableModels, deniedModels = [],
+  availableModels, deniedModels = [], availableModelsMatch,
 } = {}) {
   const value = normalizeModelInput(modelInput);
   const withOneM = hasOneMSuffix(value);
   const oneMEnabled = withOneM && !is1mContextDisabled(env);
   const withoutOneM = stripOneMSuffix(value);
   const alias = withoutOneM.toLowerCase();
-  const resolved = resolveAlias(alias, { env, apiProvider, availableModels, deniedModels });
+  const resolved = resolveAlias(alias, {
+    env, apiProvider, availableModels, deniedModels, availableModelsMatch,
+  });
 
   if (resolved !== undefined) {
     // 2.1.304 treats [1m] family aliases as a model-selection attribute.
@@ -232,10 +234,12 @@ function stripContextSizeTags(value) {
 function normalizedPolicyValue(value) {
   return stripContextSizeTags(value.trim()).toLowerCase();
 }
-function canonicalPolicyModel(value, env, availableModels, deniedModels) {
+function canonicalPolicyModel(value, env, availableModels, deniedModels, availableModelsMatch) {
   const normalized = normalizedPolicyValue(value);
   const parsed = isModelAlias(normalized) || isModelAlias(stripOneMSuffix(normalized))
-    ? parseUserSpecifiedModel(value, { env, availableModels, deniedModels })
+    ? parseUserSpecifiedModel(value, {
+      env, availableModels, deniedModels, availableModelsMatch,
+    })
     : value;
   return getCanonicalModelName(parsed);
 }
@@ -268,6 +272,42 @@ function parseModelVersion(value) {
     ...(minor !== undefined ? { minor: Number(minor) } : {}),
     ...(trailer !== undefined ? { trailer } : {}),
   };
+}
+function parseAvailableModelEntry(value) {
+  const normalized = stripOneMSuffix(value.trim().toLowerCase());
+  if (!normalized) return { kind: 'ignored' };
+  if (isModelFamilyAlias(normalized)) return { kind: 'family', family: normalized };
+  if (normalized.startsWith('claude-') &&
+      isModelFamilyAlias(normalized.slice('claude-'.length))) {
+    return { kind: 'family', family: normalized.slice('claude-'.length) };
+  }
+  if (isModelAlias(normalized) || normalized === 'default') {
+    return { kind: 'ignored' };
+  }
+  const version = parseModelVersion(normalized.startsWith('claude-')
+    ? normalized : 'claude-' + normalized);
+  if (version) return { kind: 'model', id: version };
+  return { kind: 'literal', value: normalized };
+}
+function isAllowedByExactModelList(model, allowlist, {
+  env, availableModels, deniedModels, availableModelsMatch,
+} = {}) {
+  const entries = allowlist.map(parseAvailableModelEntry)
+    .filter(entry => entry.kind !== 'ignored');
+  if (entries.length === 0) return false;
+  const canonical = canonicalPolicyModel(
+    model, env, availableModels, deniedModels, availableModelsMatch,
+  );
+  const version = parseModelVersion(canonical);
+  const normalized = normalizedPolicyValue(model);
+  return entries.some(entry => {
+    if (entry.kind === 'family') {
+      return version?.family === entry.family ||
+        canonical.toLowerCase().includes(entry.family);
+    }
+    if (entry.kind === 'model') return modelVersionMatches(entry.id, version);
+    return normalized === entry.value || canonical.toLowerCase() === entry.value;
+  });
 }
 function modelVersionMatches(entry, model) {
   if (!model || entry.family !== model.family || entry.major !== model.major) return false;
@@ -320,13 +360,21 @@ function familyHasSpecificEntries(family, allowlist) {
     return end === entry.length || entry[end] === '-';
   });
 }
-function modelBelongsToFamily(model, family, env, availableModels, deniedModels) {
-  const resolved = canonicalPolicyModel(model, env, availableModels, deniedModels);
+function modelBelongsToFamily(
+  model, family, env, availableModels, deniedModels, availableModelsMatch,
+) {
+  const resolved = canonicalPolicyModel(
+    model, env, availableModels, deniedModels, availableModelsMatch,
+  );
   const modelFamily = getModelFamily(resolved);
   return modelFamily === family || resolved.includes(family);
 }
-function modelMatchesVersionPrefix(model, entry, env, availableModels, deniedModels) {
-  const resolved = canonicalPolicyModel(model, env, availableModels, deniedModels);
+function modelMatchesVersionPrefix(
+  model, entry, env, availableModels, deniedModels, availableModelsMatch,
+) {
+  const resolved = canonicalPolicyModel(
+    model, env, availableModels, deniedModels, availableModelsMatch,
+  );
   if (prefixMatchesModel(resolved, entry)) return true;
   return !entry.startsWith('claude-') &&
     prefixMatchesModel(resolved, 'claude-' + entry);
@@ -338,7 +386,7 @@ function modelMatchesVersionPrefix(model, entry, env, availableModels, deniedMod
  * Family aliases are wildcards unless version-qualified entries narrow them.
  */
 export function isModelAllowed(model, {
-  availableModels, deniedModels = [], env = process.env,
+  availableModels, deniedModels = [], env = process.env, availableModelsMatch,
 } = {}) {
   if (typeof model !== 'string' || !model.trim()) return false;
   if (!Array.isArray(deniedModels) || deniedModels.some(x => typeof x !== 'string')) return false;
@@ -350,6 +398,11 @@ export function isModelAllowed(model, {
   if (!Array.isArray(availableModels) || availableModels.some(x => typeof x !== 'string')) return false;
   const allowlist = availableModels.map(x => x.trim().toLowerCase()).filter(Boolean);
   if (allowlist.length === 0) return false;
+  if (availableModelsMatch === 'exact') {
+    return isAllowedByExactModelList(model, allowlist, {
+      env, availableModels: allowlist, deniedModels, availableModelsMatch,
+    });
+  }
 
   const normalized = normalizedPolicyValue(model);
   if (allowlist.includes(normalized)) {
@@ -359,20 +412,30 @@ export function isModelAllowed(model, {
   for (const family of MODEL_FAMILY_ALIASES) {
     if (allowlist.includes(family) &&
         !familyHasSpecificEntries(family, allowlist) &&
-        modelBelongsToFamily(model, family, env, allowlist, deniedModels)) return true;
+        modelBelongsToFamily(
+          model, family, env, allowlist, deniedModels, availableModelsMatch,
+        )) return true;
   }
-  const canonical = canonicalPolicyModel(model, env, allowlist, deniedModels);
+  const canonical = canonicalPolicyModel(
+    model, env, allowlist, deniedModels, availableModelsMatch,
+  );
   if (allowlist.includes(canonical)) return true;
   for (const entry of allowlist) {
     if (isModelAlias(entry) &&
-        canonicalPolicyModel(entry, env, allowlist, deniedModels) === canonical) return true;
+        canonicalPolicyModel(
+          entry, env, allowlist, deniedModels, availableModelsMatch,
+        ) === canonical) return true;
     if (!isModelFamilyAlias(entry) && !isModelAlias(entry) &&
-        modelMatchesVersionPrefix(model, entry, env, allowlist, deniedModels)) return true;
+        modelMatchesVersionPrefix(
+          model, entry, env, allowlist, deniedModels, availableModelsMatch,
+        )) return true;
   }
   return false;
 }
 
-function getAllowedDefaultModel({ env, availableModels, deniedModels }) {
+function getAllowedDefaultModel({
+  env, availableModels, deniedModels, availableModelsMatch,
+}) {
   const candidates = [
     getDefaultSonnetModel(env),
     getDefaultOpusModel(env),
@@ -380,7 +443,9 @@ function getAllowedDefaultModel({ env, availableModels, deniedModels }) {
     getDefaultFableModel(env),
   ];
   for (const candidate of candidates) {
-    if (isModelAllowed(candidate, { availableModels, deniedModels, env })) return candidate;
+    if (isModelAllowed(candidate, {
+      availableModels, deniedModels, availableModelsMatch, env,
+    })) return candidate;
   }
   for (const entry of availableModels ?? []) {
     if (!entry || isModelFamilyAlias(entry.toLowerCase())) continue;
@@ -389,20 +454,24 @@ function getAllowedDefaultModel({ env, availableModels, deniedModels }) {
       (!String(parsed).toLowerCase().startsWith('claude-')
         ? getCatalogModel('claude-' + parsed) : undefined);
     const candidate = metadata?.id ?? parsed;
-    if (isModelAllowed(candidate, { availableModels, deniedModels, env })) return candidate;
+    if (isModelAllowed(candidate, {
+      availableModels, deniedModels, availableModelsMatch, env,
+    })) return candidate;
   }
   throw new TypeError('No model remains available after applying availableModels and deniedModels.');
 }
 
 function getNewestAllowedFamilyModel(family, {
-  env, availableModels, deniedModels,
+  env, availableModels, deniedModels, availableModelsMatch,
 } = {}) {
   // 2.1.304 stepDownRestrictedFamilyAliasPick walks the source catalog from
   // newest to oldest and selects the newest model that survives policy.
   const candidates = MODEL_CATALOG_MODELS.filter(model => model.family === family);
   for (let i = candidates.length - 1; i >= 0; i -= 1) {
     const candidate = candidates[i].id;
-    if (isModelAllowed(candidate, { availableModels, deniedModels, env })) {
+    if (isModelAllowed(candidate, {
+      availableModels, deniedModels, availableModelsMatch, env,
+    })) {
       return candidate;
     }
   }
@@ -412,7 +481,8 @@ function getNewestAllowedFamilyModel(family, {
 /** Original 2.1.304 plan-mode model adjustment with policy-safe step-down. */
 export function getRuntimeMainLoopModel({
   permissionMode, mainLoopModel, userSpecifiedModel, env = process.env,
-  availableModels, deniedModels = [], exceeds200kTokens = false,
+  availableModels, deniedModels = [], availableModelsMatch,
+  exceeds200kTokens = false,
 } = {}) {
   const chosen = typeof userSpecifiedModel === 'string'
     ? userSpecifiedModel.trim().toLowerCase() : '';
@@ -427,14 +497,16 @@ export function getRuntimeMainLoopModel({
   const preferred = family === 'opus'
     ? getDefaultOpusModel(env)
     : getDefaultSonnetModel(env);
-  if (isModelAllowed(preferred, { availableModels, deniedModels, env })) {
+  if (isModelAllowed(preferred, {
+    availableModels, deniedModels, availableModelsMatch, env,
+  })) {
     return wantsOneM
       ? stripOneMSuffix(preferred) + '[1m]'
       : preferred;
   }
 
   const fallback = getNewestAllowedFamilyModel(family, {
-    env, availableModels, deniedModels,
+    env, availableModels, deniedModels, availableModelsMatch,
   });
   if (!fallback) return mainLoopModel;
   const context = getCatalogModel(fallback)?.context;
@@ -451,8 +523,8 @@ export function getRuntimeMainLoopModel({
  */
 export function resolveOriginalCliModel({
   provider, model, permissionMode = 'default', env = process.env,
-  availableModels, deniedModels = [], exceeds200kTokens = false,
-  firstPartyBaseUrl = true,
+  availableModels, deniedModels = [], availableModelsMatch,
+  exceeds200kTokens = false, firstPartyBaseUrl = true,
 } = {}) {
   if (provider !== 'anthropic') {
     if (typeof model === 'string' && hasOneMSuffix(model)) {
@@ -461,12 +533,16 @@ export function resolveOriginalCliModel({
     return model;
   }
   const requested = parseUserSpecifiedModel(model, {
-    env, firstPartyBaseUrl, availableModels, deniedModels,
+    env, firstPartyBaseUrl, availableModels, deniedModels, availableModelsMatch,
   });
-  const allowed = isModelAllowed(requested, { availableModels, deniedModels, env });
+  const allowed = isModelAllowed(requested, {
+    availableModels, deniedModels, availableModelsMatch, env,
+  });
   const mainLoopModel = allowed
     ? requested
-    : getAllowedDefaultModel({ env, availableModels, deniedModels });
+    : getAllowedDefaultModel({
+      env, availableModels, deniedModels, availableModelsMatch,
+    });
   if (hasOneMSuffix(mainLoopModel)) resolveModelRequest(mainLoopModel, { provider, env });
   return getRuntimeMainLoopModel({
     permissionMode,
@@ -475,6 +551,7 @@ export function resolveOriginalCliModel({
     env,
     availableModels,
     deniedModels,
+    availableModelsMatch,
     exceeds200kTokens,
   });
 }
