@@ -116,8 +116,8 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
     model:'claude-sonnet-4-6',betaHeaders:['context-1m-2025-08-07'],
   });
   assert.deepEqual(resolveModelRequest('claude-haiku-4-5[1m]'),{
-    model:'claude-haiku-4-5-20251001',betaHeaders:[],
-  },'supports_1m_suffix is distinct from supports_1m_beta in the source catalog');
+    model:'claude-haiku-4-5',betaHeaders:[],
+  },'the canonical catalog ID remains the API model ID when no provider-specific ID was selected');
   assert.deepEqual(resolveModelRequest('claude-sonnet-5-5[1m]',{
     env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
   }),{model:'claude-sonnet-5-5',betaHeaders:[]},
