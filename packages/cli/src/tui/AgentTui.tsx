@@ -260,12 +260,21 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     // The original 2.1.88 ScrollBox owns transcript history. PageUp/PageDown
     // scroll only when the prompt is empty; multiline prompt editing keeps its
     // normal cursor behavior. PageDown restores sticky follow at the bottom.
-    if (valueRef.current.length === 0 && (key.pageUp || key.pageDown)) {
+    if (valueRef.current.length === 0 &&
+        (key.pageUp || key.pageDown || key.home || key.end)) {
       const scroll = scrollRef.current;
       if (scroll) {
         const viewportHeight = scroll.getViewportHeight();
         const page = Math.max(1, (viewportHeight || terminalRows) - 2);
-        if (key.pageUp) {
+        // Match the 2.1.304 ScrollBox pager: Home/End jump to absolute
+        // transcript boundaries, while PageUp/PageDown move by one viewport.
+        // Home/End are only claimed for an empty prompt, so normal multiline
+        // editor cursor navigation remains untouched.
+        if (key.home) {
+          scroll.scrollTo(0);
+        } else if (key.end) {
+          scroll.scrollToBottom();
+        } else if (key.pageUp) {
           scroll.scrollBy(-page);
         } else if (
           scroll.getScrollTop() + scroll.getPendingDelta() + page >=
