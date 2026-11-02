@@ -271,10 +271,10 @@ test('fresh packed actual CLI sends source-resolved alias/model to the live Mess
 
     const count=requests.length;
     const rejected=await runCli([
-      '--base-url',base,'--model','claude-haiku-4-5[1m]',
+      '--base-url',base,'--model','claude-3-7-sonnet[1m]',
     ],{},root);
     assert.equal(rejected.code,2,rejected.output);
-    assert.match(rejected.output,/Model configuration failed:.*1M context beta/);
+    assert.match(rejected.output,/Model configuration failed:.*does not support 1M context/);
     assert.equal(requests.length,count,
       'unsupported 1M model must fail before network or journal');
   }finally{
