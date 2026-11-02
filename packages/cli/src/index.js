@@ -2272,8 +2272,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 
   const provider = options.provider;
-  if (provider === 'anthropic' && options.model === undefined &&
-      !env.ANTHROPIC_MODEL && languageState.configError) {
+  if (provider === 'anthropic' && languageState.configError &&
+      (languageState.configErrorField !== 'model' ||
+        (options.model === undefined && !env.ANTHROPIC_MODEL))) {
     printLocalizedError('User configuration is invalid: ' +
       (languageState.configError instanceof Error ? languageState.configError.message : String(languageState.configError)));
     return 2;
