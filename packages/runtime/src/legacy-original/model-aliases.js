@@ -270,7 +270,7 @@ function parseModelVersion(value) {
     [, family, major, minor] = match;
     base = match[0];
   } else {
-    match = /^claude-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))-([a-z]+)/.exec(normalized);
+    match = /^claude-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))?-([a-z]+)/.exec(normalized);
     if (!match) return null;
     [, major, minor, family] = match;
     base = match[0];
@@ -401,13 +401,15 @@ function parseDeniedModelEntry(value) {
   if (isModelAlias(normalized) || normalized === 'default') {
     return { kind: 'ignored' };
   }
-  const version = parseModelVersion(normalized.startsWith('claude-')
-    ? normalized : 'claude-' + normalized);
+  const directVersion = parseModelVersion(normalized);
+  const spelling = directVersion || normalized.startsWith('claude-')
+    ? normalized : 'claude-' + normalized;
+  const version = directVersion ?? parseModelVersion(spelling);
   if (version) return { kind: 'model', id: version };
   return { kind: 'literal', value: normalized };
 }
 function modelIsDenied(model, entry, env, availableModels, deniedModels) {
-  const raw = normalizedPolicyValue(model);
+  const raw = stripContextSizeTags(model.trim()).toLowerCase();
   const canonical = canonicalPolicyModel(model, env, availableModels, deniedModels);
   if (entry.kind === 'ignored') return false;
   if (entry.kind === 'literal') {
@@ -417,7 +419,7 @@ function modelIsDenied(model, entry, env, availableModels, deniedModels) {
   if (entry.kind === 'family') {
     return getModelFamily(canonical) === entry.family ||
       version?.family === entry.family ||
-      canonical.toLowerCase().includes(entry.family);
+      containsFamilyBoundary(canonical.toLowerCase(), entry.family);
   }
   return modelVersionMatches(entry.id, version);
 }
