@@ -169,15 +169,15 @@ export async function main({ turnTimeoutMs = 120_000 } = {}) {
       'the live TUI model did not complete the required Read -> Edit -> Read task');
     // Ink's incremental renderer can split spaces into cursor-forward
     // sequences. Normalize visual whitespace before counting tool rows.
-    const firstTurnTranscript = normalizeOutput(output).replace(/\\s+/g, ' ');
-    const firstTurnReads = firstTurnTranscript.match(/Read\\s*·\\s*completed/g) || [];
+    const firstTurnTranscript = normalizeOutput(output).replace(/\s+/g, ' ');
+    const firstTurnReads = firstTurnTranscript.match(/Read\s*·\s*completed/g) || [];
     assert.ok(firstTurnReads.length >= 2,
       'the first live TUI turn must complete two Read tool calls; found ' +
       firstTurnReads.length + '. Recent transcript: ' +
       redact(firstTurnTranscript.slice(-5000)));
-    assert.match(firstTurnTranscript, /Edit\\s*·\\s*completed/,
+    assert.match(firstTurnTranscript, /Edit\s*·\s*completed/,
       'the first live TUI turn must complete an Edit tool call');
-    assert.doesNotMatch(firstTurnTranscript, /Bash\\s*·/,
+    assert.doesNotMatch(firstTurnTranscript, /Bash\s*·/,
       'the first live TUI turn must not invoke Bash');
     process.stdout.write('PASS: real Ink TUI completed Read -> Edit -> Read and verified workspace content.\n');
 
