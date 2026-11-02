@@ -141,6 +141,9 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
     default:128_000,upperLimit:128_000,
   });
   assert.equal(isModelAllowed('claude-opus-5-5',{availableModels:['opus']}),true);
+  assert.equal(isModelAllowed('claude-opus-5-5[1m]',{
+    availableModels:['opus[1m]'],
+  }),true,'availableModels strips one trailing 1M marker before family matching');
   assert.equal(isModelAllowed('mysonnet-custom',{availableModels:['sonnet']}),false,
     '2.1.304 family matching requires an alphanumeric segment boundary');
   assert.equal(isModelAllowed('my-sonnet-custom',{availableModels:['sonnet']}),true,
