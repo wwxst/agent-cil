@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 // The old 2.1.88 withRetry.ts and client.ts transport logic is now used
 // directly. A successful HTTP response / started SSE body is NEVER replayed.
 import { normalizeMessagesForAPI } from './legacy-query/normalize-messages-for-api.js';
+import { resolveModelRequest } from './legacy-original/model-aliases.js';
 import {
   getBoundedRetryDelay,
   isRetryablePreStreamConnectionError,
@@ -160,6 +161,7 @@ export class AnthropicMessagesAdapter {
   #version;
   #fetch;
   #maxRetries;
+  #provider;
 
   constructor({
     apiKey,
@@ -170,6 +172,7 @@ export class AnthropicMessagesAdapter {
     baseUrl = 'https://api.anthropic.com',
     apiVersion = '2023-06-01',
     maxRetries = 2,
+    provider = 'anthropic',
     fetchImpl = globalThis.fetch,
   } = {}) {
     if (apiKey !== undefined && (typeof apiKey !== 'string' || apiKey.trim().length === 0)) {
@@ -204,6 +207,7 @@ export class AnthropicMessagesAdapter {
     }
     if (typeof apiVersion !== 'string' || apiVersion.trim().length === 0) throw new TypeError('apiVersion must be a non-empty string.');
     if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a fetch-compatible function.');
+    if (!['anthropic', 'deepseek'].includes(provider)) throw new TypeError('provider must be anthropic or deepseek.');
     if (!Number.isSafeInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
       throw new RangeError('maxRetries must be an integer between 0 and 5.');
     }
@@ -217,6 +221,7 @@ export class AnthropicMessagesAdapter {
     this.#version = apiVersion;
     this.#fetch = fetchImpl;
     this.#maxRetries = maxRetries;
+    this.#provider = provider;
   }
 
   // Source 2.1.88 getMainLoopModelOverride()/model command changes only
@@ -227,7 +232,9 @@ export class AnthropicMessagesAdapter {
   setModel(model) {
     if(typeof model!=='string'||!model.trim())
       throw new TypeError('model must be a non-empty string.');
-    this.#model=model.trim();
+    const nextModel=model.trim();
+    resolveModelRequest(nextModel,{provider:this.#provider});
+    this.#model=nextModel;
   }
 
   async *stream({ messages, tools = [], signal } = {}) {
@@ -286,8 +293,9 @@ export class AnthropicMessagesAdapter {
       };
     });
 
+    const modelRequest = resolveModelRequest(this.#model, { provider: this.#provider });
     const body = {
-      model: this.#model,
+      model: modelRequest.model,
       max_tokens: this.#maxTokens,
       messages: mergedMessages,
       stream: true,
@@ -306,6 +314,9 @@ export class AnthropicMessagesAdapter {
             'anthropic-version': this.#version,
             'x-api-key': apiKey,
             accept: 'text/event-stream',
+            ...(modelRequest.betaHeaders.length
+              ? { 'anthropic-beta': modelRequest.betaHeaders.join(',') }
+              : {}),
           }, { baseUrl: this.#baseUrl }),
           body: JSON.stringify(body),
           signal,
