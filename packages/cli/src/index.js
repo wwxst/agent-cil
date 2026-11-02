@@ -2669,6 +2669,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     if (tui) tui.setStatus(notice);
     else process.stderr.write('\n' + notice + '\n');
   });
+  loop.on('toolResult', ({ toolUseId, toolName, content, isError }) => {
+    if (tui) tui.setToolMessageResult({ toolUseId, toolName, content, isError });
+  });
   loop.on('toolCallFinished', ({ toolUseId, toolName, isError, denied, interrupted }) => {
     if (tui) tui.finishToolMessage({ toolUseId, isError, denied, interrupted });
     if (isError) {
