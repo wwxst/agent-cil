@@ -46,12 +46,15 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
   let sentPrompts = 0;
   let pageUpStarted = false;
   let pageUpCount = 0;
+  let pageDownStarted = false;
+  let pageDownCount = 0;
   let endSent = false;
   let homeSent = false;
   let exitSent = false;
   let outputAtPageUp = 0;
   let outputAtEnd = 0;
   let outputAtHome = 0;
+  let outputAtPageDown = 0;
   const totalTurns = 12;
   const timers = new Set();
   const later = (callback, delay) => {
@@ -96,6 +99,35 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
       return;
     }
     later(sendPageUp, 90);
+  };
+  let pageDownWaitTicks = 0;
+  const maybeSendExit = () => {
+    if (!pageDownStarted || pageDownCount < 16 || exitSent) return;
+    const afterPageDown = normalizeTuiText(output.slice(outputAtPageDown));
+    const screenText = terminalScreen.toString();
+    if (afterPageDown.includes('reply-' + pad(totalTurns)) &&
+        !afterPageDown.includes('End to jump to latest') &&
+        screenText.includes('reply-' + pad(totalTurns)) &&
+        !screenText.includes('reply-01')) {
+      exitSent = true;
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+      child.stdin.write('/exit\r');
+      return;
+    }
+    // As with PageUp at the top boundary, the final PageDown may not produce
+    // another terminal frame once sticky follow has been restored.
+    if (pageDownWaitTicks++ < 20) later(maybeSendExit, 50);
+  };
+  const sendPageDown = () => {
+    if (pageDownCount >= 16 || exitSent) return;
+    child.stdin.write('\x1b[6~');
+    pageDownCount += 1;
+    if (pageDownCount >= 16) {
+      later(maybeSendExit, 120);
+      return;
+    }
+    later(sendPageDown, 90);
   };
 
   try {
@@ -180,14 +212,15 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
       }
 
       const homeOutput = normalizeTuiText(output.slice(outputAtHome));
-      if (homeSent && !exitSent &&
+      if (homeSent && !pageDownStarted &&
           homeOutput.includes('reply-01') &&
           homeOutput.includes('End to jump to latest')) {
-        exitSent = true;
-        for (const timer of timers) clearTimeout(timer);
-        timers.clear();
-        child.stdin.write('/exit\r');
+        pageDownStarted = true;
+        outputAtPageDown = output.length;
+        sendPageDown();
+        return;
       }
+      maybeSendExit();
     });
     child.stderr.on('data', chunk => { stderr += chunk; });
     watchdog = setTimeout(() => {
@@ -198,10 +231,13 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
         pageUpCount,
         endSent,
         homeSent,
+        pageDownStarted,
+        pageDownCount,
         exitSent,
         afterPageUpHasOldest: normalizedAfterPageUp.includes('reply-01'),
         afterPageUpHasHint: normalizedAfterPageUp.includes('End to jump to latest'),
         afterEndHasLatest: normalizeTuiText(output.slice(outputAtEnd)).includes('reply-' + pad(totalTurns)),
+        afterPageDownHasLatest: normalizeTuiText(output.slice(outputAtPageDown)).includes('reply-' + pad(totalTurns)),
         screen: terminalScreen.toString(),
       }) + '\\n');
       child.kill('SIGKILL');
@@ -219,7 +255,9 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
     assert.ok(pageUpCount > 0, 'no PageUp keypresses were sent');
     assert.ok(endSent, 'End did not restore the latest turn: ' + stderr + output);
     assert.ok(homeSent, 'Home did not return to the first turn: ' + stderr + output);
-    assert.ok(exitSent, 'the first turn did not become visible after Home: ' + stderr + output);
+    assert.ok(pageDownStarted, 'PageDown sequence was not sent: ' + stderr + output);
+    assert.ok(pageDownCount > 0, 'no PageDown keypresses were sent');
+    assert.ok(exitSent, 'PageDown did not restore the latest turn and clear the jump hint: ' + stderr + output);
     assert.equal(calls.length, totalTurns, stderr + output);
     assert.ok(
       calls.every((call, index) =>
