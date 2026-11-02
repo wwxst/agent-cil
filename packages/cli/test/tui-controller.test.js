@@ -263,6 +263,33 @@ test('TUI controller marks denied and interrupted tool calls without granting ex
   controller.close(0);
 });
 
+test('TUI controller keeps assistant messages in model-turn order around committed tool results', () => {
+  const controller = createTuiController();
+  controller.addMessage('user', 'inspect and report');
+  controller.beginAssistantMessage();
+  controller.appendAssistantText('I will inspect the file.');
+  controller.finishAssistantMessage();
+  controller.beginToolMessage('ordered-read', 'Read');
+  controller.setToolMessageResult({
+    toolUseId: 'ordered-read',
+    toolName: 'Read',
+    content: 'file contents',
+  });
+  controller.finishToolMessage({ toolUseId: 'ordered-read' });
+  controller.beginAssistantMessage();
+  controller.appendAssistantText('The file contains the expected value.');
+  controller.finishAssistantMessage();
+
+  const messages = controller.getSnapshot().messages;
+  assert.deepEqual(messages.map(message => [message.role, message.text ?? message.resultContent]), [
+    ['user', 'inspect and report'],
+    ['assistant', 'I will inspect the file.'],
+    ['tool', 'file contents'],
+    ['assistant', 'The file contains the expected value.'],
+  ]);
+  controller.close(0);
+});
+
 test('TUI controller marks assistant streaming lifecycle for incremental Markdown rendering', () => {
   const controller = createTuiController();
   controller.beginAssistantMessage();
