@@ -103,6 +103,6 @@ for (const model of MODEL_CATALOG_MODELS) {
 }
 export function getCatalogModel(modelInput) {
   if (typeof modelInput !== 'string') return undefined;
-  const id = modelInput.trim().replace(/(?:\\[1m\\])+$/i, '').toLowerCase();
+  const id = modelInput.trim().replace(/(?:\[1m\])+$/i, '').toLowerCase();
   return byId.get(id) ?? byProviderId.get(id);
 }
