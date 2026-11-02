@@ -173,7 +173,7 @@ export async function main({ turnTimeoutMs = 120_000 } = {}) {
     // frame. The local-fixture harness separately verifies both tool_result
     // IDs and their exact contents in the next provider request.
     const firstTurnTranscript = normalizeOutput(output);
-    const readCompleted = firstTurnTranscript.match(/Read\\s*·\\s*completed/g) || [];
+    const readCompleted = firstTurnTranscript.match(/Read\s*·\s*completed/g) || [];
     const editStarted = firstTurnTranscript.match(/Edit · running/g) || [];
     assert.ok(readCompleted.length >= 2,
       'the first live TUI turn must render two completed Read tool calls; found ' +
