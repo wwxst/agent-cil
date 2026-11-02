@@ -301,7 +301,12 @@ export class AnthropicMessagesAdapter {
     const modelRequest = resolveModelRequest(this.#model, { provider: this.#provider });
     const body = {
       model: modelRequest.model,
-      max_tokens: this.#maxTokens,
+      // 2.1.304 caps the requested output budget at the active model's
+      // catalog upper limit; switching back restores the user's override.
+      max_tokens: Math.min(
+        this.#maxTokens,
+        getModelMaxOutputTokens(this.#model).upperLimit,
+      ),
       messages: mergedMessages,
       stream: true,
     };
