@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { parseArgs } from '../src/index.js';
 import {
   clearModelPreference, detectSystemLanguage, getHelp, getLanguageConfigPath, languageLabel,
-  loadLanguagePreference, localizeCliMessage, normalizeLanguagePreference, normalizeModelPreference,
+  loadLanguagePreference, localizeCliMessage, normalizeLanguagePreference, normalizeModelPreference, normalizeModelListPreference,
   resolveLanguage, saveLanguagePreference, saveModelPreference, translate,
 } from '../src/i18n.js';
 
@@ -123,6 +123,32 @@ test('invalid persisted model values fail closed and can be repaired explicitly'
     const unset = await loadLanguagePreference({ env });
     assert.equal(unset.configError, undefined);
     assert.deepEqual(unset.config, { language: 'zh-CN', theme: 'dark' });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('saved model allowlists and denylists are validated without dropping entries', async () => {
+  assert.deepEqual(normalizeModelListPreference(['opus', ' sonnet ']), ['opus', 'sonnet']);
+  assert.deepEqual(normalizeModelListPreference([]), []);
+  for (const invalid of [null, 'opus', [null], [''], ['  '], ['bad\nmodel'], ['x'.repeat(257)], Array(257).fill('opus')]) {
+    assert.equal(normalizeModelListPreference(invalid), null);
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-policy-invalid-'));
+  const configPath = join(directory, 'config.json');
+  try {
+    for (const config of [
+      { language: 'en', availableModels: 'opus' },
+      { language: 'en', availableModels: ['sonnet', ''] },
+      { language: 'en', deniedModels: [123] },
+    ]) {
+      await writeFile(configPath, JSON.stringify(config));
+      const state = await loadLanguagePreference({
+        env: { AGENT_CIL_CONFIG_PATH: configPath },
+      });
+      assert.ok(state.configError instanceof TypeError);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
