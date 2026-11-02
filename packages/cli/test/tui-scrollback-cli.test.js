@@ -143,7 +143,7 @@ test('original 2.1.88 ScrollBox supports PageUp/PageDown and the 2.1.304 Home/En
   };
   let pageDownWaitTicks = 0;
   const maybeSendExit = () => {
-    if (!pageDownStarted || pageDownCount < 16 || exitSent) return;
+    if (!pageDownStarted || exitSent) return;
     const screenText = terminalScreen.toString();
     if (screenText.includes('reply-' + pad(totalTurns)) &&
         !screenText.includes('reply-01') &&
@@ -163,10 +163,11 @@ test('original 2.1.88 ScrollBox supports PageUp/PageDown and the 2.1.304 Home/En
     if (pageDownCount >= 16 || exitSent) return;
     child.stdin.write('\x1b[6~');
     pageDownCount += 1;
-    if (pageDownCount >= 16) {
-      later(maybeSendExit, 120);
-      return;
-    }
+    // Check the reconstructed screen after every keypress. The pager may
+    // already be back at the newest turn before the old fixed key count is
+    // reached, and a terminal boundary need not emit another data frame.
+    later(maybeSendExit, 120);
+    if (pageDownCount >= 16) return;
     later(sendPageDown, 90);
   };
 
