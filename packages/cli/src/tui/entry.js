@@ -10,9 +10,10 @@ export async function startAgentTui({ locale, model, permissionMode, onSubmit, o
     const { register } = await import('tsx/esm/api');
     register();
     // The original 2.1.88 MarkdownTable imports ../ink.js from TSX. TSX's
-    // TypeScript resolver prefers the same-stem ink.ts full Bun barrel over
-    // the Node compatibility ink.js shim, so register a narrow parent-aware
-    // resolver after TSX and preserve the original root.ts -> ink.ts edge.
+    // TypeScript resolver prefers the same-stem src/ink.ts design-system
+    // barrel, which imports Bun-only ThemeProvider, over the Node shim.
+    // Route only this edge to the shim; the full src/ink/ink.tsx renderer
+    // used by the original Ink root remains unchanged.
     const { register: registerNodeLoader } = await import('node:module');
     registerNodeLoader(new URL('./node-loader.js', import.meta.url), import.meta.url);
     tsxRegistered = true;
