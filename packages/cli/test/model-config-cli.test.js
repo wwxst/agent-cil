@@ -145,11 +145,13 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
 
     async function runModel({
       savedModel, envModel, cliModel, defaultSonnet, availableModels, deniedModels,
+      availableModelsMatch,
     } = {}) {
       const config = { language: 'en' };
       if (savedModel !== undefined) config.model = savedModel;
       if (availableModels !== undefined) config.availableModels = availableModels;
       if (deniedModels !== undefined) config.deniedModels = deniedModels;
+      if (availableModelsMatch !== undefined) config.availableModelsMatch = availableModelsMatch;
       await writeFile(configPath, JSON.stringify(config));
       const args = [
         cli, '--print', '--max-retries', '0', '--cwd', directory,
@@ -203,7 +205,15 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
       cliModel: 'opus', availableModels: ['opus', 'opus-5-5'],
     }), 'claude-opus-5-5',
     'a version-qualified allowlist narrows the family alias to that version');
-    assert.equal(requests.length, 8);
+    assert.equal(await runModel({
+      cliModel: 'opus', availableModels: ['opus-4-6'], availableModelsMatch: 'exact',
+    }), 'claude-opus-4-6',
+    'exact model policy steps a disallowed family default down to the listed version');
+    assert.equal(await runModel({
+      cliModel: 'opus', availableModels: ['opus-5-5'], availableModelsMatch: 'exact',
+    }), 'claude-opus-5-5',
+    'exact model policy keeps a listed model version unchanged');
+    assert.equal(requests.length, 10);
   } finally {
     if (watchdog) clearTimeout(watchdog);
     server.closeAllConnections?.();
