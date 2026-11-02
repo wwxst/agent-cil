@@ -15,7 +15,7 @@ import {
 } from './model-catalog.js';
 
 export const MODEL_ALIASES = Object.freeze([
-  'sonnet', 'opus', 'haiku', 'fable', 'fable', 'best',
+  'sonnet', 'opus', 'haiku', 'fable', 'best',
   'sonnet[1m]', 'opus[1m]', 'fable[1m]', 'opusplan',
 ]);
 export const MODEL_FAMILY_ALIASES = Object.freeze([
