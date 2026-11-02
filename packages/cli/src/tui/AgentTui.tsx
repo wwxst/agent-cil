@@ -12,6 +12,7 @@ import { useTextInput } from './useTextInput.js';
 import { addToHistory } from '../../../../legacy/2.1.88/restored-src/src/history.js';
 import { getCoalescedEnterText } from './input.js';
 import { translate } from '../i18n.js';
+import { countUnseenAssistantTurns, useUnseenDivider } from './useUnseenDivider.js';
 
 export default function AgentTui({ controller, initialHistory = [], onSubmit, onInterrupt, onExit }) {
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
@@ -21,6 +22,16 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   const terminalRows = Math.max(5, terminalSize.rows || 24);
   const terminalColumns = Math.max(10, terminalSize.columns || 80);
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
+  const {
+    dividerIndex,
+    onScrollAway,
+    onRepin,
+    jumpToNew,
+  } = useUnseenDivider(snapshot.messages.length);
+  const repinScroll = useCallback(() => {
+    jumpToNew(scrollRef.current);
+    onRepin();
+  }, [jumpToNew, onRepin]);
   const [value, setValueState] = useState('');
   const valueRef = useRef('');
   const setValue = useCallback(nextValue => {
@@ -126,6 +137,9 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     const text = String(submittedValue ?? '').trimEnd();
     const currentSnapshot = controller.getSnapshot();
     if (!text.trim() || currentSnapshot.busy || currentSnapshot.pendingApproval) return;
+    // Match the original REPL: submitting returns the transcript to live
+    // follow and clears the previous unseen-message baseline.
+    repinScroll();
     setHistory(previous => [...previous, text].slice(-100));
     addToHistory(text);
     setHistoryIndex(-1);
@@ -136,7 +150,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       controller.pushSystemMessage(error instanceof Error ? error.message : String(error));
       controller.setBusy(false);
     });
-  }, [onSubmit, controller, setHistory, setHistoryIndex, setValue, setOffset]);
+  }, [onSubmit, controller, setHistory, setHistoryIndex, setValue, setOffset, repinScroll]);
 
   const onHistoryUp = useCallback(() => {
     const entries = historyRef.current;
@@ -272,17 +286,24 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
         // editor cursor navigation remains untouched.
         if (key.home) {
           scroll.scrollTo(0);
+          onScrollAway(scroll);
         } else if (key.end) {
-          scroll.scrollToBottom();
+          repinScroll();
         } else if (key.pageUp) {
-          scroll.scrollBy(-page);
+          const effectiveTop = scroll.getScrollTop() + scroll.getPendingDelta();
+          // Clamp to the top synchronously so an empty/short transcript does
+          // not break sticky mode or create a false unseen-message indicator.
+          if (effectiveTop - page <= 0) scroll.scrollTo(0);
+          else scroll.scrollBy(-page);
+          onScrollAway(scroll);
         } else if (
           scroll.getScrollTop() + scroll.getPendingDelta() + page >=
           scroll.getScrollHeight() - viewportHeight
         ) {
-          scroll.scrollToBottom();
+          repinScroll();
         } else {
           scroll.scrollBy(page);
+          onScrollAway(scroll);
         }
       }
       return null;
@@ -305,7 +326,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
       return null;
     }
     return input;
-  }, [controller, onClearInput, resetHistory, onInterrupt, submit, terminalRows]);
+  }, [controller, onClearInput, resetHistory, onInterrupt, submit, terminalRows, onScrollAway, repinScroll]);
 
   const activeInputValue = permissionInputType
     ? approvalFeedback[permissionInputType]
@@ -355,6 +376,13 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   }, []);
 
   const visibleMessages = snapshot.messages;
+  const showJumpHint = !snapshot.pendingApproval && dividerIndex !== null;
+  const unseenAssistantCount = dividerIndex === null
+    ? 0
+    : countUnseenAssistantTurns(visibleMessages, dividerIndex);
+  const jumpHint = unseenAssistantCount > 0
+    ? translate(locale, 'tuiNewMessages', { count: unseenAssistantCount })
+    : translate(locale, 'tuiJumpToLatest');
   const maxInputLines = Math.max(2, Math.min(8, terminalRows - 10));
   const promptWrapWidth = Math.max(10, terminalColumns - 16);
   const promptLineCount = value.split('\n').reduce(
@@ -365,7 +393,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   const transcriptHeight = Math.max(
     snapshot.pendingApproval ? 1 : 3,
     terminalRows - (
-      snapshot.pendingApproval ? 23 : canInput ? 13 + visiblePromptLines : 7
+      snapshot.pendingApproval ? 23 : (canInput ? 13 + visiblePromptLines : 7) + (showJumpHint ? 1 : 0)
     ),
   );
   const placeholder = translate(locale, 'tuiPlaceholder');
@@ -485,6 +513,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
 {!snapshot.pendingApproval ? (
         <Box flexDirection="column" marginTop={1}>
           <Text dimColor>{status}</Text>
+          {showJumpHint ? <Text color="yellow">{jumpHint}</Text> : null}
           <Text dimColor>{translate(locale, 'tuiFooterHelp')}</Text>
         </Box>
       ) : null}
