@@ -143,9 +143,13 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
     const address = server.address();
     assert.ok(address && typeof address === 'object');
 
-    async function runModel({ savedModel, envModel, cliModel, defaultSonnet } = {}) {
+    async function runModel({
+      savedModel, envModel, cliModel, defaultSonnet, availableModels, deniedModels,
+    } = {}) {
       const config = { language: 'en' };
       if (savedModel !== undefined) config.model = savedModel;
+      if (availableModels !== undefined) config.availableModels = availableModels;
+      if (deniedModels !== undefined) config.deniedModels = deniedModels;
       await writeFile(configPath, JSON.stringify(config));
       const args = [
         cli, '--print', '--max-retries', '0', '--cwd', directory,
@@ -187,7 +191,19 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
     assert.equal(await runModel({ savedModel: 'opus', envModel: 'haiku', cliModel: 'sonnet' }), 'claude-sonnet-5-5');
     assert.equal(await runModel({}), 'claude-sonnet-5-5');
     assert.equal(await runModel({ defaultSonnet: 'custom-sonnet-default' }), 'custom-sonnet-default');
-    assert.equal(requests.length, 5);
+    assert.equal(await runModel({
+      cliModel: 'opus', availableModels: ['sonnet'],
+    }), 'claude-sonnet-5-5',
+    'a disallowed explicit selection falls back to the permitted default');
+    assert.equal(await runModel({
+      cliModel: 'opus', deniedModels: ['opus'],
+    }), 'claude-sonnet-5-5',
+    'deniedModels blocks a family even when no allowlist is configured');
+    assert.equal(await runModel({
+      cliModel: 'opus', availableModels: ['opus', 'opus-5-5'],
+    }), 'claude-opus-5-5',
+    'a version-qualified allowlist narrows the family alias to that version');
+    assert.equal(requests.length, 8);
   } finally {
     if (watchdog) clearTimeout(watchdog);
     server.closeAllConnections?.();
