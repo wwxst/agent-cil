@@ -278,25 +278,17 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
     );
     configErrorField = 'model';
   }
-  if (!configError || configErrorField === 'model') {
-    for (const key of ['availableModels', 'deniedModels']) {
-      if (Object.prototype.hasOwnProperty.call(config, key) &&
-          normalizeModelListPreference(config[key]) === null) {
-        configError = new TypeError(
-          'Saved ' + key + ' must be an array of at most 256 non-empty model names.',
-        );
-        configErrorField = key;
-        break;
-      }
-    }
-  }
+  // 2.1.88 exposes availableModels in user settings. In 2.1.304,
+  // deniedModels and availableModelsMatch belong to policySettings (managed
+  // policy), not this user config file. Keep unknown fields intact for
+  // round-tripping, but never promote user-editable values into org policy.
   if ((!configError || configErrorField === 'model') &&
-      Object.prototype.hasOwnProperty.call(config, 'availableModelsMatch') &&
-      !['prefix', 'exact'].includes(config.availableModelsMatch)) {
+      Object.prototype.hasOwnProperty.call(config, 'availableModels') &&
+      normalizeModelListPreference(config.availableModels) === null) {
     configError = new TypeError(
-      'Saved availableModelsMatch must be either "prefix" or "exact".',
+      'Saved availableModels must be an array of at most 256 non-empty model names.',
     );
-    configErrorField = 'availableModelsMatch';
+    configErrorField = 'availableModels';
   }
   const preference = normalizeLanguagePreference(config.language) ?? 'auto';
   return {
@@ -336,7 +328,7 @@ export function normalizeModelPreference(value) {
   return normalized;
 }
 
-/** Validate the 2.1.88/2.1.304 model policy arrays without dropping entries. */
+/** Validate the 2.1.88 user-settings availableModels allowlist without dropping entries. */
 export function normalizeModelListPreference(value) {
   if (!Array.isArray(value) || value.length > 256) return null;
   const normalized = [];
