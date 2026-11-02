@@ -61,7 +61,7 @@ cat question.txt | agent-cil --print
 
 - 核心 CLI 代码从最后一个已确认全绿的核心提交恢复；该提交的 Runtime、Windows Live Harness、CLI 2.1.88 Smoke 三组 CI 均通过。
 - 2.1.304 的完整行为对齐仍在进行，不宣称全部兼容或已达到生产稳定状态。
-- Ink 终端 UI 的依赖闭包和 Linux/Windows 真实终端验收尚未完整通过；在完成前不把它标记为已交付。
+- Ink TUI 已接入真实 AgentLoop；Linux PTY 已验证 Markdown、12 轮历史滚动和输入，Windows ConPTY 已验证权限、历史滚动及中英实时切换。仍未完成真实外部模型的长时间 TUI 工程任务验收，不宣称生产稳定。
 - 当前验证细节见[验证状态](docs/质量/验证状态.md)。
 
 ## 参考文档
@@ -71,3 +71,33 @@ cat question.txt | agent-cil --print
 - [质量验收标准](docs/质量/验收标准.md)
 - [验证状态](docs/质量/验证状态.md)
 - [来源与许可说明](docs/许可证与来源说明.md)
+
+
+## 真实模型 TUI 验收（手动）
+
+PR #63 增加了可选的真实 Provider 交互验收脚本。它会在临时工作区中启动真实 Ink TUI，要求模型通过 Read → Edit → Read 修复一个小文件，再执行第二轮交互读取与计算；结束后删除临时工作区。此脚本不会在 GitHub CI 中使用凭证。
+
+先安装本机 PTY 适配器（不写入 package.json 或 lockfile）：
+
+```bash
+npm install --no-save --no-package-lock node-pty@1.1.0
+```
+
+Anthropic 示例：
+
+```bash
+export ANTHROPIC_API_KEY="..."
+export ANTHROPIC_BASE_URL="https://api.anthropic.com"
+npm run verify:live-tui
+```
+
+DeepSeek 示例：
+
+```bash
+export AGENT_CIL_PROVIDER=deepseek
+export DEEPSEEK_API_KEY="..."
+export DEEPSEEK_BASE_URL="https://api.deepseek.com/anthropic"
+npm run verify:live-tui
+```
+
+Windows PowerShell 使用 `$env:ANTHROPIC_API_KEY="..."` 等环境变量语法。脚本只向子进程传递当前选择的 Provider 凭证，不打印密钥；请勿把密钥提交到仓库或 CI 日志。
