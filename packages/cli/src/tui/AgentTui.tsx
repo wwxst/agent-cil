@@ -14,6 +14,18 @@ import { getCoalescedEnterText } from './input.js';
 import { translate } from '../i18n.js';
 import { countUnseenAssistantTurns, useUnseenDivider } from './useUnseenDivider.js';
 
+function formatToolResultContent(content, locale) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map(block => {
+    if (block?.type === 'text' && typeof block.text === 'string') return block.text;
+    if (block?.type === 'image') return translate(locale, 'tuiToolImageResult');
+    return translate(locale, 'tuiToolOtherResult', {
+      type: String(block?.type ?? 'unknown'),
+    });
+  }).filter(Boolean).join('\\n');
+}
+
 export default function AgentTui({ controller, initialHistory = [], onSubmit, onInterrupt, onExit }) {
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const locale = snapshot.locale;
@@ -513,6 +525,14 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
                   : <MessageContent text={message.text || ' '} />}
               </>
             )}
+            {message.role === 'tool' && message.resultContent !== undefined ? (
+              <Box flexDirection="row" marginLeft={2}>
+                <Text dimColor>⎿ </Text>
+                <Box flexGrow={1}>
+                  <MessageContent text={formatToolResultContent(message.resultContent, locale) || ' '} />
+                </Box>
+              </Box>
+            ) : null}
           </Box>
         ))}
       </ScrollBox>
