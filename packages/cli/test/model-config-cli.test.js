@@ -174,10 +174,10 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
       return requests.at(-1).model;
     }
 
-    assert.equal(await runModel({ savedModel: 'opus' }), 'claude-opus-4-6');
-    assert.equal(await runModel({ savedModel: 'opus', envModel: 'haiku' }), 'claude-haiku-4-5-20251001');
-    assert.equal(await runModel({ savedModel: 'opus', envModel: 'haiku', cliModel: 'sonnet' }), 'claude-sonnet-4-6');
-    assert.equal(await runModel({}), 'claude-sonnet-4-6');
+    assert.equal(await runModel({ savedModel: 'opus' }), 'claude-opus-5-5');
+    assert.equal(await runModel({ savedModel: 'opus', envModel: 'haiku' }), 'claude-haiku-5-5');
+    assert.equal(await runModel({ savedModel: 'opus', envModel: 'haiku', cliModel: 'sonnet' }), 'claude-sonnet-5-5');
+    assert.equal(await runModel({}), 'claude-sonnet-5-5');
     assert.equal(await runModel({ defaultSonnet: 'custom-sonnet-default' }), 'custom-sonnet-default');
     assert.equal(requests.length, 5);
   } finally {
