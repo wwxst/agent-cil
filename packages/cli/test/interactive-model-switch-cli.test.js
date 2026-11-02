@@ -157,7 +157,7 @@ test('real TTY /model rolls back the session checkpoint when persisted settings 
       output+=chunk;
       const prompts=output.split('you> ').length-1;
       if(prompts>sent && sent<commands.length){
-        child.stdin.write(commands[sent]+'\\n');
+        child.stdin.write(commands[sent]+'\n');
         sent++;
       }
     });
@@ -175,7 +175,7 @@ test('real TTY /model rolls back the session checkpoint when persisted settings 
       'claude-sonnet-4-6','claude-sonnet-4-6',
     ]);
     const records=(await readFile(join(root,'.agent-cil','sessions',
-      sessionId,'transcript.jsonl'),'utf8')).trim().split('\\n').map(JSON.parse);
+      sessionId,'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
     assert.deepEqual(records.filter(x=>x.kind==='model_override').map(x=>x.setting),
       ['opus',null],'failed persistence must append a rollback checkpoint');
   }finally{
