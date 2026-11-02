@@ -531,6 +531,11 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
                   : <MessageContent text={message.text || ' '} />}
               </>
             )}
+            {message.role === 'tool' && message.input !== undefined ? (
+              <Box marginLeft={2}>
+                <Text dimColor>{JSON.stringify(message.input, null, 2)}</Text>
+              </Box>
+            ) : null}
             {message.role === 'tool' && message.resultContent !== undefined ? (
               <Box flexDirection="row" marginLeft={2}>
                 <Text dimColor>⎿ </Text>

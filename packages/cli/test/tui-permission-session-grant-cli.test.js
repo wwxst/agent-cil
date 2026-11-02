@@ -151,6 +151,10 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
     assert.equal(status, 0, stderr + output);
     assert.equal(sentSessionGrant, true, output);
     assert.equal(sentExit, true, output);
+    assert.ok(
+      terminalScreen.toString().includes('different-command'),
+      'the transcript retains tool-call arguments after the approval prompt closes',
+    );
     assert.doesNotMatch(output + stderr, /Could not start the original Ink TUI|falling back to the readline interface/);
     assert.equal(await readFile(firstMarker, 'utf8'), 'executed');
     await assert.rejects(readFile(secondMarker), { code: 'ENOENT' });

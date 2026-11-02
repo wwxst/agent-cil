@@ -2658,6 +2658,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // listener Ctrl+C closes input while the active model keeps streaming.
   rl?.on('SIGINT', onSigint);
   process.on('SIGTERM', onSigterm);
+  loop.on('assistantMessage', ({ message }) => {
+    if (!tui || !Array.isArray(message?.content)) return;
+    for (const block of message.content) {
+      if (block?.type !== 'tool_use') continue;
+      tui.rememberToolCall({
+        id: block.id,
+        name: block.name,
+        args: block.input,
+      });
+    }
+  });
   loop.on('toolCallStarted', ({ toolUseId, toolName }) => {
     if (options.allowEdits && (toolName === 'Write' || toolName === 'Edit')) {
       const notice = t(locale, 'permissionAutoApproved', { tool: toolName });
@@ -2673,7 +2684,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     if (tui) tui.setToolMessageResult({ toolUseId, toolName, content, isError });
   });
   loop.on('toolCallFinished', ({ toolUseId, toolName, isError, denied, interrupted }) => {
-    if (tui) tui.finishToolMessage({ toolUseId, isError, denied, interrupted });
+    if (tui) tui.finishToolMessage({ toolUseId, toolName, isError, denied, interrupted });
     if (isError) {
       const notice = t(locale, 'toolFailed', {
         tool: toolName,

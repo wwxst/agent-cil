@@ -20,6 +20,7 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
   let resolveExit;
   const exitPromise = new Promise(resolve => { resolveExit = resolve; });
   let pendingApproval = null;
+  const pendingToolCalls = new Map();
 
   const publish = patch => {
     snapshot = { ...snapshot, ...patch };
@@ -187,18 +188,36 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
       }
       activeAssistantId = null;
     },
+    rememberToolCall({ id, name, args } = {}) {
+      if (typeof id !== 'string' || !id || typeof name !== 'string' || !name ||
+          args === null || typeof args !== 'object' || Array.isArray(args)) return false;
+      let clonedArgs;
+      try { clonedArgs = structuredClone(args); } catch { return false; }
+      let found = false;
+      const messages = snapshot.messages.map(message => {
+        if (message.role !== 'tool' || message.toolUseId !== id) return message;
+        found = true;
+        return { ...message, input: clonedArgs };
+      });
+      if (found) publish({ messages });
+      else pendingToolCalls.set(id, { name, args: clonedArgs });
+      return true;
+    },
     beginToolMessage(toolUseId, toolName) {
       if (typeof toolUseId !== 'string' || !toolUseId ||
           typeof toolName !== 'string' || !toolName) return null;
       const existing = snapshot.messages.find(message => message.role === 'tool' &&
         message.toolUseId === toolUseId);
       if (existing) return existing.id;
+      const pending = pendingToolCalls.get(toolUseId);
+      pendingToolCalls.delete(toolUseId);
       const message = {
         id: nextMessageId++,
         role: 'tool',
         toolUseId,
         toolName,
         status: 'running',
+        ...(pending ? { input: pending.args } : {}),
       };
       publish({ messages: [...snapshot.messages, message] });
       return message.id;
@@ -226,7 +245,7 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
       if (found) publish({ messages });
       return found;
     },
-    finishToolMessage({ toolUseId, isError = false, denied = false, interrupted = false } = {}) {
+    finishToolMessage({ toolUseId, toolName, isError = false, denied = false, interrupted = false } = {}) {
       if (typeof toolUseId !== 'string' || !toolUseId) return false;
       const status = interrupted ? 'interrupted'
         : denied ? 'denied'
@@ -237,8 +256,22 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
         found = true;
         return message.status === status ? message : { ...message, status };
       });
-      if (found) publish({ messages });
-      return found;
+      if (found) {
+        publish({ messages });
+        return true;
+      }
+      if (typeof toolName !== 'string' || !toolName) return false;
+      const pending = pendingToolCalls.get(toolUseId);
+      pendingToolCalls.delete(toolUseId);
+      publish({ messages: [...snapshot.messages, {
+        id: nextMessageId++,
+        role: 'tool',
+        toolUseId,
+        toolName,
+        status,
+        ...(pending ? { input: pending.args } : {}),
+      }] });
+      return true;
     },
     pushSystemMessage(text) { addMessage('system', text); },
     setStatus(status) { publish({ status: String(status ?? '') }); },
@@ -334,6 +367,7 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
       closed = true;
       exitCode = Number.isInteger(code) ? code : 0;
       if (pendingApproval) pendingApproval.finish({ approved: false, reason: 'The interactive session is closing.' });
+      pendingToolCalls.clear();
       publish({ busy: false, status: '', notification: null });
       if (instance) instance.unmount();
       else resolveExit(exitCode);

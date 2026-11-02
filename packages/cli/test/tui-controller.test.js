@@ -251,6 +251,63 @@ test('TUI controller retains concurrent tool calls and their terminal lifecycle 
   controller.close(0);
 });
 
+test('TUI controller retains tool-call arguments across both event orders and denial', () => {
+  const controller = createTuiController();
+  const readArgs = { file_path: 'src/index.js', offset: 10, limit: 20 };
+  controller.rememberToolCall({
+    id: 'read-before-start',
+    name: 'Read',
+    args: readArgs,
+  });
+  readArgs.file_path = 'mutated-after-publication.js';
+  controller.beginToolMessage('read-before-start', 'Read');
+  controller.setToolMessageResult({
+    toolUseId: 'read-before-start',
+    toolName: 'Read',
+    content: 'source contents',
+  });
+  controller.finishToolMessage({
+    toolUseId: 'read-before-start',
+    toolName: 'Read',
+  });
+
+  controller.beginToolMessage('glob-before-args', 'Glob');
+  controller.rememberToolCall({
+    id: 'glob-before-args',
+    name: 'Glob',
+    args: { pattern: 'src/**/*.js' },
+  });
+  controller.finishToolMessage({
+    toolUseId: 'glob-before-args',
+    toolName: 'Glob',
+  });
+
+  controller.rememberToolCall({
+    id: 'denied-before-start',
+    name: 'Glob',
+    args: { pattern: 'private/**/*.key' },
+  });
+  controller.finishToolMessage({
+    toolUseId: 'denied-before-start',
+    toolName: 'Glob',
+    denied: true,
+    isError: true,
+  });
+
+  const tools = controller.getSnapshot().messages.filter(message => message.role === 'tool');
+  assert.deepEqual(tools.map(message => [message.toolUseId, message.toolName, message.status]), [
+    ['read-before-start', 'Read', 'succeeded'],
+    ['glob-before-args', 'Glob', 'succeeded'],
+    ['denied-before-start', 'Glob', 'denied'],
+  ]);
+  assert.deepEqual(tools.map(message => message.input), [
+    { file_path: 'src/index.js', offset: 10, limit: 20 },
+    { pattern: 'src/**/*.js' },
+    { pattern: 'private/**/*.key' },
+  ]);
+  controller.close(0);
+});
+
 test('TUI controller marks denied and interrupted tool calls without granting execution', () => {
   const controller = createTuiController();
   controller.beginToolMessage('denied-tool', 'Bash');
