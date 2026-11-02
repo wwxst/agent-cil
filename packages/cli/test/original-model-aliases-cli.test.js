@@ -99,8 +99,12 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   }),'opus-local-id[1m]',
   'opusplan[1m] upgrades to the Opus family and preserves beta opt-in for custom models');
   assert.equal(parseUserSpecifiedModel('claude-sonnet-4-6[1m]',{env}),'claude-sonnet-4-6[1m]');
-  assert.equal(parseUserSpecifiedModel('claude-sonnet-5-5[1m]',{env}),'claude-sonnet-5-5',
-    'native 1M model IDs do not need the suffix on the first-party API');
+  assert.equal(parseUserSpecifiedModel('claude-sonnet-5-5[1m]',{env}),'claude-sonnet-5-5[1m]',
+    'native Sonnet 1M selection retains its internal suffix on first-party URLs');
+  assert.equal(parseUserSpecifiedModel('claude-mythos-5-1[1m]',{env}),'claude-mythos-5-1[1m]',
+    'native Mythos 1M selection retains its internal suffix on first-party URLs');
+  assert.equal(parseUserSpecifiedModel('claude-fable-5-1[1m]',{env}),'claude-fable-5-1',
+    'native Fable is the 2.1.304 first-party exception that drops the suffix');
   assert.equal(parseUserSpecifiedModel('claude-sonnet-5-5[1m]',{
     env,firstPartyBaseUrl:false,
   }),'claude-sonnet-5-5[1m]',
