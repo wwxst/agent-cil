@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -99,6 +99,8 @@ test('live Ink TUI acceptance harness completes two turns through native ConPTY'
         ANTHROPIC_API_KEY: 'local-live-tui-fixture-secret',
         ANTHROPIC_MODEL: 'claude-sonnet-4-5',
         ANTHROPIC_BASE_URL: 'http://127.0.0.1:' + address.port + '/anthropic',
+        TEMP: workspace,
+        TMP: workspace,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -126,17 +128,14 @@ test('live Ink TUI acceptance harness completes two turns through native ConPTY'
     assert.ok(requests.every(request => request.body.model === 'claude-sonnet-4-5'));
     assert.ok(requests.every(request => request.headers['x-api-key'] === 'local-live-tui-fixture-secret'));
 
-    const finalFile = await readFile(join(workspace, 'math.js'), 'utf8').catch(() => null);
-    // The acceptance script owns and removes its temporary workspace; the
-    // test's parent workspace must not be modified by the child CLI.
-    assert.equal(finalFile, null);
+    // Point the child script's OS temp directory at this test workspace.
+    // Its finally block must remove the nested coding workspace and config.
+    assert.deepEqual(await readdir(workspace), []);
 
-    const toolResults = requests.flatMap(request =>
-      request.body.messages.flatMap(message =>
-        message.role === 'user' && Array.isArray(message.content)
-          ? message.content.filter(block => block.type === 'tool_result')
-          : [],
-      ),
+    const toolResults = requests[5].body.messages.flatMap(message =>
+      message.role === 'user' && Array.isArray(message.content)
+        ? message.content.filter(block => block.type === 'tool_result')
+        : [],
     );
     assert.deepEqual(toolResults.map(result => result.tool_use_id), [
       'live-read-before',
