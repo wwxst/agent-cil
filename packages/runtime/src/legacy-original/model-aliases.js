@@ -253,7 +253,9 @@ function modelMatchesVersionPrefix(model, entry, env, availableModels, deniedMod
 }
 function modelMatchesPolicyEntry(model, entry, env, availableModels, deniedModels) {
   const family = MODEL_FAMILY_ALIASES.find(value => entry === value);
-  if (family) return modelBelongsToFamily(model, family, env);
+  if (family) return modelBelongsToFamily(
+    model, family, env, availableModels, deniedModels,
+  );
   const normalizedModel = normalizedPolicyValue(model);
   if (normalizedModel === entry) return true;
   const canonical = canonicalPolicyModel(model, env, availableModels, deniedModels);
@@ -326,7 +328,6 @@ function getAllowedDefaultModel({ env, availableModels, deniedModels }) {
 export function getRuntimeMainLoopModel({
   permissionMode, mainLoopModel, userSpecifiedModel, env = process.env,
   availableModels, deniedModels = [], exceeds200kTokens = false,
-  firstPartyBaseUrl = true,
 } = {}) {
   const chosen = typeof userSpecifiedModel === 'string'
     ? userSpecifiedModel.trim().toLowerCase() : '';
@@ -355,6 +356,7 @@ export function getRuntimeMainLoopModel({
 export function resolveOriginalCliModel({
   provider, model, permissionMode = 'default', env = process.env,
   availableModels, deniedModels = [], exceeds200kTokens = false,
+  firstPartyBaseUrl = true,
 } = {}) {
   if (provider !== 'anthropic') {
     if (typeof model === 'string' && hasOneMSuffix(model)) {
