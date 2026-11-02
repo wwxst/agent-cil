@@ -229,11 +229,14 @@ export function resolveModelRequest(modelInput, {
   };
 }
 
+const MODEL_PROVIDER_REGIONS = new Set([
+  'us', 'eu', 'apac', 'jp', 'au', 'us-gov', 'global',
+]);
 function stripContextSizeTags(value) {
-  return value.replace(/\[(?:1|2)m\]/gi, '');
+  return value.replace(/\[(1|2)m\]/gi, '');
 }
 function normalizedPolicyValue(value) {
-  return stripContextSizeTags(value.trim()).toLowerCase();
+  return stripOneMSuffix(value.trim()).toLowerCase();
 }
 function canonicalPolicyModel(value, env, availableModels, deniedModels, availableModelsMatch) {
   const normalized = normalizedPolicyValue(value);
@@ -244,35 +247,80 @@ function canonicalPolicyModel(value, env, availableModels, deniedModels, availab
     : value;
   return getCanonicalModelName(parsed);
 }
+
+// Exact projection of 2.1.304's model-string parser (Ec/u/ezo): provider
+// region validation, legacy-version-first IDs, date snapshots, and suffixes.
 function parseModelVersion(value) {
   if (typeof value !== 'string') return null;
-  let normalized = stripContextSizeTags(value.trim().toLowerCase());
+  let normalized = value.trim().toLowerCase();
   if (!normalized || /\s/.test(normalized)) return null;
+  normalized = normalized.replace(/\[[12]m\]$/, '');
   const slash = normalized.lastIndexOf('/');
   if (slash !== -1) normalized = normalized.slice(slash + 1);
   const provider = /^(?:([a-z-]+)\.)?anthropic\.(claude-.*)$/.exec(normalized);
-  if (provider) normalized = provider[2];
+  if (provider) {
+    const region = provider[1];
+    if (region !== undefined && !MODEL_PROVIDER_REGIONS.has(region)) return null;
+    normalized = provider[2];
+  }
 
   let match = /^claude-([a-z]+)-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))?/.exec(normalized);
-  let family, major, minor, base;
+  let family, major, minor, base, legacyVersionFirst = false;
   if (match) {
     [, family, major, minor] = match;
     base = match[0];
   } else {
-    match = /^claude-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))?-([a-z]+)/.exec(normalized);
+    match = /^claude-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))-([a-z]+)/.exec(normalized);
     if (!match) return null;
     [, major, minor, family] = match;
     base = match[0];
+    legacyVersionFirst = true;
   }
   const trailerText = normalized.slice(base.length);
-  const standardTrailer = /^(?:-fast|-latest)?(?:-v\d{1,3}@\d{8}|[-@]\d{8})?(?:-v\d{1,3}(?::\d{1,3})?)?$/;
-  const trailer = standardTrailer.test(trailerText) ? undefined : trailerText;
+  if (trailerText !== '' && !/^[-@]/.test(trailerText)) return null;
+  const standardTrailer =
+    /^(?:-fast|-latest)?(?:-v\d{1,3}@\d{8}|[-@]\d{8})?(?:-v\d{1,3}(?::\d{1,3})?)?$/;
+  let trailer;
+  let date;
+  if (!standardTrailer.test(trailerText)) {
+    trailer = trailerText;
+  } else {
+    date = /(?:-v\d+@|[-@])(\d{8})/.exec(trailerText)?.[1];
+  }
   return {
     family,
     major: Number(major),
+    legacyVersionFirst,
+    base,
     ...(minor !== undefined ? { minor: Number(minor) } : {}),
     ...(trailer !== undefined ? { trailer } : {}),
+    ...(date !== undefined ? { date } : {}),
   };
+}
+function modelIsLatest(value, version) {
+  if (!version || version.trailer !== undefined) return false;
+  const normalized = value.toLowerCase();
+  const index = normalized.lastIndexOf(version.base);
+  return index !== -1 &&
+    normalized.slice(index + version.base.length).startsWith('-latest');
+}
+function modelVersionMatches(entry, model) {
+  // 2.1.304 deniedModels uses v9s: same family/version, with an optional
+  // trailer prefix; unlike exact allowlists, it does not compare legacy order.
+  if (!model || entry.family !== model.family || entry.major !== model.major) return false;
+  if (entry.minor !== undefined && (model.minor ?? 0) !== entry.minor) return false;
+  if (entry.trailer === undefined) return true;
+  const trailer = model.trailer ?? '';
+  return trailer === entry.trailer || trailer.startsWith(entry.trailer + '-');
+}
+function modelVersionMatchesExact(entry, model, modelLatest) {
+  if (!model ||
+      entry.family !== model.family ||
+      entry.legacyVersionFirst !== model.legacyVersionFirst ||
+      entry.major !== model.major ||
+      (entry.minor ?? 0) !== (model.minor ?? 0)) return false;
+  return (entry.trailer ?? '') === (model.trailer ?? '') &&
+    (!modelLatest || entry.latest === true);
 }
 function parseAvailableModelEntry(value) {
   const normalized = stripOneMSuffix(value.trim().toLowerCase());
@@ -285,38 +333,63 @@ function parseAvailableModelEntry(value) {
   if (isModelAlias(normalized) || normalized === 'default') {
     return { kind: 'ignored' };
   }
-  const version = parseModelVersion(normalized.startsWith('claude-')
-    ? normalized : 'claude-' + normalized);
-  if (version) return { kind: 'model', id: version };
+  const parsed = parseModelVersion(normalized);
+  const spelling = parsed || normalized.startsWith('claude-')
+    ? normalized : 'claude-' + normalized;
+  const version = parsed ?? parseModelVersion(spelling);
+  if (version) {
+    return {
+      kind: 'model',
+      id: version,
+      latest: modelIsLatest(spelling, version),
+      spelling,
+    };
+  }
   return { kind: 'literal', value: normalized };
+}
+function containsFamilyBoundary(value, family) {
+  for (let index = value.indexOf(family); index !== -1;
+    index = value.indexOf(family, index + 1)) {
+    const before = index === 0 || !/[a-z0-9]/i.test(value[index - 1]);
+    const afterIndex = index + family.length;
+    const after = afterIndex === value.length || !/[a-z0-9]/i.test(value[afterIndex]);
+    if (before && after) return true;
+  }
+  return false;
 }
 function isAllowedByExactModelList(model, allowlist, {
   env, availableModels, deniedModels, availableModelsMatch,
 } = {}) {
-  const entries = allowlist.map(parseAvailableModelEntry)
-    .filter(entry => entry.kind !== 'ignored');
+  const entries = allowlist.map(value => stripOneMSuffix(value.trim().toLowerCase()));
   if (entries.length === 0) return false;
+  const normalized = normalizedPolicyValue(model);
+  if (entries.includes(normalized) &&
+      (!isModelFamilyAlias(normalized) ||
+        !familyHasSpecificEntries(normalized, entries))) return true;
+
+  for (const family of MODEL_FAMILY_ALIASES) {
+    if (entries.includes(family) &&
+        !familyHasSpecificEntries(family, entries) &&
+        containsFamilyBoundary(normalized, family)) return true;
+  }
+
   const canonical = canonicalPolicyModel(
     model, env, availableModels, deniedModels, availableModelsMatch,
-  );
+  ).toLowerCase();
   const version = parseModelVersion(canonical);
-  const normalized = normalizedPolicyValue(model);
-  return entries.some(entry => {
-    if (entry.kind === 'family') {
-      return version?.family === entry.family ||
-        canonical.toLowerCase().includes(entry.family);
-    }
-    if (entry.kind === 'model') return modelVersionMatches(entry.id, version);
-    return normalized === entry.value || canonical.toLowerCase() === entry.value;
-  });
+  const latest = modelIsLatest(canonical, version);
+  for (const entry of entries) {
+    if (isModelFamilyAlias(entry)) continue;
+    const parsed = parseAvailableModelEntry(entry);
+    if (parsed.kind !== 'model' ||
+        !modelVersionMatchesExact(parsed.id, version, latest)) continue;
+    if (prefixMatchesModel(canonical, entry)) return true;
+    if (!entry.startsWith('claude-') &&
+        prefixMatchesModel(canonical, 'claude-' + entry)) return true;
+  }
+  return false;
 }
-function modelVersionMatches(entry, model) {
-  if (!model || entry.family !== model.family || entry.major !== model.major) return false;
-  if (entry.minor !== undefined && (model.minor ?? 0) !== entry.minor) return false;
-  if (entry.trailer === undefined) return true;
-  const trailer = model.trailer ?? '';
-  return trailer === entry.trailer || trailer.startsWith(entry.trailer + '-');
-}
+
 function parseDeniedModelEntry(value) {
   const normalized = stripContextSizeTags(value.trim().toLowerCase());
   if (!normalized) return { kind: 'ignored' };
