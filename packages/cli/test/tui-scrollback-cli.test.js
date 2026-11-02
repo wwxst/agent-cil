@@ -142,6 +142,8 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
       }
 
       if (pageUpStarted && !endSent && screenText.includes('reply-01')) {
+        assert.ok(screenText.includes('End to jump to latest'),
+          'scrolling away must show the original unseen-message jump hint: ' + screenText);
         endSent = true;
         // Stop the recursive PageUp sender before testing End/Home. The
         // terminal may reach the top before all scheduled repeat ticks fire.
@@ -153,12 +155,16 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
       if (endSent && !homeSent &&
           screenText.includes('reply-' + pad(totalTurns)) &&
           !screenText.includes('reply-01') && inputReady) {
+        assert.ok(!screenText.includes('End to jump to latest'),
+          'returning to the live tail must clear the unseen-message hint: ' + screenText);
         homeSent = true;
         child.stdin.write('\x1b[1~');
         return;
       }
 
       if (homeSent && !exitSent && screenText.includes('reply-01')) {
+        assert.ok(screenText.includes('End to jump to latest'),
+          'returning to the top must restore the jump hint: ' + screenText);
         exitSent = true;
         for (const timer of timers) clearTimeout(timer);
         timers.clear();
