@@ -227,7 +227,7 @@ export function resolveModelRequest(modelInput, {
 }
 
 function stripContextSizeTags(value) {
-  return value.replace(/\\[(?:1|2)m\\]/gi, '');
+  return value.replace(/\[(?:1|2)m\]/gi, '');
 }
 function normalizedPolicyValue(value) {
   return stripContextSizeTags(value.trim()).toLowerCase();
@@ -242,25 +242,25 @@ function canonicalPolicyModel(value, env, availableModels, deniedModels) {
 function parseModelVersion(value) {
   if (typeof value !== 'string') return null;
   let normalized = stripContextSizeTags(value.trim().toLowerCase());
-  if (!normalized || /\\s/.test(normalized)) return null;
+  if (!normalized || /\s/.test(normalized)) return null;
   const slash = normalized.lastIndexOf('/');
   if (slash !== -1) normalized = normalized.slice(slash + 1);
-  const provider = /^(?:([a-z-]+)\\.)?anthropic\\.(claude-.*)$/.exec(normalized);
+  const provider = /^(?:([a-z-]+)\.)?anthropic\.(claude-.*)$/.exec(normalized);
   if (provider) normalized = provider[2];
 
-  let match = /^claude-([a-z]+)-(\\d{1,2})(?!\\d)(?:-(\\d{1,2})(?!\\d))?/.exec(normalized);
+  let match = /^claude-([a-z]+)-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))?/.exec(normalized);
   let family, major, minor, base;
   if (match) {
     [, family, major, minor] = match;
     base = match[0];
   } else {
-    match = /^claude-(\\d{1,2})(?!\\d)(?:-(\\d{1,2})(?!\\d))?-([a-z]+)/.exec(normalized);
+    match = /^claude-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))?-([a-z]+)/.exec(normalized);
     if (!match) return null;
     [, major, minor, family] = match;
     base = match[0];
   }
   const trailerText = normalized.slice(base.length);
-  const standardTrailer = /^(?:-fast|-latest)?(?:-v\\d{1,3}@\\d{8}|[-@]\\d{8})?(?:-v\\d{1,3}(?::\\d{1,3})?)?$/;
+  const standardTrailer = /^(?:-fast|-latest)?(?:-v\d{1,3}@\d{8}|[-@]\d{8})?(?:-v\d{1,3}(?::\d{1,3})?)?$/;
   const trailer = standardTrailer.test(trailerText) ? undefined : trailerText;
   return {
     family,
