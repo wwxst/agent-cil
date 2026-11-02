@@ -112,9 +112,10 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
       if (visible.includes('different-command')) {
         sawRenderedToolInput = true;
         pagingForToolInput = false;
+        // Prevent the final render after End from starting another PageUp.
+        sentExit = true;
         child.stdin.write('\x1b[4~'); // Original End binding, return to newest turn.
         pagerTimer = setTimeout(() => {
-          sentExit = true;
           child.stdin.write('/exit\r');
         }, 180);
         return;
