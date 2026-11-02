@@ -5,6 +5,8 @@ import { test } from 'node:test';
 process.env.TSX_TSCONFIG_PATH = fileURLToPath(new URL('../../../tsconfig.json', import.meta.url));
 const { register } = await import('tsx/esm/api');
 register();
+const { register: registerNodeLoader } = await import('node:module');
+registerNodeLoader(new URL('../src/tui/node-loader.js', import.meta.url), import.meta.url);
 
 const [{ applyMarkdown }, component] = await Promise.all([
   import('../../../legacy/2.1.88/restored-src/src/utils/markdown.ts'),
