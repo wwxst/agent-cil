@@ -310,34 +310,34 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     }
 
     // The original 2.1.88 ScrollBox owns transcript history. PageUp/PageDown
-    // scroll only when the prompt is empty; multiline prompt editing keeps its
-    // normal cursor behavior. PageDown restores sticky follow at the bottom.
-    if (valueRef.current.length === 0 && !key.ctrl && !key.meta && !key.shift &&
-        (key.pageUp || key.pageDown || key.home || key.end)) {
+    // and Home/End only take over while the prompt is empty; multiline prompt
+    // editing keeps its normal cursor behavior. 2.1.304 also exposes the
+    // absolute top/bottom bindings as Ctrl+Home/Ctrl+End.
+    const unmodifiedPagerKey = !key.ctrl && !key.meta && !key.shift &&
+      (key.pageUp || key.pageDown || key.home || key.end);
+    const controlBoundaryKey = key.ctrl && !key.meta && !key.shift &&
+      (key.home || key.end);
+    if (valueRef.current.length === 0 && (unmodifiedPagerKey || controlBoundaryKey)) {
       const scroll = scrollRef.current;
       if (scroll) {
         const viewportHeight = scroll.getViewportHeight();
-        const page = Math.max(1, (viewportHeight || terminalRows) - 2);
-        // Match the 2.1.304 ScrollBox pager: Home/End jump to absolute
-        // transcript boundaries, while PageUp/PageDown move by one viewport.
-        // Home/End are only claimed for an empty prompt, so normal multiline
-        // editor cursor navigation remains untouched.
+        const scrollHeight = scroll.getFreshScrollHeight();
+        // Match the 2.1.304 ScrollBox guard: keys must not clear sticky follow
+        // when the transcript currently fits in the viewport.
+        if (scrollHeight <= viewportHeight) return null;
+        const page = Math.max(1, viewportHeight || terminalRows);
+        const effectiveTop = scroll.getScrollTop() + scroll.getPendingDelta();
+        const maxScrollTop = Math.max(0, scrollHeight - viewportHeight);
         if (key.home) {
           scroll.scrollTo(0);
           onScrollAway(scroll);
         } else if (key.end) {
           repinScroll();
         } else if (key.pageUp) {
-          const effectiveTop = scroll.getScrollTop() + scroll.getPendingDelta();
-          // Clamp to the top synchronously so an empty/short transcript does
-          // not break sticky mode or create a false unseen-message indicator.
           if (effectiveTop - page <= 0) scroll.scrollTo(0);
           else scroll.scrollBy(-page);
           onScrollAway(scroll);
-        } else if (
-          scroll.getScrollTop() + scroll.getPendingDelta() + page >=
-          scroll.getScrollHeight() - viewportHeight
-        ) {
+        } else if (effectiveTop + page >= maxScrollTop) {
           repinScroll();
         } else {
           scroll.scrollBy(page);
