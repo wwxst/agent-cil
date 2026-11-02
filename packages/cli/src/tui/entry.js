@@ -9,6 +9,12 @@ export async function startAgentTui({ locale, model, permissionMode, onSubmit, o
     process.env.TSX_TSCONFIG_PATH = fileURLToPath(new URL('../../../../tsconfig.json', import.meta.url));
     const { register } = await import('tsx/esm/api');
     register();
+    // The original 2.1.88 MarkdownTable imports ../ink.js from TSX. TSX's
+    // TypeScript resolver prefers the same-stem ink.ts full Bun barrel over
+    // the Node compatibility ink.js shim, so register a narrow parent-aware
+    // resolver after TSX and preserve the original root.ts -> ink.ts edge.
+    const { register: registerNodeLoader } = await import('node:module');
+    registerNodeLoader(new URL('./node-loader.js', import.meta.url), import.meta.url);
     tsxRegistered = true;
   }
   const ReactModule = await import('react');
