@@ -8,7 +8,8 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
   MODEL_ALIASES,isModelAlias,parseUserSpecifiedModel,
-  getRuntimeMainLoopModel,resolveOriginalCliModel,
+  getRuntimeMainLoopModel,resolveOriginalCliModel,getDefaultFableModel,
+  getModelContextWindow,getModelMaxOutputTokens,isModelAllowed,resolveModelRequest,
 } from '../../runtime/src/legacy-original/model-aliases.js';
 
 const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -28,18 +29,20 @@ function finalStream(){
 }
 test('pinned 2.1.88 parseUserSpecifiedModel retains original alias families, custom casing and mode adjustments',()=>{
   assert.deepEqual(MODEL_ALIASES,[
-    'sonnet','opus','haiku','best','sonnet[1m]','opus[1m]','opusplan',
+    'sonnet','opus','haiku','fable','best','sonnet[1m]','opus[1m]','opusplan',
   ]);
   assert.equal(isModelAlias('sonnet'),true);
   assert.equal(isModelAlias('Sonnet'),false);
+  assert.equal(isModelAlias('fable'),true);
   const env={};
   for(const [input,model] of [
-    ['sonnet','claude-sonnet-4-6'],
-    [' SONNET ','claude-sonnet-4-6'],
-    ['opus','claude-opus-4-6'],
-    ['haiku','claude-haiku-4-5-20251001'],
-    ['best','claude-opus-4-6'],
-    ['opusplan','claude-sonnet-4-6'],
+    ['sonnet','claude-sonnet-5-5'],
+    [' SONNET ','claude-sonnet-5-5'],
+    ['opus','claude-opus-5-5'],
+    ['haiku','claude-haiku-5-5'],
+    ['best','claude-fable-5-1'],
+    ['fable','claude-fable-5-1'],
+    ['opusplan','claude-sonnet-5-5'],
     ['  My-Custom-Gateway-Deployment ','My-Custom-Gateway-Deployment'],
   ]){
     assert.equal(parseUserSpecifiedModel(input,{env}),model,input);
@@ -48,9 +51,11 @@ test('pinned 2.1.88 parseUserSpecifiedModel retains original alias families, cus
     ANTHROPIC_DEFAULT_SONNET_MODEL:'sonnet-local-id',
     ANTHROPIC_DEFAULT_OPUS_MODEL:'opus-local-id',
     ANTHROPIC_DEFAULT_HAIKU_MODEL:'haiku-local-id',
+    ANTHROPIC_DEFAULT_FABLE_MODEL:'fable-local-id',
   };
   assert.equal(parseUserSpecifiedModel('sonnet',{env:overrideEnv}),'sonnet-local-id');
-  assert.equal(parseUserSpecifiedModel('best',{env:overrideEnv}),'opus-local-id');
+  assert.equal(parseUserSpecifiedModel('best',{env:overrideEnv}),'fable-local-id');
+  assert.equal(getDefaultFableModel(overrideEnv),'fable-local-id');
   assert.equal(resolveOriginalCliModel({
     provider:'anthropic',model:'opusplan',permissionMode:'plan',env:overrideEnv,
   }),'opus-local-id');
@@ -67,9 +72,43 @@ test('pinned 2.1.88 parseUserSpecifiedModel retains original alias families, cus
   assert.equal(resolveOriginalCliModel({
     provider:'openai',model:'Opus',env:overrideEnv,
   }),'Opus','Never rewrite an OpenAI model ID.');
-  for(const input of ['sonnet[1m]','opus[1M]','claude-sonnet-4-6[1m]']) {
-    assert.throws(()=>parseUserSpecifiedModel(input,{env}),/\[1m\].*context-window beta/);
-  }
+  assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env}),'claude-sonnet-5-5[1m]');
+  assert.equal(parseUserSpecifiedModel('claude-sonnet-4-6[1m]',{env}),'claude-sonnet-4-6[1m]');
+  assert.deepEqual(resolveModelRequest('claude-sonnet-5-5[1m]'),{
+    model:'claude-sonnet-5-5',betaHeaders:[],
+  },'native 1M models do not send the context beta');
+  assert.deepEqual(resolveModelRequest('claude-sonnet-4-6[1m]'),{
+    model:'claude-sonnet-4-6',betaHeaders:['context-1m-2025-08-07'],
+  });
+  assert.throws(()=>resolveModelRequest('claude-haiku-4-5[1m]'),/does not support the 1M context beta/);
+  assert.throws(()=>resolveModelRequest('claude-sonnet-5-5[1m]',{
+    env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
+  }),/1M context is disabled/);
+  assert.throws(()=>resolveModelRequest('claude-sonnet-5-5[1m]',{
+    provider:'deepseek',
+  }),/only by the Anthropic provider/);
+  assert.equal(getModelContextWindow('claude-sonnet-5-5'),1_000_000);
+  assert.equal(getModelContextWindow('claude-sonnet-4-6'),200_000);
+  assert.equal(getModelContextWindow('claude-sonnet-4-6[1m]'),1_000_000);
+  assert.deepEqual(getModelMaxOutputTokens('claude-sonnet-5-5'),{
+    default:128_000,upperLimit:128_000,
+  });
+  assert.equal(isModelAllowed('claude-opus-5-5',{availableModels:['opus']}),true);
+  assert.equal(isModelAllowed('claude-opus-4-6',{
+    availableModels:['opus','opus-5-5'],
+  }),false,'a version-qualified entry narrows the family wildcard');
+  assert.equal(isModelAllowed('claude-opus-5-5',{
+    availableModels:['opus','opus-5-5'],
+  }),true);
+  assert.equal(isModelAllowed('claude-sonnet-5-5',{availableModels:[]}),false);
+  assert.equal(isModelAllowed('claude-sonnet-5-5',{deniedModels:['sonnet']}),false);
+  assert.equal(resolveOriginalCliModel({
+    provider:'anthropic',model:'opus',availableModels:['sonnet'],env,
+  }),'claude-sonnet-5-5','a disallowed saved selection falls back to the permitted default');
+  assert.equal(getRuntimeMainLoopModel({
+    permissionMode:'plan',mainLoopModel:'claude-sonnet-5-5',
+    userSpecifiedModel:'opusplan',availableModels:['sonnet'],env,
+  }),'claude-sonnet-5-5','plan-mode upgrades cannot escape the allowlist');
   assert.throws(()=>parseUserSpecifiedModel('   ',{env}),/cannot be empty/);
 });
 
@@ -106,7 +145,7 @@ test('fresh packed actual CLI sends source-resolved alias/model to the live Mess
   const requests=[];
   const server=createServer(async(req,res)=>{
     const chunks=[];for await(const piece of req)chunks.push(piece);
-    requests.push({path:req.url,body:JSON.parse(Buffer.concat(chunks).toString('utf8'))});
+    requests.push({path:req.url,headers:req.headers,body:JSON.parse(Buffer.concat(chunks).toString('utf8'))});
     res.writeHead(200,{'content-type':'text/event-stream'});
     res.end(finalStream());
   });
@@ -116,14 +155,14 @@ test('fresh packed actual CLI sends source-resolved alias/model to the live Mess
     });
     const base='http://127.0.0.1:'+server.address().port;
     const cases=[
-      {args:['--model','sonnet'],env:{},expected:'claude-sonnet-4-6'},
+      {args:['--model','sonnet'],env:{},expected:'claude-sonnet-5-5'},
       {args:['--model','OPUSPLAN','--permission-mode','plan'],
-        env:{},expected:'claude-opus-4-6'},
+        env:{},expected:'claude-opus-5-5'},
       {args:['--model','haiku','--permission-mode','plan'],
-        env:{},expected:'claude-sonnet-4-6'},
+        env:{},expected:'claude-sonnet-5-5'},
       {args:['--model','best'],
-        env:{ANTHROPIC_DEFAULT_OPUS_MODEL:'custom-opus-gateway'},
-        expected:'custom-opus-gateway'},
+        env:{ANTHROPIC_DEFAULT_FABLE_MODEL:'custom-fable-gateway'},
+        expected:'custom-fable-gateway'},
       {args:[],env:{ANTHROPIC_MODEL:'sonnet',
         ANTHROPIC_DEFAULT_SONNET_MODEL:'overridden-sonnet'},
         expected:'overridden-sonnet'},
@@ -143,14 +182,30 @@ test('fresh packed actual CLI sends source-resolved alias/model to the live Mess
         JSON.stringify(c));
       assert.equal(requests[before].path,'/v1/messages');
     }
+    const nativeOneM=await runCli([
+      '--base-url',base,'--model','sonnet[1m]',
+    ],{},root);
+    assert.equal(nativeOneM.code,0,nativeOneM.output);
+    assert.equal(requests.at(-1).body.model,'claude-sonnet-5-5');
+    assert.equal(requests.at(-1).headers['anthropic-beta'],undefined,
+      'native 1M model must not request the beta');
+
+    const betaOneM=await runCli([
+      '--base-url',base,'--model','claude-sonnet-4-6[1m]',
+    ],{},root);
+    assert.equal(betaOneM.code,0,betaOneM.output);
+    assert.equal(requests.at(-1).body.model,'claude-sonnet-4-6');
+    assert.match(requests.at(-1).headers['anthropic-beta']??'',
+      /context-1m-2025-08-07/);
+
     const count=requests.length;
-    for(const rejected of ['sonnet[1m]','opus[1m]']){
-      const result=await runCli(['--base-url',base,'--model',rejected],{},root);
-      assert.equal(result.code,2,result.output);
-      assert.match(result.output,/Model configuration failed:.*\[1m\]/);
-      assert.equal(requests.length,count,
-        'unsupported 1m context must fail before network or journal');
-    }
+    const rejected=await runCli([
+      '--base-url',base,'--model','claude-haiku-4-5[1m]',
+    ],{},root);
+    assert.equal(rejected.code,2,rejected.output);
+    assert.match(rejected.output,/Model configuration failed:.*1M context beta/);
+    assert.equal(requests.length,count,
+      'unsupported 1M model must fail before network or journal');
   }finally{
     server.closeAllConnections?.();
     if(server.listening)await new Promise(resolve=>server.close(resolve));
