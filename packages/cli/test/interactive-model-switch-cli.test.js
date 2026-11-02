@@ -146,7 +146,7 @@ test('real interactive CLI /model changes next streamed request without losing o
       'claude-haiku-5-5','claude-opus-5-5',
       'claude-sonnet-5-5','claude-sonnet-5-5',
     ],'explicit Default must survive --resume over --model and ANTHROPIC_MODEL');
-    assert.doesNotMatch(JSON.stringify(requests[3].messages),/\\/model default/,
+    assert.doesNotMatch(JSON.stringify(requests[3].messages),/\/model default/,
       'Default metadata must not become a model-visible message');
     const beforeProviderSwitch=requests.length;
     const denied=await runResumed(['Do not send to another provider'],'deepseek');
