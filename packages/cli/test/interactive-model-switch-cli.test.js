@@ -120,7 +120,6 @@ test('real interactive CLI /model changes next streamed request without losing o
     if(closed)await closed.catch(()=>{});
     server.closeAllConnections?.();
     if(server.listening)await new Promise(resolve=>server.close(resolve));
-    await chmod(configDirectory,0o700).catch(()=>{});
     await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
   }
 });
@@ -199,6 +198,7 @@ test('real TTY /model rolls back the session checkpoint when persisted settings 
     if(closed)await closed.catch(()=>{});
     server.closeAllConnections?.();
     if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await chmod(configDirectory,0o700).catch(()=>{});
     await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
   }
 });
