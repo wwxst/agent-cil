@@ -179,7 +179,22 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
       }
     });
     child.stderr.on('data', chunk => { stderr += chunk; });
-    watchdog = setTimeout(() => child.kill('SIGKILL'), 30000);
+    watchdog = setTimeout(() => {
+      const normalizedAfterPageUp = normalizeTuiText(output.slice(outputAtPageUp));
+      process.stderr.write('[tui-scrollback-debug] ' + JSON.stringify({
+        sentPrompts,
+        pageUpStarted,
+        pageUpCount,
+        endSent,
+        homeSent,
+        exitSent,
+        afterPageUpHasOldest: normalizedAfterPageUp.includes('reply-01'),
+        afterPageUpHasHint: normalizedAfterPageUp.includes('End to jump to latest'),
+        afterEndHasLatest: normalizeTuiText(output.slice(outputAtEnd)).includes('reply-' + pad(totalTurns)),
+        screen: terminalScreen.toString(),
+      }) + '\\n');
+      child.kill('SIGKILL');
+    }, 10000);
 
     const [status, signal] = await new Promise((resolve, reject) => {
       child.once('error', reject);
