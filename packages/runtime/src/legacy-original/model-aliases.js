@@ -21,6 +21,12 @@ export const MODEL_ALIASES = Object.freeze([
 export const MODEL_FAMILY_ALIASES = Object.freeze([
   'sonnet', 'opus', 'haiku', 'fable',
 ]);
+const LEGACY_OPUS_MODEL_IDS = new Set([
+  'claude-opus-4-20250514',
+  'claude-opus-4-1-20250805',
+  'claude-opus-4-0',
+  'claude-opus-4-1',
+]);
 
 export function isModelAlias(modelInput) {
   return MODEL_ALIASES.includes(modelInput);
@@ -132,6 +138,19 @@ export function parseUserSpecifiedModel(modelInput, {
   const oneMEnabled = withOneM && !is1mContextDisabled(env);
   const withoutOneM = stripOneMSuffix(value);
   const alias = withoutOneM.toLowerCase();
+  // 2.1.304's Mt remaps the four legacy Opus spellings to the current Opus
+  // default for first-party/AWS/Google/Gateway providers unless explicitly
+  // disabled. Preserve the [1m] selection attribute when it is active.
+  const supportsLegacyRemap = ['firstParty', 'anthropicAws',
+    'anthropicGoogleCloud', 'gateway'].includes(apiProvider);
+  if ((!withOneM || oneMEnabled) && supportsLegacyRemap &&
+      !envTruthy(env.CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP) &&
+      LEGACY_OPUS_MODEL_IDS.has(alias)) {
+    const opus = getDefaultOpusModel(env, {
+      apiProvider, availableModels, deniedModels, availableModelsMatch,
+    });
+    return oneMEnabled ? stripOneMSuffix(opus) + '[1m]' : opus;
+  }
   const resolved = resolveAlias(alias, {
     env, apiProvider, availableModels, deniedModels, availableModelsMatch,
   });
