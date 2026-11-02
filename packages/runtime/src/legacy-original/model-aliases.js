@@ -230,7 +230,8 @@ function normalizedPolicyValue(value) {
   return stripOneMSuffix(value.trim()).toLowerCase();
 }
 function canonicalPolicyModel(value, env, availableModels, deniedModels) {
-  const parsed = isModelAlias(value) || isModelAlias(stripOneMSuffix(value))
+  const normalized = normalizedPolicyValue(value);
+  const parsed = isModelAlias(normalized) || isModelAlias(stripOneMSuffix(normalized))
     ? parseUserSpecifiedModel(value, { env, availableModels, deniedModels })
     : value;
   return getCanonicalModelName(parsed);
