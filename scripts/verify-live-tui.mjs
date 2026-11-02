@@ -164,6 +164,14 @@ async function main() {
     const afterEdit = await readFile(source, 'utf8');
     assert.equal(afterEdit, expected,
       'the live TUI model did not complete the required Read -> Edit -> Read task');
+    const firstTurnTranscript = normalizeOutput(output);
+    const firstTurnReads = firstTurnTranscript.match(/Read · completed/g) || [];
+    assert.ok(firstTurnReads.length >= 2,
+      'the first live TUI turn must complete two Read tool calls');
+    assert.match(firstTurnTranscript, /Edit · completed/,
+      'the first live TUI turn must complete an Edit tool call');
+    assert.doesNotMatch(firstTurnTranscript, /Bash ·/,
+      'the first live TUI turn must not invoke Bash');
     process.stdout.write('PASS: real Ink TUI completed Read -> Edit -> Read and verified workspace content.\n');
 
     const secondPromptStart = output.length;
@@ -188,13 +196,8 @@ async function main() {
     );
 
     const normalized = normalizeOutput(output);
-    const completedReads = normalized.match(/Read · completed/g) || [];
-    assert.ok(completedReads.length >= 2,
-      'the live TUI must show both original Read tool completions');
-    assert.match(normalized, /Edit · completed/,
-      'the live TUI must show the original Edit tool completion');
     assert.doesNotMatch(normalized, /Bash ·/,
-      'the coding acceptance task must not execute or request Bash');
+      'the live TUI acceptance must not execute or request Bash');
     assert.doesNotMatch(output,
       /Could not start the original Ink TUI|falling back to the readline interface/);
     terminal.write('/exit\r');
