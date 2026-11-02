@@ -1,8 +1,8 @@
-// Keep the original 2.1.88 MarkdownTable component intact while routing
-// its Ink barrel edge to the Node-compatible adapter. The original Ink root
-// intentionally continues to resolve ../ink.js to ink.ts (the full renderer);
-// only MarkdownTable needs the lightweight barrel because it is embedded in
-// the agent-cil TUI rather than the original REPL.
+// Keep the original 2.1.88 MarkdownTable component intact while routing its
+// ../ink.js edge to the Node-compatible adapter. From src/components, TSX's
+// TypeScript resolver prefers the same-stem src/ink.ts design-system barrel,
+// which imports Bun-only ThemeProvider. The full Ink renderer is separate at
+// src/ink/ink.tsx and remains untouched.
 const markdownTableUrl = new URL(
   '../../../../legacy/2.1.88/restored-src/src/components/MarkdownTable.tsx',
   import.meta.url,
