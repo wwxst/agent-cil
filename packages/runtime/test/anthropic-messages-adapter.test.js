@@ -528,3 +528,70 @@ test('connection-retry delay preserves the caller-provided abort reason', async 
   controller.abort(reason);
   await assert.rejects(running, error => error === reason);
 });
+
+
+test('2.1.304 catalog controls default output limits and 1M request headers across session model switches',async()=>{
+  const requests=[];
+  const adapter=new AnthropicMessagesAdapter({
+    apiKey:'catalog-fixture-key',
+    model:'claude-sonnet-5-5',
+    maxRetries:0,
+    fetchImpl:async(_url,options)=>{
+      requests.push({headers:options.headers,body:JSON.parse(options.body)});
+      return {ok:true,status:200,body:makeSseBody(successfulStream())};
+    },
+  });
+  const run=async()=>{
+    for await(const event of adapter.stream({
+      messages:[{role:'user',content:'catalog-backed model request'}],
+    })) void event;
+  };
+
+  await run();
+  assert.equal(requests[0].body.model,'claude-sonnet-5-5');
+  assert.equal(requests[0].body.max_tokens,128000,
+    'Sonnet 5.5 uses the 2.1.304 catalog default output limit');
+
+  adapter.setModel('claude-haiku-4-5-20251001');
+  await run();
+  assert.equal(requests[1].body.model,'claude-haiku-4-5-20251001');
+  assert.equal(requests[1].body.max_tokens,32000,
+    'automatic output limit follows the active model');
+
+  adapter.setModel('claude-sonnet-4-6[1m]');
+  await run();
+  assert.equal(requests[2].body.model,'claude-sonnet-4-6');
+  assert.equal(requests[2].headers.get('anthropic-beta'),'context-1m-2025-08-07');
+  assert.equal(requests[2].body.max_tokens,32000);
+
+  adapter.setModel('claude-haiku-4-5-20251001[1m]');
+  await run();
+  assert.equal(requests[3].body.model,'claude-haiku-4-5-20251001');
+  assert.equal(requests[3].headers.get('anthropic-beta'),null,
+    'supports_1m_suffix does not imply a 1M beta header');
+  assert.equal(requests[3].body.max_tokens,32000);
+
+  const pinned=[];
+  const explicitLimit=new AnthropicMessagesAdapter({
+    apiKey:'catalog-fixture-key',
+    model:'claude-sonnet-5-5',
+    maxTokens:100000,
+    maxRetries:0,
+    fetchImpl:async(_url,options)=>{
+      pinned.push(JSON.parse(options.body));
+      return {ok:true,status:200,body:makeSseBody(successfulStream())};
+    },
+  });
+  const runExplicit=async()=>{
+    for await(const event of explicitLimit.stream({
+      messages:[{role:'user',content:'explicit output limit'}],
+    })) void event;
+  };
+  await runExplicit();
+  explicitLimit.setModel('claude-haiku-4-5-20251001');
+  await runExplicit();
+  explicitLimit.setModel('claude-sonnet-5-5');
+  await runExplicit();
+  assert.deepEqual(pinned.map(body=>body.max_tokens),[100000,64000,100000],
+    'the explicit output override is capped per active model and restored when switching back');
+});

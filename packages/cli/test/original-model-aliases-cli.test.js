@@ -8,7 +8,10 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
   MODEL_ALIASES,isModelAlias,parseUserSpecifiedModel,
-  getRuntimeMainLoopModel,resolveOriginalCliModel,
+  getRuntimeMainLoopModel,resolveOriginalCliModel,getDefaultFableModel,
+  getModelContextWindow,getModelMaxOutputTokens,isModelAllowed,resolveModelRequest,
+  getModelMetadata,isModelFamilyAlias,modelSupports1M,
+  getDefaultSonnetModel,getDefaultOpusModel,getDefaultHaikuModel,
 } from '../../runtime/src/legacy-original/model-aliases.js';
 
 const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -26,20 +29,24 @@ function finalStream(){
     frame('message_delta',{delta:{stop_reason:'end_turn'},usage:{output_tokens:6}})+
     frame('message_stop');
 }
-test('pinned 2.1.88 parseUserSpecifiedModel retains original alias families, custom casing and mode adjustments',()=>{
+test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan adjustments',()=>{
   assert.deepEqual(MODEL_ALIASES,[
-    'sonnet','opus','haiku','best','sonnet[1m]','opus[1m]','opusplan',
+    'sonnet','opus','haiku','fable','best','sonnet[1m]','opus[1m]','fable[1m]','opusplan',
   ]);
   assert.equal(isModelAlias('sonnet'),true);
   assert.equal(isModelAlias('Sonnet'),false);
+  assert.equal(isModelAlias('fable'),true);
+  assert.equal(isModelAlias('fable[1m]'),true);
+  assert.equal(isModelFamilyAlias('fable'),true);
   const env={};
   for(const [input,model] of [
-    ['sonnet','claude-sonnet-4-6'],
-    [' SONNET ','claude-sonnet-4-6'],
-    ['opus','claude-opus-4-6'],
-    ['haiku','claude-haiku-4-5-20251001'],
-    ['best','claude-opus-4-6'],
-    ['opusplan','claude-sonnet-4-6'],
+    ['sonnet','claude-sonnet-5-5'],
+    [' SONNET ','claude-sonnet-5-5'],
+    ['opus','claude-opus-5-5'],
+    ['haiku','claude-haiku-5-5'],
+    ['best','claude-fable-5-1'],
+    ['fable','claude-fable-5-1'],
+    ['opusplan','claude-sonnet-5-5'],
     ['  My-Custom-Gateway-Deployment ','My-Custom-Gateway-Deployment'],
   ]){
     assert.equal(parseUserSpecifiedModel(input,{env}),model,input);
@@ -48,9 +55,50 @@ test('pinned 2.1.88 parseUserSpecifiedModel retains original alias families, cus
     ANTHROPIC_DEFAULT_SONNET_MODEL:'sonnet-local-id',
     ANTHROPIC_DEFAULT_OPUS_MODEL:'opus-local-id',
     ANTHROPIC_DEFAULT_HAIKU_MODEL:'haiku-local-id',
+    ANTHROPIC_DEFAULT_FABLE_MODEL:'fable-local-id',
   };
   assert.equal(parseUserSpecifiedModel('sonnet',{env:overrideEnv}),'sonnet-local-id');
-  assert.equal(parseUserSpecifiedModel('best',{env:overrideEnv}),'opus-local-id');
+  assert.equal(parseUserSpecifiedModel('best',{env:overrideEnv}),'fable-local-id');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514',{env}),
+    'claude-opus-5-5','2.1.304 remaps legacy first-party Opus IDs to the current default');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-1-20250805',{env}),
+    'claude-opus-5-5','the dated Opus 4.1 ID follows the same legacy remap');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514[1m]',{env}),
+    'claude-opus-5-5[1m]','legacy Opus remapping preserves an explicit 1M selection');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514',{env:overrideEnv}),
+    'opus-local-id','legacy remapping respects ANTHROPIC_DEFAULT_OPUS_MODEL');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514',{
+    env:{CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP:'1'},
+  }),'claude-opus-4-20250514','the legacy remap opt-out preserves the requested model ID');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514',{
+    env,apiProvider:'bedrock',
+  }),'claude-opus-4-20250514','legacy remapping is limited to the source provider families');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514',{
+    env,apiProvider:'gateway',
+  }),'claude-opus-4-7','the gateway provider uses its own current Opus default');
+  assert.equal(getDefaultFableModel(overrideEnv),'fable-local-id');
+  assert.equal(getDefaultSonnetModel({}, {apiProvider:'bedrock'}),'claude-sonnet-4-5');
+  assert.equal(getDefaultOpusModel({}, {apiProvider:'gateway'}),'claude-opus-4-7');
+  assert.equal(getDefaultHaikuModel({}, {apiProvider:'anthropicGoogleCloud'}),'claude-haiku-4-5');
+  assert.equal(getDefaultFableModel({}, {apiProvider:'gateway'}),'claude-fable-5');
+  assert.equal(resolveOriginalCliModel({
+    provider:'anthropic',model:'sonnet',apiProvider:'bedrock',
+  }),'claude-sonnet-4-5',
+  'an explicitly selected Bedrock model family uses its provider-specific default');
+  assert.equal(resolveOriginalCliModel({
+    provider:'anthropic',model:'opus',apiProvider:'gateway',
+  }),'claude-opus-4-7',
+  'an explicitly selected gateway model family uses its provider-specific default');
+  assert.equal(parseUserSpecifiedModel('best',{env,availableModels:['opus']}),
+    'claude-opus-5-5',
+    'best falls back to Opus when Fable is excluded by the model allowlist');
+  assert.equal(parseUserSpecifiedModel('best',{env,deniedModels:['fable']}),
+    'claude-opus-5-5',
+    'best falls back to Opus when Fable is explicitly denied');
+  assert.equal(isModelAllowed('best',{availableModels:['best']}),true,
+    'the best alias can appear in an allowlist without recursive resolution');
+  assert.equal(isModelAllowed('claude-fable-5-1',{availableModels:['best']}),true,
+    'the best alias resolves to the selected Fable catalog model');
   assert.equal(resolveOriginalCliModel({
     provider:'anthropic',model:'opusplan',permissionMode:'plan',env:overrideEnv,
   }),'opus-local-id');
@@ -67,9 +115,146 @@ test('pinned 2.1.88 parseUserSpecifiedModel retains original alias families, cus
   assert.equal(resolveOriginalCliModel({
     provider:'openai',model:'Opus',env:overrideEnv,
   }),'Opus','Never rewrite an OpenAI model ID.');
-  for(const input of ['sonnet[1m]','opus[1M]','claude-sonnet-4-6[1m]']) {
-    assert.throws(()=>parseUserSpecifiedModel(input,{env}),/\[1m\].*context-window beta/);
-  }
+  assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env}),'claude-sonnet-5-5[1m]',
+    '2.1.304 retains the explicit 1M attribute for family aliases');
+  assert.equal(parseUserSpecifiedModel('sonnet[1m]',{
+    env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
+  }),'sonnet[1m]',
+  '2.1.304 does not strip the suffix before alias recognition when 1M is disabled');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514[1m]',{
+    env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
+  }),'claude-opus-4-20250514[1m]',
+  'disabled 1M also prevents the legacy Opus remap from treating a suffixed ID as bare');
+  assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env:overrideEnv}),'sonnet-local-id[1m]',
+    'non-native custom defaults retain the explicit 1M opt-in');
+  assert.equal(resolveOriginalCliModel({
+    provider:'anthropic',model:'opusplan[1m]',permissionMode:'plan',env:overrideEnv,
+  }),'opus-local-id[1m]',
+  'opusplan[1m] upgrades to the Opus family and preserves beta opt-in for custom models');
+  assert.equal(parseUserSpecifiedModel('claude-sonnet-4-6[1m]',{env}),'claude-sonnet-4-6[1m]');
+  assert.equal(parseUserSpecifiedModel('claude-sonnet-5-5[1m]',{env}),'claude-sonnet-5-5[1m]',
+    'native Sonnet 1M selection retains its internal suffix on first-party URLs');
+  assert.equal(parseUserSpecifiedModel('claude-mythos-5-1[1m]',{env}),'claude-mythos-5-1[1m]',
+    'native Mythos 1M selection retains its internal suffix on first-party URLs');
+  assert.equal(parseUserSpecifiedModel('claude-fable-5-1[1m]',{env}),'claude-fable-5-1',
+    'native Fable is the 2.1.304 first-party exception that drops the suffix');
+  assert.equal(parseUserSpecifiedModel('claude-sonnet-5-5[1m]',{
+    env,firstPartyBaseUrl:false,
+  }),'claude-sonnet-5-5[1m]',
+  'custom API base URLs retain explicit 1M model attributes');
+  assert.equal(parseUserSpecifiedModel('fable[1m]',{env}),'claude-fable-5-1');
+  assert.equal(parseUserSpecifiedModel('fable[1m]',{
+    env,firstPartyBaseUrl:false,
+  }),'claude-fable-5-1[1m]');
+  assert.deepEqual(resolveModelRequest('claude-sonnet-5-5[1m]'),{
+    model:'claude-sonnet-5-5',betaHeaders:[],
+  },'native 1M models do not send the context beta');
+  assert.deepEqual(resolveModelRequest('claude-sonnet-4-6[1m]'),{
+    model:'claude-sonnet-4-6',betaHeaders:['context-1m-2025-08-07'],
+  });
+  assert.deepEqual(resolveModelRequest('claude-haiku-4-5[1m]'),{
+    model:'claude-haiku-4-5',betaHeaders:[],
+  },'the canonical catalog ID remains the API model ID when no provider-specific ID was selected');
+  assert.throws(()=>resolveModelRequest('claude-3-7-sonnet[1m]'),
+    /does not support 1M context/,
+    'a catalog model with neither suffix nor beta support rejects 1M');
+  assert.deepEqual(resolveModelRequest('claude-sonnet-5-5[1m]',{
+    env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
+  }),{model:'claude-sonnet-5-5',betaHeaders:[]},
+  'the disable flag suppresses 1M negotiation instead of rejecting the model setting');
+  assert.throws(()=>resolveModelRequest('claude-sonnet-5-5[1m]',{
+    provider:'deepseek',
+  }),/only by the Anthropic provider/);
+  assert.equal(getModelContextWindow('claude-sonnet-5-5'),1_000_000);
+  assert.equal(getModelContextWindow('claude-sonnet-4-6'),200_000);
+  assert.equal(getModelContextWindow('claude-sonnet-4-6[1m]'),1_000_000);
+  assert.equal(getModelContextWindow('claude-sonnet-5-5[1m]',{
+    env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
+  }),200_000);
+  assert.equal(modelSupports1M('claude-haiku-4-5-20251001'),true);
+  assert.equal(getModelMetadata('us.anthropic.claude-sonnet-4-6').id,
+    'claude-sonnet-4-6','all provider IDs map back to the baked catalog row');
+  assert.deepEqual(getModelMaxOutputTokens('claude-sonnet-5-5'),{
+    default:128_000,upperLimit:128_000,
+  });
+  assert.equal(isModelAllowed('claude-opus-5-5',{availableModels:['opus']}),true);
+  assert.equal(isModelAllowed('claude-opus-5-5[1m]',{
+    availableModels:['opus[1m]'],
+  }),true,'availableModels strips one trailing 1M marker before family matching');
+  assert.equal(isModelAllowed('mysonnet-custom',{availableModels:['sonnet']}),false,
+    '2.1.304 family matching requires an alphanumeric segment boundary');
+  assert.equal(isModelAllowed('my-sonnet-custom',{availableModels:['sonnet']}),true,
+    '2.1.304 family matching accepts a family after a punctuation boundary');
+  assert.equal(isModelAllowed('claude-opus-4-6',{
+    availableModels:['opus','opus-5-5'],
+  }),false,'a version-qualified entry narrows the family wildcard');
+  assert.equal(isModelAllowed('claude-opus-5-5',{
+    availableModels:['opus','opus-5-5'],
+  }),true);
+  assert.equal(isModelAllowed('claude-opus-5-5',{
+    availableModels:['opus-5-5'],availableModelsMatch:'exact',
+  }),true,'exact mode accepts the same model version across dated provider spellings');
+  assert.equal(isModelAllowed('claude-opus-4-6',{
+    availableModels:['opus-5-5'],availableModelsMatch:'exact',
+  }),false,'exact mode does not widen a version entry to its family');
+  assert.equal(isModelAllowed('claude-opus-4-6',{
+    availableModels:['opus'],availableModelsMatch:'exact',
+  }),true,'family aliases remain explicit wildcards in exact mode');
+  assert.equal(isModelAllowed('my-custom-model-v2',{
+    availableModels:['my-custom-model'],availableModelsMatch:'exact',
+  }),false,'exact mode does not turn literal custom IDs into prefixes');
+  assert.equal(isModelAllowed('us.anthropic.claude-opus-5-5',{
+    availableModels:['opus-5-5'],availableModelsMatch:'exact',
+  }),true,'exact mode parses supported provider-qualified Anthropic IDs');
+  assert.equal(isModelAllowed('xx.anthropic.claude-opus-5-5',{
+    availableModels:['opus-5-5'],availableModelsMatch:'exact',
+  }),false,'exact mode rejects unrecognized provider regions');
+  assert.equal(isModelAllowed('claude-sonnet-5-5',{availableModels:[]}),false);
+  assert.equal(isModelAllowed('claude-sonnet-5-5',{deniedModels:['sonnet']}),false);
+  assert.equal(isModelAllowed('claude-opus-5-5',{deniedModels:['opus-5-5']}),false);
+  assert.equal(isModelAllowed('claude-opus-4-6',{deniedModels:['opus-5-5']}),true,
+    'a versioned deniedModels entry blocks only that major/minor family version');
+  assert.equal(isModelAllowed('claude-mysonnet-custom',{deniedModels:['sonnet']}),true,
+    'denied family matching observes alphanumeric segment boundaries');
+  assert.equal(isModelAllowed('us.anthropic.claude-opus-5-5',{
+    deniedModels:['opus-5-5'],
+  }),false,'denied model matching parses provider-qualified Anthropic IDs');
+  assert.equal(isModelAllowed('claude-opus-5-5[1m]',{
+    deniedModels:['opus-5-5[2m]'],
+  }),false,'deniedModels ignores context-size tags on both the entry and model');
+  assert.equal(isModelAllowed('opus',{deniedModels:['claude-opus-5-5']}),true,
+    'denied model matching does not independently resolve dynamic aliases');
+  assert.equal(isModelAllowed('my-custom',{deniedModels:['my-custom']}),false,
+    'unknown denied model entries are exact literals');
+  assert.equal(isModelAllowed('my-custom-model',{deniedModels:['my-custom']}),true,
+    'unknown denied literals do not become accidental prefix rules');
+  assert.equal(isModelAllowed('claude-fable-5-1',{deniedModels:['best']}),true,
+    'dynamic aliases are ignored in deniedModels, as in 2.1.304');
+  assert.equal(isModelAllowed('claude-opus-5-5',{deniedModels:['default']}),true,
+    'the default alias is ignored in deniedModels');
+  assert.equal(resolveOriginalCliModel({
+    provider:'anthropic',model:'opus',availableModels:['sonnet'],env,
+  }),'claude-sonnet-5-5','a disallowed saved selection falls back to the permitted default');
+  assert.equal(resolveOriginalCliModel({
+    provider:'anthropic',model:'sonnet',availableModels:['opus-4-6'],env,
+  }),'claude-opus-4-6',
+  'a version-only allowlist entry resolves to its canonical first-party model ID');
+  assert.equal(getRuntimeMainLoopModel({
+    permissionMode:'plan',mainLoopModel:'claude-sonnet-5-5',
+    userSpecifiedModel:'opusplan',availableModels:['sonnet'],env,
+  }),'claude-sonnet-5-5','plan-mode upgrades cannot escape the allowlist');
+  assert.equal(getRuntimeMainLoopModel({
+    permissionMode:'plan',mainLoopModel:'claude-sonnet-5-5',
+    userSpecifiedModel:'opusplan',
+    availableModels:['sonnet','opus-4-6'],env,
+  }),'claude-opus-4-6',
+  'plan mode steps down to the newest permitted model in the requested family');
+  assert.equal(getRuntimeMainLoopModel({
+    permissionMode:'plan',mainLoopModel:'claude-sonnet-5-5[1m]',
+    userSpecifiedModel:'opusplan[1m]',
+    availableModels:['sonnet','opus-4-6'],env,
+  }),'claude-opus-4-6[1m]',
+  '1M plan upgrades preserve the suffix when stepping down to a suffix-capable model');
   assert.throws(()=>parseUserSpecifiedModel('   ',{env}),/cannot be empty/);
 });
 
@@ -106,7 +291,7 @@ test('fresh packed actual CLI sends source-resolved alias/model to the live Mess
   const requests=[];
   const server=createServer(async(req,res)=>{
     const chunks=[];for await(const piece of req)chunks.push(piece);
-    requests.push({path:req.url,body:JSON.parse(Buffer.concat(chunks).toString('utf8'))});
+    requests.push({path:req.url,headers:req.headers,body:JSON.parse(Buffer.concat(chunks).toString('utf8'))});
     res.writeHead(200,{'content-type':'text/event-stream'});
     res.end(finalStream());
   });
@@ -116,19 +301,27 @@ test('fresh packed actual CLI sends source-resolved alias/model to the live Mess
     });
     const base='http://127.0.0.1:'+server.address().port;
     const cases=[
-      {args:['--model','sonnet'],env:{},expected:'claude-sonnet-4-6'},
+      {args:['--model','sonnet'],env:{},expected:'claude-sonnet-5-5'},
       {args:['--model','OPUSPLAN','--permission-mode','plan'],
-        env:{},expected:'claude-opus-4-6'},
+        env:{},expected:'claude-opus-5-5'},
       {args:['--model','haiku','--permission-mode','plan'],
-        env:{},expected:'claude-sonnet-4-6'},
+        env:{},expected:'claude-sonnet-5-5'},
       {args:['--model','best'],
-        env:{ANTHROPIC_DEFAULT_OPUS_MODEL:'custom-opus-gateway'},
-        expected:'custom-opus-gateway'},
+        env:{ANTHROPIC_DEFAULT_FABLE_MODEL:'custom-fable-gateway'},
+        expected:'custom-fable-gateway'},
       {args:[],env:{ANTHROPIC_MODEL:'sonnet',
         ANTHROPIC_DEFAULT_SONNET_MODEL:'overridden-sonnet'},
         expected:'overridden-sonnet'},
       {args:['--model','MiXeD-Custom-ID'],
         env:{ANTHROPIC_MODEL:'opus'},expected:'MiXeD-Custom-ID'},
+      {args:['--model','claude-opus-4-20250514'],
+        env:{},expected:'claude-opus-5-5'},
+      {args:['--model','claude-opus-4-20250514'],
+        env:{CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP:'1'},
+        expected:'claude-opus-4-20250514'},
+      {args:['--model','claude-opus-4-20250514'],
+        env:{ANTHROPIC_DEFAULT_OPUS_MODEL:'custom-opus-default'},
+        expected:'custom-opus-default'},
       {args:['--provider','deepseek','--model','sonnet'],
         env:{},expected:'sonnet'},
     ];
@@ -143,14 +336,30 @@ test('fresh packed actual CLI sends source-resolved alias/model to the live Mess
         JSON.stringify(c));
       assert.equal(requests[before].path,'/v1/messages');
     }
+    const nativeOneM=await runCli([
+      '--base-url',base,'--model','sonnet[1m]',
+    ],{},root);
+    assert.equal(nativeOneM.code,0,nativeOneM.output);
+    assert.equal(requests.at(-1).body.model,'claude-sonnet-5-5');
+    assert.equal(requests.at(-1).headers['anthropic-beta'],undefined,
+      'native 1M model must not request the beta');
+
+    const betaOneM=await runCli([
+      '--base-url',base,'--model','claude-sonnet-4-6[1m]',
+    ],{},root);
+    assert.equal(betaOneM.code,0,betaOneM.output);
+    assert.equal(requests.at(-1).body.model,'claude-sonnet-4-6');
+    assert.match(requests.at(-1).headers['anthropic-beta']??'',
+      /context-1m-2025-08-07/);
+
     const count=requests.length;
-    for(const rejected of ['sonnet[1m]','opus[1m]']){
-      const result=await runCli(['--base-url',base,'--model',rejected],{},root);
-      assert.equal(result.code,2,result.output);
-      assert.match(result.output,/Model configuration failed:.*\[1m\]/);
-      assert.equal(requests.length,count,
-        'unsupported 1m context must fail before network or journal');
-    }
+    const rejected=await runCli([
+      '--base-url',base,'--model','claude-3-7-sonnet[1m]',
+    ],{},root);
+    assert.equal(rejected.code,2,rejected.output);
+    assert.match(rejected.output,/Model configuration failed:.*does not support 1M context/);
+    assert.equal(requests.length,count,
+      'unsupported 1M model must fail before network or journal');
   }finally{
     server.closeAllConnections?.();
     if(server.listening)await new Promise(resolve=>server.close(resolve));

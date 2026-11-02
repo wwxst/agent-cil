@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 // The old 2.1.88 withRetry.ts and client.ts transport logic is now used
 // directly. A successful HTTP response / started SSE body is NEVER replayed.
 import { normalizeMessagesForAPI } from './legacy-query/normalize-messages-for-api.js';
+import { getModelMaxOutputTokens, resolveModelRequest } from './legacy-original/model-aliases.js';
 import {
   getBoundedRetryDelay,
   isRetryablePreStreamConnectionError,
@@ -155,21 +156,24 @@ export class AnthropicMessagesAdapter {
   #apiKeyProvider;
   #model;
   #maxTokens;
+  #maxTokensOverride;
   #system;
   #baseUrl;
   #version;
   #fetch;
   #maxRetries;
+  #provider;
 
   constructor({
     apiKey,
     apiKeyProvider,
     model,
-    maxTokens = 1024,
+    maxTokens,
     system,
     baseUrl = 'https://api.anthropic.com',
     apiVersion = '2023-06-01',
     maxRetries = 2,
+    provider = 'anthropic',
     fetchImpl = globalThis.fetch,
   } = {}) {
     if (apiKey !== undefined && (typeof apiKey !== 'string' || apiKey.trim().length === 0)) {
@@ -182,7 +186,9 @@ export class AnthropicMessagesAdapter {
       throw new TypeError('Provide apiKey or apiKeyProvider.');
     }
     if (typeof model !== 'string' || model.trim().length === 0) throw new TypeError('model must be a non-empty string.');
-    if (!Number.isSafeInteger(maxTokens) || maxTokens < 1) throw new RangeError('maxTokens must be a positive safe integer.');
+    if (maxTokens !== undefined && (!Number.isSafeInteger(maxTokens) || maxTokens < 1)) {
+      throw new RangeError('maxTokens must be a positive safe integer.');
+    }
     if (system !== undefined && typeof system !== 'string') throw new TypeError('system must be a string when provided.');
     if (typeof baseUrl !== 'string' || baseUrl.trim().length === 0) throw new TypeError('baseUrl must be a non-empty URL.');
     let parsedBaseUrl;
@@ -204,6 +210,7 @@ export class AnthropicMessagesAdapter {
     }
     if (typeof apiVersion !== 'string' || apiVersion.trim().length === 0) throw new TypeError('apiVersion must be a non-empty string.');
     if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a fetch-compatible function.');
+    if (!['anthropic', 'deepseek'].includes(provider)) throw new TypeError('provider must be anthropic or deepseek.');
     if (!Number.isSafeInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
       throw new RangeError('maxRetries must be an integer between 0 and 5.');
     }
@@ -211,12 +218,14 @@ export class AnthropicMessagesAdapter {
     this.#apiKey = apiKey;
     this.#apiKeyProvider = apiKeyProvider;
     this.#model = model;
-    this.#maxTokens = maxTokens;
+    this.#maxTokensOverride = maxTokens !== undefined;
+    this.#maxTokens = maxTokens ?? getModelMaxOutputTokens(model).default;
     this.#system = system;
     this.#baseUrl = parsedBaseUrl.toString().replace(/\/+$/, '');
     this.#version = apiVersion;
     this.#fetch = fetchImpl;
     this.#maxRetries = maxRetries;
+    this.#provider = provider;
   }
 
   // Source 2.1.88 getMainLoopModelOverride()/model command changes only
@@ -227,7 +236,10 @@ export class AnthropicMessagesAdapter {
   setModel(model) {
     if(typeof model!=='string'||!model.trim())
       throw new TypeError('model must be a non-empty string.');
-    this.#model=model.trim();
+    const nextModel=model.trim();
+    resolveModelRequest(nextModel,{provider:this.#provider});
+    this.#model=nextModel;
+    if (!this.#maxTokensOverride) this.#maxTokens=getModelMaxOutputTokens(nextModel).default;
   }
 
   async *stream({ messages, tools = [], signal } = {}) {
@@ -286,9 +298,15 @@ export class AnthropicMessagesAdapter {
       };
     });
 
+    const modelRequest = resolveModelRequest(this.#model, { provider: this.#provider });
     const body = {
-      model: this.#model,
-      max_tokens: this.#maxTokens,
+      model: modelRequest.model,
+      // 2.1.304 caps the requested output budget at the active model's
+      // catalog upper limit; switching back restores the user's override.
+      max_tokens: Math.min(
+        this.#maxTokens,
+        getModelMaxOutputTokens(this.#model).upperLimit,
+      ),
       messages: mergedMessages,
       stream: true,
     };
@@ -306,6 +324,9 @@ export class AnthropicMessagesAdapter {
             'anthropic-version': this.#version,
             'x-api-key': apiKey,
             accept: 'text/event-stream',
+            ...(modelRequest.betaHeaders.length
+              ? { 'anthropic-beta': modelRequest.betaHeaders.join(',') }
+              : {}),
           }, { baseUrl: this.#baseUrl }),
           body: JSON.stringify(body),
           signal,

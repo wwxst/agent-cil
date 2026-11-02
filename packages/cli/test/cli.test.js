@@ -1113,7 +1113,8 @@ test('CLI returns a failure status when model output or tool rounds end without 
     assert.match(exhausted.stderr, /reached --max-turns \(1\) without a final response/);
     assert.equal(requests.length, 5, 'the agent must stop after the configured one model round');
     assert.equal(requests[4].tools.some(tool => tool.name === 'Read'), true);
-    assert.equal(requests[4].max_tokens, 4096);
+    assert.equal(requests[4].max_tokens, 32000,
+      'unknown custom model uses the 2.1.304 32000 default output budget');
   } finally {
     await new Promise(resolve => server.close(resolve));
     await rm(workspace, { recursive: true, force: true });

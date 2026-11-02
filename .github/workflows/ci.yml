@@ -19,6 +19,8 @@ jobs:
           node-version: 22
       - name: Install runtime dependencies
         run: npm install --ignore-scripts --no-audit --no-fund --no-package-lock
+      - name: Verify persisted model configuration and precedence on Windows
+        run: node --test packages/cli/test/i18n.test.js packages/cli/test/model-config-cli.test.js
       - name: Install Windows ConPTY test harness
         run: npm install --no-save --no-package-lock node-pty@1.1.0
       - name: Verify actual Windows ConPTY Ctrl+C path
@@ -100,6 +102,8 @@ jobs:
           "$cli" --help | head -n 30
           "$cli" --help | grep -q -- '--allow-edits'
           node scripts/verify-installed-cli.mjs "$cli"
+          # Persisted model settings and interactive /model must survive npm packing.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/model-config-cli.test.js packages/cli/test/interactive-model-switch-cli.test.js
           # Exercise model transport and TTY approval via the installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/legacy-model-transport-cli.test.js
           # Verify signed thinking, 3 model rounds and Read/Edit behavior

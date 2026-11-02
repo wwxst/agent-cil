@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -12,6 +12,13 @@ const MESSAGES = {
     languageUsage: 'Usage: /language [auto|zh-CN|en]', languageCurrent: 'Interface language: {language}',
     languageSet: 'Interface language set to {language}.',
     languageSaveFailed: 'Could not save the language preference: {reason}',
+    configUsage: 'Usage: agent-cil config [show | get model | set model <model> | unset model]',
+    configPath: 'Configuration file: {path}',
+    configModelCurrent: 'Saved Anthropic model setting: {model}',
+    configLanguageCurrent: 'Interface language: {language}',
+    configNotSet: '(not set)',
+    configModelSaved: 'Saved default Anthropic model setting: {model}.',
+    configModelCleared: 'Cleared saved Anthropic model setting.',
     modelCurrent: '[model] Current model: {model} (setting: {setting})',
     modelUsage: '[model] Usage: /model [model-name|default]. Anthropic aliases: sonnet, opus, haiku, best, opusplan. Extended [1m] context requires an unported source capability.',
     modelSet: '[model] Set model to {model}.', modelUnchanged: '[model] Model unchanged: {reason}',
@@ -56,12 +63,19 @@ const MESSAGES = {
     helpTools: 'Built-in tools:',
     helpDescription: 'This CLI uses the repository AgentLoop and Messages API adapter.',
     helpResume: 'Resume uses a versioned committed-checkpoint JSONL subset; full original sessionStorage is pending.',
-    helpLimitations: 'The full official CLI configuration, OAuth and MCP contract is not implemented.',
+    helpLimitations: 'Only the default Anthropic model and interface language are persisted; full official settings, OAuth and MCP are not implemented.',
   },
   'zh-CN': {
     errorPrefix: 'agent-cil：', languageInvalid: '语言必须是 auto、zh-CN 或 en。',
     languageUsage: '用法：/language [auto|zh-CN|en]', languageCurrent: '当前界面语言：{language}',
     languageSet: '界面语言已切换为 {language}。', languageSaveFailed: '无法保存语言设置：{reason}',
+    configUsage: '用法：agent-cil config [show | get model | set model <模型> | unset model]',
+    configPath: '配置文件：{path}',
+    configModelCurrent: '已保存的 Anthropic 默认模型：{model}',
+    configLanguageCurrent: '界面语言：{language}',
+    configNotSet: '（未设置）',
+    configModelSaved: '已保存 Anthropic 默认模型设置：{model}。',
+    configModelCleared: '已清除已保存的 Anthropic 默认模型设置。',
     modelCurrent: '[模型] 当前模型：{model}（设置：{setting}）',
     modelUsage: '[模型] 用法：/model [模型名称|default]。Anthropic 别名：sonnet、opus、haiku、best、opusplan。扩展 [1m] 上下文需要尚未移植的原版能力。',
     modelSet: '[模型] 已切换到 {model}。', modelUnchanged: '[模型] 模型未更改：{reason}',
@@ -104,19 +118,19 @@ const MESSAGES = {
     helpUsage: '用法：', helpOptions: '选项：', helpEnvironment: '环境变量：', helpTools: '内置工具：',
     helpDescription: '此 CLI 使用仓库中的 AgentLoop 和 Messages API 适配器。',
     helpResume: '会话恢复使用带版本号的已提交检查点 JSONL 子集；完整原版 sessionStorage 尚未移植。',
-    helpLimitations: '完整官方 CLI 配置、OAuth 和 MCP 契约尚未实现。',
+    helpLimitations: '目前仅持久化 Anthropic 默认模型和界面语言；完整官方设置、OAuth 和 MCP 尚未实现。',
   },
 };
 
 const HELP_LINES = {
   en: [
     'agent-cil {version}', '', 'helpUsage',
-    '  agent-cil [options] [prompt]', '  agent-cil --print [options] [prompt]', '  agent-cil --version',
+    '  agent-cil [options] [prompt]', '  agent-cil --print [options] [prompt]', '  agent-cil --version', '  agent-cil config [show|get model|set model <model>|unset model]',
     '  Interactive TTY commands: /model [name], /model default, /model --help, /language [auto|zh-CN|en], /exit', '',
     'helpOptions', '  -h, --help              Show help', '  -v, -V, --version       Show version',
     '  -p, --print             Run one prompt and print only the assistant response',
     '      --language <auto|zh-CN|en>  Interface language (persisted)',
-    '      --model <name>      Model ID; Anthropic aliases: sonnet, opus, haiku, best, opusplan',
+    '      --model <name>      Model ID; overrides saved model setting; aliases: sonnet, opus, haiku, best, opusplan',
     '      --base-url <url>    API endpoint base URL (defaults to provider URL)',
     '      --provider <name>   anthropic (default), deepseek, or openai',
     '      --max-tokens <n>    Maximum output tokens (default: 4096)',
@@ -137,6 +151,7 @@ const HELP_LINES = {
     '  DEEPSEEK_API_KEY        DeepSeek key (fallback: ANTHROPIC_API_KEY)',
     '  OPENAI_API_KEY          OpenAI key for --provider openai', '  OPENAI_MODEL            Default OpenAI model ID',
     '  OPENAI_BASE_URL         Optional OpenAI Chat API base URL',
+    '  AGENT_CIL_CONFIG_PATH  Override the user config file path', '  AGENT_CIL_CONFIG_DIR   Override the user config directory',
     '  AGENT_CIL_COMPACT_THRESHOLD  Override auto-compact trigger in tokens',
     '  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE  Source 2.1.88 percentage override for known Anthropic 200K models',
     '  DISABLE_AUTO_COMPACT / DISABLE_COMPACT  Disable implicit Anthropic auto-compaction', '',
@@ -146,12 +161,12 @@ const HELP_LINES = {
   ],
   'zh-CN': [
     'agent-cil {version}', '', 'helpUsage',
-    '  agent-cil [选项] [提示词]', '  agent-cil --print [选项] [提示词]', '  agent-cil --version',
+    '  agent-cil [选项] [提示词]', '  agent-cil --print [选项] [提示词]', '  agent-cil --version', '  agent-cil config [show|get model|set model <模型>|unset model]',
     '  交互命令：/model [模型名称]、/model default、/model --help、/language [auto|zh-CN|en]、/exit', '',
     'helpOptions', '  -h, --help              显示帮助', '  -v, -V, --version       显示版本',
     '  -p, --print             执行单次请求，仅输出助手回复',
     '      --language <auto|zh-CN|en>  界面语言（自动检测或持久化设置）',
-    '      --model <名称>      模型 ID；Anthropic 别名：sonnet、opus、haiku、best、opusplan',
+    '      --model <名称>      模型 ID；优先级高于已保存模型；别名：sonnet、opus、haiku、best、opusplan',
     '      --base-url <URL>    API 端点地址（默认使用服务提供商地址）',
     '      --provider <名称>   anthropic（默认）、deepseek 或 openai',
     '      --max-tokens <数量> 最大输出 Token 数（默认：4096）',
@@ -172,6 +187,7 @@ const HELP_LINES = {
     '  DEEPSEEK_API_KEY        DeepSeek 密钥（可回退使用 ANTHROPIC_API_KEY）',
     '  OPENAI_API_KEY          OpenAI 服务的 API Key', '  OPENAI_MODEL            默认 OpenAI 模型 ID',
     '  OPENAI_BASE_URL         可选的 OpenAI Chat API 地址',
+    '  AGENT_CIL_CONFIG_PATH  覆盖用户配置文件路径', '  AGENT_CIL_CONFIG_DIR   覆盖用户配置目录',
     '  AGENT_CIL_COMPACT_THRESHOLD  自动压缩的 Token 阈值',
     '  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE  对已知 Anthropic 200K 模型覆盖 2.1.88 自动压缩百分比',
     '  DISABLE_AUTO_COMPACT / DISABLE_COMPACT  禁用 Anthropic 隐式自动压缩', '',
@@ -239,6 +255,7 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
   const configPath = getLanguageConfigPath(env, homeDirectory);
   let config = {};
   let configError;
+  let configErrorField;
   try {
     const parsed = JSON.parse(await readFile(configPath, 'utf8'));
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -246,10 +263,38 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
     }
     config = parsed;
   } catch (error) {
-    if (error?.code !== 'ENOENT') configError = error;
+    if (error?.code !== 'ENOENT') {
+      configError = error;
+      configErrorField = 'config';
+    }
+  }
+  // A present but invalid model field is configuration corruption, not an
+  // absent preference. Do not silently fall back to the default model: that
+  // would discard an explicit user setting without telling them.
+  if (!configError && Object.prototype.hasOwnProperty.call(config, 'model') &&
+      !normalizeModelPreference(config.model)) {
+    configError = new TypeError(
+      'Saved model setting must be a non-empty string of at most 256 characters.',
+    );
+    configErrorField = 'model';
+  }
+  // 2.1.88 exposes availableModels in user settings. In 2.1.304,
+  // deniedModels and availableModelsMatch belong to policySettings (managed
+  // policy), not this user config file. Keep unknown fields intact for
+  // round-tripping, but never promote user-editable values into org policy.
+  if ((!configError || configErrorField === 'model') &&
+      Object.prototype.hasOwnProperty.call(config, 'availableModels') &&
+      normalizeModelListPreference(config.availableModels) === null) {
+    configError = new TypeError(
+      'Saved availableModels must be an array of at most 256 non-empty model names.',
+    );
+    configErrorField = 'availableModels';
   }
   const preference = normalizeLanguagePreference(config.language) ?? 'auto';
-  return { preference, locale: resolveLanguage(preference, env, intlLocale), configPath, config, configError };
+  return {
+    preference, locale: resolveLanguage(preference, env, intlLocale),
+    configPath, config, configError, configErrorField,
+  };
 }
 
 export async function saveLanguagePreference(language, { env = process.env, homeDirectory = homedir() } = {}) {
@@ -267,18 +312,86 @@ export async function saveLanguagePreference(language, { env = process.env, home
     if (error?.code !== 'ENOENT') throw error;
   }
   const nextConfig = { ...config, language: preference };
+  await writeUserConfigAtomically(configPath, nextConfig);
+  return { preference, locale: resolveLanguage(preference, env), configPath, config: nextConfig };
+}
+
+
+/** Saved Anthropic model setting. Mirrors 2.1.88 settings.model semantics:
+ * aliases and custom model IDs are stored verbatim; resolution happens at
+ * startup so ANTHROPIC_DEFAULT_* overrides remain effective.
+ */
+export function normalizeModelPreference(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 256 || /[\u0000-\u001f\u007f]/.test(normalized)) return null;
+  return normalized;
+}
+
+/** Validate the 2.1.88 user-settings availableModels allowlist without dropping entries. */
+export function normalizeModelListPreference(value) {
+  if (!Array.isArray(value) || value.length > 256) return null;
+  const normalized = [];
+  for (const item of value) {
+    if (typeof item !== 'string') return null;
+    const entry = item.trim();
+    if (!entry || entry.length > 256 || /[\u0000-\u001f\u007f]/.test(entry)) return null;
+    normalized.push(entry);
+  }
+  return normalized;
+}
+
+async function readUserConfigForWrite(configPath) {
+  try {
+    const parsed = JSON.parse(await readFile(configPath, 'utf8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new TypeError('The user configuration root must be a JSON object.');
+    }
+    return parsed;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+async function writeUserConfigAtomically(configPath, config) {
   await mkdir(dirname(configPath), { recursive: true });
   const temporaryPath = configPath + '.' + process.pid + '.' + randomUUID() + '.tmp';
+  let handle;
   try {
-    await writeFile(temporaryPath, JSON.stringify(nextConfig, null, 2) + '\n', {
-      encoding: 'utf8', flag: 'wx', mode: 0o600,
-    });
+    // Match the original settings writer's flush guarantee before the atomic
+    // replacement. A process crash must not publish a partially written JSON
+    // document as the user's new model/language configuration.
+    handle = await open(temporaryPath, 'wx', 0o600);
+    await handle.writeFile(JSON.stringify(config, null, 2) + '\n', 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
     await rename(temporaryPath, configPath);
   } catch (error) {
+    await handle?.close().catch(() => {});
     await rm(temporaryPath, { force: true }).catch(() => {});
     throw error;
   }
-  return { preference, locale: resolveLanguage(preference, env), configPath, config: nextConfig };
+}
+
+export async function saveModelPreference(model, { env = process.env, homeDirectory = homedir() } = {}) {
+  const preference = normalizeModelPreference(model);
+  if (!preference) throw new TypeError('Model preference must be non-empty text of at most 256 characters.');
+  const configPath = getLanguageConfigPath(env, homeDirectory);
+  const config = await readUserConfigForWrite(configPath);
+  const nextConfig = { ...config, model: preference };
+  await writeUserConfigAtomically(configPath, nextConfig);
+  return { preference, configPath, config: nextConfig };
+}
+
+export async function clearModelPreference({ env = process.env, homeDirectory = homedir() } = {}) {
+  const configPath = getLanguageConfigPath(env, homeDirectory);
+  const config = await readUserConfigForWrite(configPath);
+  const nextConfig = { ...config };
+  delete nextConfig.model;
+  await writeUserConfigAtomically(configPath, nextConfig);
+  return { configPath, config: nextConfig };
 }
 
 export function languageLabel(locale, preference = locale) {

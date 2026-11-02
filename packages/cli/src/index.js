@@ -14,13 +14,13 @@ import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import { getHelp, languageLabel, loadLanguagePreference, localizeCliMessage, normalizeLanguagePreference, resolveLanguage, saveLanguagePreference, translate as t } from './i18n.js';
+import { getHelp, languageLabel, loadLanguagePreference, localizeCliMessage, normalizeLanguagePreference, normalizeModelPreference, resolveLanguage, saveLanguagePreference, saveModelPreference, clearModelPreference, translate as t } from './i18n.js';
 import { applyPermissionUpdates } from '../../runtime/src/legacy-permissions/permission-update.js';
 import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissions/permission-rules.js';
 import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
 import { bashToolCheckAstPermission } from '../../runtime/src/legacy-permissions/bash-ast-permission.js';
-import { resolveOriginalCliModel } from '../../runtime/src/legacy-original/model-aliases.js';
+import { resolveOriginalCliModel, getDefaultSonnetModel, isModelAllowed } from '../../runtime/src/legacy-original/model-aliases.js';
 import { getOriginalCliAutoCompactThreshold, isEnvTruthy } from '../../runtime/src/legacy-compact/original-auto-compact-threshold.js';
 import {
   getPerMessageBudgetLimit, generatePreview, buildLargeToolResultMessage,
@@ -39,6 +39,17 @@ const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.
 const BACKSLASH = String.fromCharCode(92);
 const REGEX_META = new Set(['.', '+', '^', '$', '(', ')', '|', '[', ']', '{', '}', BACKSLASH]);
 
+function isFirstPartyAnthropicBaseUrl(baseUrl, env = process.env) {
+  if (!baseUrl) return true;
+  try {
+    const host = new URL(baseUrl).host;
+    return host === 'api.anthropic.com' ||
+      (env.USER_TYPE === 'ant' && host === 'api-staging.anthropic.com');
+  } catch {
+    return false;
+  }
+}
+
 export const HELP = getHelp('en', VERSION);
 
 export class CliArgumentError extends Error {
@@ -54,6 +65,25 @@ export function parseArgs(argv) {
   }
   if (argv.length === 1 && ['--version', '-v', '-V'].includes(argv[0])) {
     return { mode: 'version' };
+  }
+  if (argv[0] === 'config') {
+    const args = argv.slice(1);
+    if (args.length === 0 || args.length === 1 && ['--help', '-h', 'help'].includes(args[0])) {
+      return { mode: 'config-help' };
+    }
+    if (args.length === 1 && args[0] === 'show') return { mode: 'config-show' };
+    if (args.length === 2 && args[0] === 'get' && args[1] === 'model') {
+      return { mode: 'config-get-model' };
+    }
+    if (args.length === 3 && args[0] === 'set' && args[1] === 'model') {
+      const model = normalizeModelPreference(args[2]);
+      if (!model) throw new CliArgumentError('Model preference must be non-empty text of at most 256 characters.');
+      return { mode: 'config-set-model', model };
+    }
+    if (args.length === 2 && args[0] === 'unset' && args[1] === 'model') {
+      return { mode: 'config-unset-model' };
+    }
+    throw new CliArgumentError('Usage: agent-cil config [show | get model | set model <model> | unset model].');
   }
   if (argv.includes('--help') || argv.includes('-h')) {
     let language;
@@ -81,7 +111,7 @@ export function parseArgs(argv) {
     model: undefined,
     baseUrl: undefined,
     provider: 'anthropic',
-    maxTokens: 4096,
+    maxTokens: undefined,
     maxTurns: 8,
     compactThreshold: undefined,
     maxRetries: 2,
@@ -2178,7 +2208,77 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 0;
   }
 
+  if (options.mode === 'config-help') {
+    process.stdout.write(t(locale, 'configUsage') + '\n');
+    return 0;
+  }
+  if (options.mode === 'config-show' || options.mode === 'config-get-model') {
+    if (languageState.configError) {
+      printLocalizedError('User configuration is invalid: ' +
+        (languageState.configError instanceof Error ? languageState.configError.message : String(languageState.configError)));
+      return 2;
+    }
+    const savedModel = normalizeModelPreference(languageState.config.model);
+    if (options.mode === 'config-get-model') {
+      process.stdout.write((savedModel ?? t(locale, 'configNotSet')) + '\n');
+    } else {
+      process.stdout.write(t(locale, 'configPath', { path: languageState.configPath }) + '\n');
+      process.stdout.write(t(locale, 'configModelCurrent', { model: savedModel ?? t(locale, 'configNotSet') }) + '\n');
+      process.stdout.write(t(locale, 'configLanguageCurrent', { language: languageLabel(locale, languagePreference) }) + '\n');
+    }
+    return 0;
+  }
+  if (options.mode === 'config-set-model') {
+    try {
+      // Apply the 2.1.88 user-settings availableModels allowlist before
+      // persisting a setting. 2.1.304 deniedModels/exact-match belong to
+      // managed policySettings and are not read from this user config file.
+      if (!isModelAllowed(options.model, {
+        availableModels: languageState.config.availableModels,
+        deniedModels: [],
+        availableModelsMatch: undefined,
+        env,
+      })) {
+        throw new TypeError('Model ' + options.model + ' is not permitted by availableModels.');
+      }
+      // Store the original alias/ID, not the resolved value, so model-family
+      // environment overrides continue to apply on the next launch.
+      resolveOriginalCliModel({
+        provider: 'anthropic', model: options.model, env,
+        availableModels: languageState.config.availableModels,
+        deniedModels: [],
+        availableModelsMatch: undefined,
+        firstPartyBaseUrl: isFirstPartyAnthropicBaseUrl(env.ANTHROPIC_BASE_URL, env),
+      });
+      const saved = await saveModelPreference(options.model, { env });
+      process.stdout.write(t(locale, 'configModelSaved', { model: saved.preference }) + '\n');
+      return 0;
+    } catch (error) {
+      printLocalizedError('Model configuration failed: ' +
+        (error instanceof Error ? error.message : String(error)));
+      return 2;
+    }
+  }
+  if (options.mode === 'config-unset-model') {
+    try {
+      await clearModelPreference({ env });
+      process.stdout.write(t(locale, 'configModelCleared') + '\n');
+      return 0;
+    } catch (error) {
+      printLocalizedError('Could not update user configuration: ' +
+        (error instanceof Error ? error.message : String(error)));
+      return 2;
+    }
+  }
+
   const provider = options.provider;
+  if (provider === 'anthropic' && languageState.configError &&
+      (languageState.configErrorField !== 'model' ||
+        (options.model === undefined && !env.ANTHROPIC_MODEL))) {
+    printLocalizedError('User configuration is invalid: ' +
+      (languageState.configError instanceof Error ? languageState.configError.message : String(languageState.configError)));
+    return 2;
+  }
   const credentialEnvName = provider === 'openai' ? 'OPENAI_API_KEY'
     : provider === 'deepseek' ? 'DEEPSEEK_API_KEY or ANTHROPIC_API_KEY' : 'ANTHROPIC_API_KEY';
   const apiKey = provider === 'openai' ? env.OPENAI_API_KEY
@@ -2189,11 +2289,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 2;
   }
 
-  // Pinned 2.1.88 utils/model/model.ts: CLI --model overrides
-  // ANTHROPIC_MODEL, then source alias parsing honors ANTHROPIC_DEFAULT_*
-  // overrides. 2.1.304 retains those aliases, though its dynamic remote
-  // model catalog is not yet ported. Never reinterpret DeepSeek/OpenAI IDs.
-  // Unsupported [1m] mode cannot be sent to the API as a literal model ID.
+  // Preserve the 2.1.88 selection precedence:
+  // CLI --model > ANTHROPIC_MODEL > saved settings.model > source default.
+  // Resolve Anthropic family aliases and capabilities from the 2.1.304
+  // baked-in model catalog. Signed remote catalogs in 2.1.304 feed its
+  // interactive picker; this headless CLI does not emulate that UI surface.
+  // /model remains a session override persisted in the session journal.
   let selectedModel;
   let requestedModel;
   try{
@@ -2201,9 +2302,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       ? options.model
       : provider==='openai' ? (env.OPENAI_MODEL||'gpt-5.1')
       : provider==='deepseek' ? (env.DEEPSEEK_MODEL||'deepseek-flash')
-      : (env.ANTHROPIC_MODEL||'claude-sonnet-4-5');
+      : (env.ANTHROPIC_MODEL || normalizeModelPreference(languageState.config.model) || getDefaultSonnetModel(env));
     selectedModel=resolveOriginalCliModel({
       provider,model:requestedModel,permissionMode:options.permissionMode,env,
+      availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
+      deniedModels:[],
+      availableModelsMatch:undefined,
+      firstPartyBaseUrl:provider==='anthropic'&&isFirstPartyAnthropicBaseUrl(
+        options.baseUrl||env.ANTHROPIC_BASE_URL,env,
+      ),
     });
   }catch(error){
     printLocalizedError('Model configuration failed: '+
@@ -2211,10 +2318,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 2;
   }
 
-  // Source /model default clears the current session override. This
-  // headless CLI has no subscription/settings model catalog yet; its
-  // already-selected startup model is the safe, resolved fallback.
-  const startupModel=selectedModel;
+  // 2.1.88 persists an interactive mainLoopModel selection to user settings;
+  // choosing Default removes settings.model and stores an explicit null
+  // session override. Keep journal metadata separate from startup selection
+  // so a failed
+  // settings write can roll back without changing the live model.
   let activeModelSetting=requestedModel;
 
   let prompt = options.prompt;
@@ -2277,10 +2385,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     model = new AnthropicMessagesAdapter({
       apiKey,
       model: selectedModel,
+      provider,
       baseUrl: options.baseUrl || (provider === 'deepseek'
         ? (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/anthropic')
         : (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com')),
-      maxTokens: options.maxTokens,
+      maxTokens: options.maxTokens ?? (provider === 'deepseek' ? 4096 : undefined),
       maxRetries: options.maxRetries,
       system: options.system,
     });
@@ -2343,11 +2452,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   // CLI's versioned session metadata records the original /model session
   // override without inventing a user message. Resolve it again through
-  // the already-ported 2.1.88 aliases before any Query or tool is created.
+  // the catalog-backed model resolver before any Query or tool is created.
   // Source model override precedes startup --model, but a provider change
   // must never send a stale first-party model ID to a different API.
-  if(options.resume && journal.modelOverride?.setting!==null &&
-     journal.modelOverride?.setting!==undefined){
+  if(options.resume && journal.modelOverride!==undefined){
     const saved=journal.modelOverride;
     if(saved.provider!==provider){
       printLocalizedError('Session model override belongs to provider '+saved.provider+
@@ -2356,8 +2464,22 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return 2;
     }
     try{
+      // In 2.1.88 setMainLoopModelOverride(null) is an EXPLICIT Default
+      // selection, not absence of an override. It outranks --model,
+      // ANTHROPIC_MODEL and persisted settings after a session restart.
+      const restoredSetting=saved.setting===null
+        ? (provider==='anthropic' ? getDefaultSonnetModel(env)
+          : provider==='openai' ? (env.OPENAI_MODEL||'gpt-5.1')
+            : (env.DEEPSEEK_MODEL||'deepseek-flash'))
+        : saved.setting;
       const restoredModel=resolveOriginalCliModel({
-        provider,model:saved.setting,permissionMode:options.permissionMode,env,
+        provider,model:restoredSetting,permissionMode:options.permissionMode,env,
+        availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
+        deniedModels:[],
+        availableModelsMatch:undefined,
+        firstPartyBaseUrl:provider==='anthropic'&&isFirstPartyAnthropicBaseUrl(
+          options.baseUrl||env.ANTHROPIC_BASE_URL,env,
+        ),
       });
       model.setModel(restoredModel);
       activeModelSetting=saved.setting;
@@ -2721,8 +2843,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // tool-result checkpoint is retained when a later model turn fails, so
       // the interactive shell can safely continue without replaying tools.
     }
-    // Pinned 2.1.88 commands/model/model.tsx:
-    // /model [model] sets the session override, while /model --help
+    // Pinned 2.1.88 commands/model/model.tsx + onChangeAppState.ts:
+    // /model [model] changes the active model and persists userSettings.model;
+    // selecting Default removes that setting. /model --help
     // and information actions are local CLI commands, NOT model prompts.
     // The original UI picker has no headless equivalent, so /model with
     // no args reports the selected model rather than inventing a picker.
@@ -2732,7 +2855,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if(!match)return false;
       const argument=(match[1]??'').trim();
       if(!argument||['--current','current','--info','info'].includes(argument)){
-        process.stderr.write(t(locale, 'modelCurrent', { model: model.model, setting: activeModelSetting }) + '\n');
+        process.stderr.write(t(locale, 'modelCurrent', { model: model.model, setting: activeModelSetting ?? t(locale, 'configNotSet') }) + '\n');
         return true;
       }
       if(['--help','-h','help'].includes(argument)){
@@ -2740,22 +2863,45 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         return true;
       }
       try{
-        const setting=argument==='default'?requestedModel:argument;
-        // Same parser as --model: never reinterpret OpenAI/DeepSeek IDs,
-        // and reject unsupported first-party [1m] before touching state.
-        const resolved=argument==='default'?startupModel:
-          resolveOriginalCliModel({
-            provider,model:setting,permissionMode:permissionContext.mode,env,
-          });
-        // Validate the candidate first, then write its versioned witness
-        // under the original session lock. A failed fsync can NEVER make
-        // an uncommitted model change effective in the current process.
+        const isDefault=argument==='default';
+        const setting=isDefault?null:argument;
+        // Source onChangeAppState.ts writes userSettings.model=undefined
+        // and setMainLoopModelOverride(null). Explicit Default selects the
+        // built-in Anthropic default, not --model or ANTHROPIC_MODEL.
+        const defaultSetting=provider==='openai' ? (env.OPENAI_MODEL||'gpt-5.1')
+          : provider==='deepseek' ? (env.DEEPSEEK_MODEL||'deepseek-flash')
+          : getDefaultSonnetModel(env);
+        const candidateSetting=isDefault?defaultSetting:setting;
+        // Same parser as --model: never reinterpret OpenAI/DeepSeek IDs;
+        // validate 1M capability before touching session or user settings.
+        if (!isDefault && provider === 'anthropic' && !isModelAllowed(setting, {
+          availableModels: languageState.config.availableModels,
+          deniedModels: [],
+          availableModelsMatch: undefined,
+          env,
+        })) {
+          throw new TypeError('Model ' + setting + ' is not permitted by availableModels.');
+        }
+        const resolved=resolveOriginalCliModel({
+          provider,model:candidateSetting,permissionMode:permissionContext.mode,env,
+          availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
+          deniedModels:[],
+          availableModelsMatch:undefined,
+          firstPartyBaseUrl:provider==='anthropic'&&isFirstPartyAnthropicBaseUrl(
+            options.baseUrl||env.ANTHROPIC_BASE_URL,env,
+          ),
+        });
         if(typeof resolved!=='string'||!resolved.trim())
           throw new TypeError('Model identifier cannot be empty.');
+        // The session journal is the crash-safe witness. Persist user settings
+        // only after that append succeeds, and roll the journal back if the
+        // config write fails so the current model and resume state stay aligned.
+        // An absent prior override is DIFFERENT from the explicit null
+        // Default selection. A failed first /model write must restore the
+        // actual startup selection, not turn it into a Default override.
+        const previousOverride=journal.modelOverride;
         try{
-          await journal.appendModelOverride({
-            provider,setting:argument==='default'?null:setting,
-          });
+          await journal.appendModelOverride({provider,setting});
         }catch(error){
           modelJournalFailure=true;
           printLocalizedError('Session model checkpoint failed; stopping to prevent an unrecorded model change: '+
@@ -2763,9 +2909,35 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           rl?.close();
           return true;
         }
+        if(provider==='anthropic'){
+          try{
+            if(isDefault) await clearModelPreference({env});
+            else await saveModelPreference(setting,{env});
+          }catch(error){
+            try{
+              await journal.appendModelOverride({
+                provider,setting:previousOverride===undefined
+                  ? activeModelSetting : previousOverride.setting,
+              });
+            }catch(rollbackError){
+              modelJournalFailure=true;
+              printLocalizedError('Model preference save failed and session checkpoint rollback failed; stopping: '+
+                (rollbackError instanceof Error?rollbackError.message:String(rollbackError)));
+              rl?.close();
+              return true;
+            }
+            process.stderr.write(t(locale, 'modelUnchanged', {
+              reason:'Could not persist model preference: '+(error instanceof Error?error.message:String(error)),
+            })+'\n');
+            return true;
+          }
+        }
         model.setModel(resolved);
-        activeModelSetting=setting;
-        process.stderr.write(t(locale, 'modelSet', { model: model.model }) + '\n');
+        activeModelSetting=isDefault
+          ? (provider==='anthropic' ? null
+            : provider==='openai' ? (env.OPENAI_MODEL||null) : (env.DEEPSEEK_MODEL||null))
+          : setting;
+        process.stderr.write(t(locale, 'modelSet', { model: model.model }) + '\\n');
       }catch(error){
         process.stderr.write(t(locale, 'modelUnchanged', { reason: error instanceof Error ? error.message : String(error) }) + '\n');
       }
