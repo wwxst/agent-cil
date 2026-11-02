@@ -21,13 +21,22 @@ export function normalizeTuiText(output) {
 export async function waitForTuiText(getOutput, expected, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   let lastOutput = '';
+  let visibleText = '';
   while (Date.now() < deadline) {
     lastOutput = String(getOutput() ?? '');
-    if (normalizeTuiText(lastOutput).includes(expected)) return lastOutput;
+    // Ink's incremental diff stream moves the cursor over unchanged cells.
+    // Replacing CSI cursor-forward with spaces corrupts words ("Bash" can
+    // become "B ash"). Reconstruct the VT screen so those cells retain their
+    // previous contents, then assert what is actually visible to the user.
+    const screen = createTerminalScreen(80, 24);
+    screen.write(lastOutput);
+    visibleText = normalizeTuiText(screen.toString());
+    if (visibleText.includes(expected)) return lastOutput;
     await new Promise(resolve => setTimeout(resolve, 25));
   }
   throw new Error(
-    'Timed out waiting for TUI text "' + expected + '":\n' + lastOutput,
+    'Timed out waiting for TUI text "' + expected + '":\n' + lastOutput +
+    '\nReconstructed screen:\n' + visibleText,
   );
 }
 
@@ -40,7 +49,10 @@ export async function waitForTuiTextAfter(
   const deadline = Date.now() + timeoutMs;
   let lastOutput = '';
   while (Date.now() < deadline) {
-    lastOutput = normalizeTuiText(getOutput());
+    const rawOutput = String(getOutput() ?? '');
+    const screen = createTerminalScreen(80, 24);
+    screen.write(rawOutput);
+    lastOutput = normalizeTuiText(screen.toString());
     const precedingIndex = lastOutput.lastIndexOf(precedingText);
     const expectedIndex = lastOutput.lastIndexOf(expectedText);
     if (precedingIndex >= 0 && expectedIndex > precedingIndex) return lastOutput;
