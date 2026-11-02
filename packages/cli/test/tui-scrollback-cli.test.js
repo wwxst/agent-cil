@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -23,10 +24,45 @@ const finishStream = text => [
 ].join('');
 const pad = value => String(value).padStart(2, '0');
 
-test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager keys', {
-  timeout: 35000,
-  skip: process.platform === 'win32' &&
-    'util-linux script PTY is Linux-only; Windows ConPTY input remains covered by the native approval tests',
+async function spawnWindowsConpty(cliPath, args, { cwd, env, cols, rows }) {
+  const { spawn: spawnPty } = await import('node-pty').then(module =>
+    module.default ?? module,
+  );
+  assert.equal(typeof spawnPty, 'function',
+    'node-pty must be installed by the Windows ConPTY CI job');
+  const terminal = spawnPty(process.execPath, [cliPath, ...args], {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd,
+    useConpty: true,
+    env,
+  });
+  const child = new EventEmitter();
+  const stream = () => {
+    const value = new EventEmitter();
+    value.setEncoding = () => value;
+    return value;
+  };
+  child.stdout = stream();
+  child.stderr = stream();
+  child.stdin = { write: value => terminal.write(value) };
+  child.exitCode = null;
+  child.killed = false;
+  child.kill = () => {
+    child.killed = true;
+    try { terminal.kill(); } catch {}
+  };
+  terminal.onData(data => child.stdout.emit('data', data));
+  terminal.onExit(({ exitCode, signal }) => {
+    child.exitCode = exitCode;
+    child.emit('close', exitCode, signal ?? null);
+  });
+  return child;
+}
+
+test('original 2.1.88 ScrollBox supports PageUp/PageDown and the 2.1.304 Home/End pager keys', {
+  timeout: 45000,
 }, async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-cil-tui-scrollback-'));
   const calls = [];
@@ -137,24 +173,39 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
     const endpoint = server.address();
     assert.ok(endpoint && typeof endpoint === 'object');
 
-    const args = [
-      process.execPath, cli, '--max-retries', '0', '--cwd', workspace,
+    const cliArgs = [
+      '--language', 'en',
+      '--max-retries', '0',
+      '--cwd', workspace,
       '--base-url', 'http://127.0.0.1:' + endpoint.port,
       '--model', 'scrollback-tty-fixture',
     ];
-    const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-    const command = 'stty rows 24 cols 100; ' + args.map(quote).join(' ');
-    child = spawn('script', ['-q', '-e', '-c', command, '/dev/null'], {
-      env: {
-        ...process.env,
-        ANTHROPIC_API_KEY: 'scrollback-tty-key',
-        LANG: 'en_US.UTF-8',
-        TERM: 'xterm-256color',
-        COLUMNS: '100',
-        LINES: '24',
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const env = {
+      ...process.env,
+      ANTHROPIC_API_KEY: 'scrollback-tty-key',
+      AGENT_CIL_CONFIG_DIR: join(workspace, '.agent-cil-test-config'),
+      LANG: 'en_US.UTF-8',
+      TERM: 'xterm-256color',
+      COLUMNS: '100',
+      LINES: '24',
+    };
+    if (process.platform === 'win32') {
+      // Exercise the exact same pager state machine on native ConPTY. The
+      // terminal dimensions are set by ConPTY itself; no POSIX shell shim
+      // is involved.
+      child = await spawnWindowsConpty(cli, cliArgs, {
+        cwd: workspace, env, cols: 100, rows: 24,
+      });
+    } else {
+      const args = [process.execPath, cli, ...cliArgs];
+      const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+      const command = 'stty rows 24 cols 100; ' + args.map(quote).join(' ');
+      child = spawn('script', ['-q', '-e', '-c', command, '/dev/null'], {
+        cwd: workspace,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    }
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
