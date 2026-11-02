@@ -564,11 +564,12 @@ test('2.1.304 catalog controls default output limits and 1M request headers acro
   assert.equal(requests[2].headers.get('anthropic-beta'),'context-1m-2025-08-07');
   assert.equal(requests[2].body.max_tokens,32000);
 
-  const activeBeforeRejectedSwitch=adapter.model;
-  assert.throws(()=>adapter.setModel('claude-haiku-4-5[1m]'),
-    /does not support the 1M context beta/);
-  assert.equal(adapter.model,activeBeforeRejectedSwitch,
-    'a rejected model switch must not mutate the active model');
+  adapter.setModel('claude-haiku-4-5-20251001[1m]');
+  await run();
+  assert.equal(requests[3].body.model,'claude-haiku-4-5-20251001');
+  assert.equal(requests[3].headers.get('anthropic-beta'),null,
+    'supports_1m_suffix does not imply a 1M beta header');
+  assert.equal(requests[3].body.max_tokens,32000);
 
   const pinned=[];
   const explicitLimit=new AnthropicMessagesAdapter({
