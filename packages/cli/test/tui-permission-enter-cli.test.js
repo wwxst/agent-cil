@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { normalizeTuiOutput } from './tui-test-helpers.js';
+import { createTerminalScreen } from './tui-test-helpers.js';
 
 // This test also runs through the CI npm-pack-installed CLI executable.
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -68,13 +68,15 @@ test('installed original 2.1.88 Select: Enter on its first Allow option approves
     });
     let output = '';
     let stderr = '';
+    const screen = createTerminalScreen(80, 24);
     let approvalPrompts = 0;
     let submittedExits = 0;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
-      const visible = normalizeTuiOutput(output);
+      screen.write(chunk);
+      const visible = screen.toString();
       // Key sequence is scheduled below, after the local fixture has responded.
 
       if (submittedExits === 0 &&
@@ -97,7 +99,8 @@ test('installed original 2.1.88 Select: Enter on its first Allow option approves
     assert.equal(signal, null, stderr + output);
     assert.equal(status, 0, stderr + output);
     assert.doesNotMatch(output + stderr, /Could not start the original Ink TUI|falling back to the readline interface/);
-    assert.ok(normalizeTuiOutput(output).includes('Permission required'), output);
+    assert.ok(screen.toString().includes('Approved by the original first-option focus.'), output);
+    assert.ok(output.includes('Permission required'), output);
     assert.equal(approvalPrompts, 1, output);
     assert.equal(submittedExits, 1, output);
     await access(marker);

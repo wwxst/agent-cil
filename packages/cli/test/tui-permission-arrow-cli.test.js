@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { normalizeTuiOutput, normalizeTuiText } from './tui-test-helpers.js';
+import { createTerminalScreen, normalizeTuiText } from './tui-test-helpers.js';
 
 // This test also runs through the CI npm-pack-installed CLI executable.
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -70,13 +70,15 @@ test('installed original 2.1.88 Select: ArrowDown then Enter explicitly allows a
     });
     let output = '';
     let stderr = '';
+    const screen = createTerminalScreen(80, 24);
     let approvalPrompts = 0;
     let submittedExits = 0;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
-      const visible = normalizeTuiOutput(output);
+      screen.write(chunk);
+      const visible = screen.toString();
       // Key sequence is scheduled below, after the local fixture has responded.
 
       if (submittedExits === 0 &&
