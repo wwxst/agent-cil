@@ -81,6 +81,7 @@ test('Ink TUI switches live between Simplified Chinese and English and persists 
   let stage = 0;
   let outputMark = 0;
   let sentExit = false;
+  let promptRetryTimer;
   const terminalScreen = createTerminalScreen(110, 32);
 
   try {
@@ -157,21 +158,34 @@ test('Ink TUI switches live between Simplified Chinese and English and persists 
       }
 
       if (stage === 3 &&
-          normalizeTuiOutput(output.slice(outputMark)).includes('Interface language set to English.') &&
-          normalizeTuiOutput(output.slice(outputMark)).includes('Describe a task')) {
+          normalizeTuiOutput(output.slice(outputMark)).includes('Interface language set to English.')) {
         stage = 4;
         outputMark = output.length;
-        child.stdin.write('Second prompt after language switch\r');
+        // The command's localized status is emitted after setLocale. Wait for
+        // the next React commit, then retry Enter until the provider observes
+        // this exact second prompt. Incremental Ink output need not repaint an
+        // unchanged English placeholder when switching back from Chinese.
+        promptRetryTimer = setTimeout(() => {
+          child.stdin.write('Second prompt after language switch');
+          const submitWhenReady = () => {
+            if (requests.length >= 2 || child.exitCode !== null || child.killed) return;
+            child.stdin.write('\r');
+            promptRetryTimer = setTimeout(submitWhenReady, 250);
+          };
+          promptRetryTimer = setTimeout(submitWhenReady, 300);
+        }, 200);
         return;
       }
 
-      if (stage === 4 &&
-          visible.includes('TUI_LANGUAGE_TURN_2') &&
-          visible.includes('Describe a task')) {
-        stage = 5;
-        sentExit = true;
-        child.stdin.write('/exit\r');
-        return;
+      if (stage === 4) {
+        const secondTurnOutput = normalizeTuiOutput(output.slice(outputMark));
+        if (secondTurnOutput.includes('TUI_LANGUAGE_TURN_2') &&
+            secondTurnOutput.includes('Ready')) {
+          stage = 5;
+          sentExit = true;
+          child.stdin.write('/exit\r');
+          return;
+        }
       }
 
       // Keep the cumulative normalized output observed for diagnostic errors.
@@ -201,6 +215,7 @@ test('Ink TUI switches live between Simplified Chinese and English and persists 
     assert.equal(config.language, 'en');
   } finally {
     if (watchdog) clearTimeout(watchdog);
+    if (promptRetryTimer) clearTimeout(promptRetryTimer);
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
     else child?.cleanup?.();
     server.closeAllConnections?.();
