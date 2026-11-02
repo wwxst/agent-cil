@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { normalizeTuiOutput } from './tui-test-helpers.js';
+import { createTerminalScreen } from './tui-test-helpers.js';
 
 // This test exercises the actual built-in Bash policy -> AgentLoop ->
 // approvalHandler -> Ink PermissionPrompt path, not a standalone controller.
@@ -73,11 +73,13 @@ test('2.1.304 defaultToNo: Bash Select ignores Y and bare Enter confirms Deny in
     });
     let output = '';
     let stderr = '';
+    const screen = createTerminalScreen(80, 24);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
-      const visible = normalizeTuiOutput(output);
+      screen.write(chunk);
+      const visible = screen.toString();
       if (!sentY && visible.includes('Permission required')) {
         sentY = true;
         child.stdin.write('y');
