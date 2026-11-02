@@ -2860,7 +2860,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
             }
             process.stderr.write(t(locale, 'modelUnchanged', {
               reason:'Could not persist model preference: '+(error instanceof Error?error.message:String(error)),
-            })+'\\n');
+            })+'\n');
             return true;
           }
         }
