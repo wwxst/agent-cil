@@ -11,6 +11,7 @@ import {
   getRuntimeMainLoopModel,resolveOriginalCliModel,getDefaultFableModel,
   getModelContextWindow,getModelMaxOutputTokens,isModelAllowed,resolveModelRequest,
   getModelMetadata,isModelFamilyAlias,modelSupports1M,
+  getDefaultSonnetModel,getDefaultOpusModel,getDefaultHaikuModel,
 } from '../../runtime/src/legacy-original/model-aliases.js';
 
 const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -59,6 +60,10 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   assert.equal(parseUserSpecifiedModel('sonnet',{env:overrideEnv}),'sonnet-local-id');
   assert.equal(parseUserSpecifiedModel('best',{env:overrideEnv}),'fable-local-id');
   assert.equal(getDefaultFableModel(overrideEnv),'fable-local-id');
+  assert.equal(getDefaultSonnetModel({}, {apiProvider:'bedrock'}),'claude-sonnet-4-5');
+  assert.equal(getDefaultOpusModel({}, {apiProvider:'gateway'}),'claude-opus-4-7');
+  assert.equal(getDefaultHaikuModel({}, {apiProvider:'anthropicGoogleCloud'}),'claude-haiku-4-5');
+  assert.equal(getDefaultFableModel({}, {apiProvider:'gateway'}),'claude-fable-5');
   assert.equal(parseUserSpecifiedModel('best',{env,availableModels:['opus']}),
     'claude-opus-5-5',
     'best falls back to Opus when Fable is excluded by the model allowlist');
