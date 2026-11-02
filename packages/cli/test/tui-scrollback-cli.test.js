@@ -103,12 +103,11 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
   let pageDownWaitTicks = 0;
   const maybeSendExit = () => {
     if (!pageDownStarted || pageDownCount < 16 || exitSent) return;
-    const afterPageDown = normalizeTuiText(output.slice(outputAtPageDown));
     const screenText = terminalScreen.toString();
-    if (afterPageDown.includes('reply-' + pad(totalTurns)) &&
-        !afterPageDown.includes('End to jump to latest') &&
-        screenText.includes('reply-' + pad(totalTurns)) &&
-        !screenText.includes('reply-01')) {
+    if (screenText.includes('reply-' + pad(totalTurns)) &&
+        !screenText.includes('reply-01') &&
+        !screenText.includes('End to jump to latest') &&
+        screenText.includes('Describe a task')) {
       exitSent = true;
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
