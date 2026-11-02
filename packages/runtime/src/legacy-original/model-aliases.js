@@ -443,7 +443,7 @@ function modelBelongsToFamily(
     model, env, availableModels, deniedModels, availableModelsMatch,
   );
   const modelFamily = getModelFamily(resolved);
-  return modelFamily === family || resolved.includes(family);
+  return modelFamily === family || containsFamilyBoundary(resolved.toLowerCase(), family);
 }
 function modelMatchesVersionPrefix(
   model, entry, env, availableModels, deniedModels, availableModelsMatch,
