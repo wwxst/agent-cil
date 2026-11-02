@@ -141,9 +141,12 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
         return;
       }
 
-      if (pageUpStarted && !endSent && screenText.includes('reply-01')) {
-        assert.ok(screenText.includes('End to jump to latest'),
-          'scrolling away must show the original unseen-message jump hint: ' + screenText);
+      // PageUp can move the ScrollBox before React commits the unseen
+      // divider state and redraws the footer. Wait for the settled VT frame
+      // containing both the historical transcript and its jump hint; do not
+      // assert against the intermediate frame from the same input batch.
+      if (pageUpStarted && !endSent && screenText.includes('reply-01') &&
+          screenText.includes('End to jump to latest')) {
         endSent = true;
         // Stop the recursive PageUp sender before testing End/Home. The
         // terminal may reach the top before all scheduled repeat ticks fire.
