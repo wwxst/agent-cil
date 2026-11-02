@@ -19,15 +19,14 @@ export function normalizeTuiText(output) {
 }
 
 function compactTuiText(value) {
-  return normalizeTuiOutput(value).replace(/\s+/g, '');
+  // Ink emits an incremental VT diff, not an append-only text transcript.
+  // Cursor-forward can skip unchanged cells (including repeated characters),
+  // so compacting the raw stream loses visible text. Reconstruct the actual
+  // terminal screen first, then ignore layout whitespace for semantic checks.
+  const screen = createTerminalScreen(80, 24);
+  screen.write(value);
+  return screen.toString().replace(/\s+/g, '');
 }
-
-// Ink's incremental renderer uses cursor-forward to skip unchanged cells.
-// A raw stream therefore contains cursor jumps between fragments of a word;
-// replacing those jumps with spaces can turn "Bash" into "B ash". For
-// semantic text assertions, compare the cumulative rendered characters while
-// ignoring layout whitespace. Keep createTerminalScreen for tests that need
-// exact viewport/cursor placement.
 export async function waitForTuiText(getOutput, expected, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   const compactExpected = String(expected ?? '').replace(/\s+/g, '');
