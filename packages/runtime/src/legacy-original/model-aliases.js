@@ -137,7 +137,11 @@ export function parseUserSpecifiedModel(modelInput, {
   const withOneM = hasOneMSuffix(value);
   const oneMEnabled = withOneM && !is1mContextDisabled(env);
   const withoutOneM = stripOneMSuffix(value);
-  const alias = withoutOneM.toLowerCase();
+  // The source's Cf() deliberately returns false when 1M is disabled. In
+  // that case Mt() does not strip [1m] before alias recognition; keep the
+  // explicit value intact rather than silently turning "sonnet[1m]" into
+  // the ordinary Sonnet default.
+  const alias = (oneMEnabled ? withoutOneM : value).toLowerCase();
   // 2.1.304's Mt remaps the four legacy Opus spellings to the current Opus
   // default for first-party/AWS/Google/Gateway providers unless explicitly
   // disabled. Preserve the [1m] selection attribute when it is active.
