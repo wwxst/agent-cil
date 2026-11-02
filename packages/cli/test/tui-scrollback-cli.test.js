@@ -23,7 +23,7 @@ const finishStream = text => [
 ].join('');
 const pad = value => String(value).padStart(2, '0');
 
-test('original 2.1.88 ScrollBox keeps older interactive turns reachable with PageUp', {
+test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager keys', {
   timeout: 35000,
   skip: process.platform === 'win32' &&
     'util-linux script PTY is Linux-only; Windows ConPTY input remains covered by the native approval tests',
@@ -46,6 +46,8 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
   let sentPrompts = 0;
   let pageUpStarted = false;
   let pageUpCount = 0;
+  let endSent = false;
+  let homeSent = false;
   let exitSent = false;
   const totalTurns = 12;
   const timers = new Set();
@@ -139,7 +141,21 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
         return;
       }
 
-      if (pageUpStarted && !exitSent && screenText.includes('reply-01')) {
+      if (pageUpStarted && !endSent && screenText.includes('reply-01')) {
+        endSent = true;
+        child.stdin.write('\x1b[4~');
+        return;
+      }
+
+      if (endSent && !homeSent &&
+          screenText.includes('reply-' + pad(totalTurns)) &&
+          !screenText.includes('reply-01') && inputReady) {
+        homeSent = true;
+        child.stdin.write('\x1b[1~');
+        return;
+      }
+
+      if (homeSent && !exitSent && screenText.includes('reply-01')) {
         exitSent = true;
         for (const timer of timers) clearTimeout(timer);
         timers.clear();
@@ -159,7 +175,9 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
     assert.equal(sentPrompts, totalTurns, stderr + output);
     assert.ok(pageUpStarted, 'PageUp sequence was not sent: ' + stderr + output);
     assert.ok(pageUpCount > 0, 'no PageUp keypresses were sent');
-    assert.ok(exitSent, 'the first turn did not become visible after PageUp: ' + stderr + output);
+    assert.ok(endSent, 'End did not restore the latest turn: ' + stderr + output);
+    assert.ok(homeSent, 'Home did not return to the first turn: ' + stderr + output);
+    assert.ok(exitSent, 'the first turn did not become visible after Home: ' + stderr + output);
     assert.equal(calls.length, totalTurns, stderr + output);
     assert.ok(
       calls.every((call, index) =>
