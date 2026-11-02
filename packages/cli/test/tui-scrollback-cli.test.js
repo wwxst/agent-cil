@@ -73,10 +73,28 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
     // Retry Enter until the fixture server observes this exact turn.
     later(submitWhenReady, 300);
   };
+  let endWaitTicks = 0;
+  const maybeSendEnd = () => {
+    if (endSent || !pageUpStarted || pageUpCount < 16 || exitSent) return;
+    if (normalizeTuiText(output.slice(outputAtPageUp)).includes('End to jump to latest')) {
+      endSent = true;
+      outputAtEnd = output.length;
+      child.stdin.write('\x1b[4~');
+      return;
+    }
+    // Reaching the scroll boundary can produce no further terminal output.
+    // Do not make the final PageUp keypress depend on another stdout event:
+    // observe the already-emitted frame after the key has had time to drain.
+    if (endWaitTicks++ < 20) later(maybeSendEnd, 50);
+  };
   const sendPageUp = () => {
     if (pageUpCount >= 16 || exitSent) return;
     child.stdin.write('\x1b[5~');
     pageUpCount += 1;
+    if (pageUpCount >= 16) {
+      later(maybeSendEnd, 120);
+      return;
+    }
     later(sendPageUp, 90);
   };
 
@@ -146,18 +164,10 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
       }
 
       // The minimal VT grid cannot faithfully model the original renderer's
-      // scroll-region redraws. Assert the actual post-key PTY frame instead:
-      // it must repaint the oldest transcript row and the viewport pill.
-      if (pageUpStarted && !endSent && pageUpCount >= 16 &&
-          normalizeTuiText(output.slice(outputAtPageUp)).includes('End to jump to latest')) {
-        endSent = true;
-        // Stop the recursive PageUp sender before testing End/Home. The
-        // terminal may reach the top before all scheduled repeat ticks fire.
-        pageUpCount = 16;
-        outputAtEnd = output.length;
-        child.stdin.write('\x1b[4~');
-        return;
-      }
+      // scroll-region redraws. maybeSendEnd observes the emitted PTY frame and
+      // also runs after the final PageUp, because the top boundary may not
+      // produce another stdout event.
+      maybeSendEnd();
 
       if (endSent && !homeSent &&
           screenText.includes('reply-' + pad(totalTurns)) &&
