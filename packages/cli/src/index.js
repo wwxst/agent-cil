@@ -2225,6 +2225,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (!isModelAllowed(options.model, {
         availableModels: languageState.config.availableModels,
         deniedModels: languageState.config.deniedModels,
+        availableModelsMatch: languageState.config.availableModelsMatch,
         env,
       })) {
         throw new TypeError('Model ' + options.model + ' is not permitted by availableModels/deniedModels.');
@@ -2235,6 +2236,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         provider: 'anthropic', model: options.model, env,
         availableModels: languageState.config.availableModels,
         deniedModels: languageState.config.deniedModels,
+        availableModelsMatch: languageState.config.availableModelsMatch,
         firstPartyBaseUrl: isFirstPartyAnthropicBaseUrl(env.ANTHROPIC_BASE_URL, env),
       });
       const saved = await saveModelPreference(options.model, { env });
@@ -2293,6 +2295,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       provider,model:requestedModel,permissionMode:options.permissionMode,env,
       availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
       deniedModels:provider==='anthropic'?languageState.config.deniedModels:[],
+      availableModelsMatch:provider==='anthropic'?languageState.config.availableModelsMatch:undefined,
       firstPartyBaseUrl:provider==='anthropic'&&isFirstPartyAnthropicBaseUrl(
         options.baseUrl||env.ANTHROPIC_BASE_URL,env,
       ),
@@ -2855,6 +2858,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         if (!isDefault && provider === 'anthropic' && !isModelAllowed(setting, {
           availableModels: languageState.config.availableModels,
           deniedModels: languageState.config.deniedModels,
+          availableModelsMatch: languageState.config.availableModelsMatch,
           env,
         })) {
           throw new TypeError('Model ' + setting + ' is not permitted by availableModels/deniedModels.');
