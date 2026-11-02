@@ -111,10 +111,10 @@ test('config accepts catalog-supported 1M settings and rejects unsupported model
     assert.deepEqual(saved, { language: 'en', model: 'sonnet[1m]' });
 
     const unsupported = spawnSync(process.execPath, [
-      cli, 'config', 'set', 'model', 'claude-haiku-4-5[1m]',
+      cli, 'config', 'set', 'model', 'claude-3-7-sonnet[1m]',
     ], { encoding: 'utf8', env });
     assert.equal(unsupported.status, 2);
-    assert.match(unsupported.stderr, /does not support the 1M context beta/);
+    assert.match(unsupported.stderr, /does not support 1M context/);
     assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), saved);
   } finally {
     await rm(directory, { recursive: true, force: true });
