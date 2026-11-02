@@ -27,7 +27,7 @@ function finalStream(){
     frame('message_delta',{delta:{stop_reason:'end_turn'},usage:{output_tokens:6}})+
     frame('message_stop');
 }
-test('pinned 2.1.88 parseUserSpecifiedModel retains original alias families, custom casing and mode adjustments',()=>{
+test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan adjustments',()=>{
   assert.deepEqual(MODEL_ALIASES,[
     'sonnet','opus','haiku','fable','best','sonnet[1m]','opus[1m]','opusplan',
   ]);
@@ -72,7 +72,14 @@ test('pinned 2.1.88 parseUserSpecifiedModel retains original alias families, cus
   assert.equal(resolveOriginalCliModel({
     provider:'openai',model:'Opus',env:overrideEnv,
   }),'Opus','Never rewrite an OpenAI model ID.');
-  assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env}),'claude-sonnet-5-5[1m]');
+  assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env}),'claude-sonnet-5-5',
+    'native 1M aliases do not retain an opt-in suffix');
+  assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env:overrideEnv}),'sonnet-local-id[1m]',
+    'non-native custom defaults retain the explicit 1M opt-in');
+  assert.equal(resolveOriginalCliModel({
+    provider:'anthropic',model:'opusplan[1m]',permissionMode:'plan',env:overrideEnv,
+  }),'opus-local-id[1m]',
+  'opusplan[1m] upgrades to the Opus family and preserves beta opt-in for custom models');
   assert.equal(parseUserSpecifiedModel('claude-sonnet-4-6[1m]',{env}),'claude-sonnet-4-6[1m]');
   assert.deepEqual(resolveModelRequest('claude-sonnet-5-5[1m]'),{
     model:'claude-sonnet-5-5',betaHeaders:[],
