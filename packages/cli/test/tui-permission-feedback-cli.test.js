@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { normalizeTuiOutput } from './tui-test-helpers.js';
+import { createTerminalScreen, normalizeTuiOutput } from './tui-test-helpers.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -312,9 +312,13 @@ test('Ctrl-D in an empty original permission feedback editor cancels the request
     let stderr = '';
     let approvalPrompts = 0;
     let submittedExits = 0;
+    const terminalScreen = createTerminalScreen(80, 24);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => { output += chunk; });
+    child.stdout.on('data', chunk => {
+      output += chunk;
+      terminalScreen.write(chunk);
+    });
     child.stderr.on('data', chunk => { stderr += chunk; });
     watchdog = setTimeout(() => child.kill('SIGKILL'), 17000);
     const interaction = (async () => {
@@ -329,9 +333,15 @@ test('Ctrl-D in an empty original permission feedback editor cancels the request
       child.stdin.write('\x04');
       await delay(280);
       child.stdin.write('\x04');
-      await waitForRawTuiFragment(() => output, 'cancelled.', 10000);
+      // Ink updates existing terminal cells in place. Raw VT bytes can
+      // interleave cursor movement inside 'cancelled.' even when the actual
+      // visible text is correct. Verify the final answer and prompt on the
+      // reconstructed screen, not on stripped incremental output.
+      await waitForRawTuiFragment(
+        () => terminalScreen.toString(), 'The permission request was cancelled.', 10000,
+      );
       await waitForRawTuiFragmentAfter(
-        () => output, 'cancelled.', 'you>', 3000,
+        () => terminalScreen.toString(), 'The permission request was cancelled.', 'you>', 3000,
       );
       submittedExits++;
       child.stdin.write('/exit\r');
