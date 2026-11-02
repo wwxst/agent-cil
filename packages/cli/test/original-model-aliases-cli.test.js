@@ -59,6 +59,12 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   assert.equal(parseUserSpecifiedModel('sonnet',{env:overrideEnv}),'sonnet-local-id');
   assert.equal(parseUserSpecifiedModel('best',{env:overrideEnv}),'fable-local-id');
   assert.equal(getDefaultFableModel(overrideEnv),'fable-local-id');
+  assert.equal(parseUserSpecifiedModel('best',{env,availableModels:['opus']}),
+    'claude-opus-5-5',
+    'best falls back to Opus when Fable is excluded by the model allowlist');
+  assert.equal(parseUserSpecifiedModel('best',{env,deniedModels:['fable']}),
+    'claude-opus-5-5',
+    'best falls back to Opus when Fable is explicitly denied');
   assert.equal(resolveOriginalCliModel({
     provider:'anthropic',model:'opusplan',permissionMode:'plan',env:overrideEnv,
   }),'opus-local-id');
@@ -138,6 +144,18 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
     permissionMode:'plan',mainLoopModel:'claude-sonnet-5-5',
     userSpecifiedModel:'opusplan',availableModels:['sonnet'],env,
   }),'claude-sonnet-5-5','plan-mode upgrades cannot escape the allowlist');
+  assert.equal(getRuntimeMainLoopModel({
+    permissionMode:'plan',mainLoopModel:'claude-sonnet-5-5',
+    userSpecifiedModel:'opusplan',
+    availableModels:['sonnet','opus-4-6'],env,
+  }),'claude-opus-4-6',
+  'plan mode steps down to the newest permitted model in the requested family');
+  assert.equal(getRuntimeMainLoopModel({
+    permissionMode:'plan',mainLoopModel:'claude-sonnet-5-5[1m]',
+    userSpecifiedModel:'opusplan[1m]',
+    availableModels:['sonnet','opus-4-6'],env,
+  }),'claude-opus-4-6[1m]',
+  '1M plan upgrades preserve the suffix when stepping down to a suffix-capable model');
   assert.throws(()=>parseUserSpecifiedModel('   ',{env}),/cannot be empty/);
 });
 
