@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 const sse = (type, fields = {}) =>
@@ -93,7 +94,7 @@ test('live Ink TUI acceptance harness completes two turns through native ConPTY'
 
     process.env.AGENT_CIL_PROVIDER = 'anthropic';
     process.env.AGENT_CIL_TEST_EXECUTABLE =
-      new URL('../src/index.js', import.meta.url).pathname;
+      fileURLToPath(new URL('../src/index.js', import.meta.url));
     process.env.ANTHROPIC_API_KEY = 'local-live-tui-fixture-secret';
     process.env.ANTHROPIC_MODEL = 'claude-sonnet-4-5';
     process.env.ANTHROPIC_BASE_URL =
