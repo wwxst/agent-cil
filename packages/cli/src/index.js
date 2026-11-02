@@ -2455,8 +2455,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // the catalog-backed model resolver before any Query or tool is created.
   // Source model override precedes startup --model, but a provider change
   // must never send a stale first-party model ID to a different API.
-  if(options.resume && journal.modelOverride?.setting!==null &&
-     journal.modelOverride?.setting!==undefined){
+  if(options.resume && journal.modelOverride!==undefined){
     const saved=journal.modelOverride;
     if(saved.provider!==provider){
       printLocalizedError('Session model override belongs to provider '+saved.provider+
@@ -2465,8 +2464,16 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return 2;
     }
     try{
+      // In 2.1.88 setMainLoopModelOverride(null) is an EXPLICIT Default
+      // selection, not absence of an override. It outranks --model,
+      // ANTHROPIC_MODEL and persisted settings after a session restart.
+      const restoredSetting=saved.setting===null
+        ? (provider==='anthropic' ? getDefaultSonnetModel(env)
+          : provider==='openai' ? (env.OPENAI_MODEL||'gpt-5.1')
+            : (env.DEEPSEEK_MODEL||'deepseek-flash'))
+        : saved.setting;
       const restoredModel=resolveOriginalCliModel({
-        provider,model:saved.setting,permissionMode:options.permissionMode,env,
+        provider,model:restoredSetting,permissionMode:options.permissionMode,env,
         availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
         deniedModels:[],
         availableModelsMatch:undefined,
@@ -2864,7 +2871,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         // not back to a one-time startup --model value.
         const defaultSetting=provider==='openai' ? (env.OPENAI_MODEL||'gpt-5.1')
           : provider==='deepseek' ? (env.DEEPSEEK_MODEL||'deepseek-flash')
-          : (env.ANTHROPIC_MODEL || getDefaultSonnetModel(env));
+          : getDefaultSonnetModel(env);
         const candidateSetting=isDefault?defaultSetting:setting;
         // Same parser as --model: never reinterpret OpenAI/DeepSeek IDs;
         // validate 1M capability before touching session or user settings.
@@ -2890,6 +2897,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         // The session journal is the crash-safe witness. Persist user settings
         // only after that append succeeds, and roll the journal back if the
         // config write fails so the current model and resume state stay aligned.
+        // An absent prior override is DIFFERENT from the explicit null
+        // Default selection. A failed first /model write must restore the
+        // actual startup selection, not turn it into a Default override.
+        const previousOverride=journal.modelOverride;
         try{
           await journal.appendModelOverride({provider,setting});
         }catch(error){
@@ -2906,7 +2917,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           }catch(error){
             try{
               await journal.appendModelOverride({
-                provider,setting:sessionModelOverrideSetting,
+                provider,setting:previousOverride===undefined
+                  ? activeModelSetting : previousOverride.setting,
               });
             }catch(rollbackError){
               modelJournalFailure=true;
@@ -2923,7 +2935,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         }
         model.setModel(resolved);
         activeModelSetting=isDefault
-          ? (provider==='anthropic' ? (env.ANTHROPIC_MODEL||null)
+          ? (provider==='anthropic' ? null
             : provider==='openai' ? (env.OPENAI_MODEL||null) : (env.DEEPSEEK_MODEL||null))
           : setting;
         sessionModelOverrideSetting=setting;
