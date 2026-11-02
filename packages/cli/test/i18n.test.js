@@ -128,7 +128,7 @@ test('invalid persisted model values fail closed and can be repaired explicitly'
   }
 });
 
-test('saved model allowlists and denylists are validated without dropping entries', async () => {
+test('saved user availableModels allowlist is validated without dropping entries', async () => {
   assert.deepEqual(normalizeModelListPreference(['opus', ' sonnet ']), ['opus', 'sonnet']);
   assert.deepEqual(normalizeModelListPreference([]), []);
   for (const invalid of [null, 'opus', [null], [''], ['  '], ['bad\nmodel'], ['x'.repeat(257)], Array(257).fill('opus')]) {
@@ -141,8 +141,6 @@ test('saved model allowlists and denylists are validated without dropping entrie
     for (const config of [
       { language: 'en', availableModels: 'opus' },
       { language: 'en', availableModels: ['sonnet', ''] },
-      { language: 'en', deniedModels: [123] },
-      { language: 'en', availableModelsMatch: 'loose' },
     ]) {
       await writeFile(configPath, JSON.stringify(config));
       const state = await loadLanguagePreference({
@@ -150,6 +148,19 @@ test('saved model allowlists and denylists are validated without dropping entrie
       });
       assert.ok(state.configError instanceof TypeError);
     }
+
+    // These are 2.1.304 managed policySettings, not user-config policy.
+    // Preserve unknown fields for round-tripping, but do not validate or
+    // promote them into the active allow/deny policy at this layer.
+    await writeFile(configPath, JSON.stringify({
+      language: 'en', deniedModels: ['opus'], availableModelsMatch: 'exact',
+    }));
+    const userConfig = await loadLanguagePreference({
+      env: { AGENT_CIL_CONFIG_PATH: configPath },
+    });
+    assert.equal(userConfig.configError, undefined);
+    assert.deepEqual(userConfig.config.deniedModels, ['opus']);
+    assert.equal(userConfig.config.availableModelsMatch, 'exact');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
