@@ -199,10 +199,6 @@ export default function PermissionPrompt({
         }
       }
     }
-    if (key.submit) {
-      if (focusedValue !== undefined) handleSelect(focusedValue);
-      return true;
-    }
     // Honor explicit Y/N before Enter's focused-option action, including
     // SSH-coalesced printable text + CR. 2.1.304 defaultToNo changes the
     // initial focused option only; an explicit Y remains an affirmative choice.
@@ -216,9 +212,17 @@ export default function PermissionPrompt({
         return true;
       }
     }
-    if (key.return && !key.shift && !key.ctrl && !key.meta) {
+    // The original CustomSelect accepts both Ink's parsed Enter flags and the
+    // raw CR/LF sequence. PTY/SSH transports can deliver a bare CR without
+    // setting key.return or key.submit; swallowing that input leaves the
+    // focused defaultToNo option pending forever.
+    const isEnter = key.submit || (
+      !key.shift && !key.ctrl && !key.meta &&
+      (key.return || inputText === '\r' || inputText === '\n')
+    );
+    if (isEnter) {
       // In input mode, original SelectInputOption delegates Enter to its
-      // TextInput onSubmit callback so coalesced text+Enter is not lost.
+      // TextInput onSubmit callback instead of selecting the focused option.
       if (feedbackInputMode) return false;
       if (focusedValue !== undefined) handleSelect(focusedValue);
       return true;
