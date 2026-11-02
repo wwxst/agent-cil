@@ -324,7 +324,22 @@ function getAllowedDefaultModel({ env, availableModels, deniedModels }) {
   throw new TypeError('No model remains available after applying availableModels and deniedModels.');
 }
 
-/** Original 2.1.304 plan-mode model adjustment with policy-safe fallback. */
+function getNewestAllowedFamilyModel(family, {
+  env, availableModels, deniedModels,
+} = {}) {
+  // 2.1.304 stepDownRestrictedFamilyAliasPick walks the source catalog from
+  // newest to oldest and selects the newest model that survives policy.
+  const candidates = MODEL_CATALOG_MODELS.filter(model => model.family === family);
+  for (let i = candidates.length - 1; i >= 0; i -= 1) {
+    const candidate = candidates[i].id;
+    if (isModelAllowed(candidate, { availableModels, deniedModels, env })) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** Original 2.1.304 plan-mode model adjustment with policy-safe step-down. */
 export function getRuntimeMainLoopModel({
   permissionMode, mainLoopModel, userSpecifiedModel, env = process.env,
   availableModels, deniedModels = [], exceeds200kTokens = false,
@@ -332,20 +347,31 @@ export function getRuntimeMainLoopModel({
   const chosen = typeof userSpecifiedModel === 'string'
     ? userSpecifiedModel.trim().toLowerCase() : '';
   if (permissionMode !== 'plan') return mainLoopModel;
-  if ((chosen === 'opusplan' || chosen === 'opusplan[1m]') && !exceeds200kTokens) {
-    let candidate = getDefaultOpusModel(env);
-    if (chosen === 'opusplan[1m]') {
-      candidate = stripOneMSuffix(candidate) + '[1m]';
-    }
-    return isModelAllowed(candidate, { availableModels, deniedModels, env })
-      ? candidate : mainLoopModel;
+
+  const isOpusPlan = chosen === 'opusplan' || chosen === 'opusplan[1m]';
+  if (isOpusPlan && exceeds200kTokens) return mainLoopModel;
+  if (!isOpusPlan && chosen !== 'haiku') return mainLoopModel;
+
+  const family = isOpusPlan ? 'opus' : 'sonnet';
+  const wantsOneM = chosen === 'opusplan[1m]';
+  const preferred = family === 'opus'
+    ? getDefaultOpusModel(env)
+    : getDefaultSonnetModel(env);
+  if (isModelAllowed(preferred, { availableModels, deniedModels, env })) {
+    return wantsOneM
+      ? stripOneMSuffix(preferred) + '[1m]'
+      : preferred;
   }
-  if (chosen === 'haiku') {
-    const candidate = getDefaultSonnetModel(env);
-    return isModelAllowed(candidate, { availableModels, deniedModels, env })
-      ? candidate : mainLoopModel;
-  }
-  return mainLoopModel;
+
+  const fallback = getNewestAllowedFamilyModel(family, {
+    env, availableModels, deniedModels,
+  });
+  if (!fallback) return mainLoopModel;
+  const context = getCatalogModel(fallback)?.context;
+  if (!wantsOneM || context?.native_1m === true) return fallback;
+  return context?.supports_1m_suffix === true
+    ? fallback + '[1m]'
+    : mainLoopModel;
 }
 
 /**
