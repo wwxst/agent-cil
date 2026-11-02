@@ -2230,9 +2230,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   if (options.mode === 'config-set-model') {
     try {
-      // Apply the same source availableModels/deniedModels policy before
-      // persisting a setting. A rejected model must not become a saved
-      // preference that silently resolves to a different model at startup.
+      // Apply the 2.1.88 user-settings availableModels allowlist before
+      // persisting a setting. 2.1.304 deniedModels/exact-match belong to
+      // managed policySettings and are not read from this user config file.
       if (!isModelAllowed(options.model, {
         availableModels: languageState.config.availableModels,
         deniedModels: [],
