@@ -97,8 +97,8 @@ test('real interactive CLI /model changes next streamed request without losing o
       'claude-sonnet-5-5',
     ],'Default must clear the startup --model override and return to the runtime default');
     assert.match(output,/Set model to claude-opus-5-5/);
-    assert.match(output,/Model unchanged:.*\[1m\]/);
-    assert.match(output,/Current model: claude-opus-5-5/);
+    assert.match(output,/Set model to claude-sonnet-5-5\[1m\]/);
+    assert.match(output,/Current model: claude-sonnet-5-5\[1m\]/);
     assert.match(output,/Set model to claude-sonnet-5-5/);
     assert.match(output,/MODEL_SESSION_ROUND_3/);
     const second=JSON.stringify(requests[1].messages);
