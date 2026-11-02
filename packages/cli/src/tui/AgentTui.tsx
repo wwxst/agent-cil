@@ -24,10 +24,32 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const {
     dividerIndex,
+    dividerYRef,
     onScrollAway,
     onRepin,
     jumpToNew,
   } = useUnseenDivider(snapshot.messages.length);
+  const [scrollMetrics, setScrollMetrics] = useState(null);
+  useEffect(() => {
+    if (snapshot.pendingApproval) {
+      setScrollMetrics(null);
+      return;
+    }
+    const handle = scrollRef.current;
+    if (!handle) {
+      setScrollMetrics(null);
+      return;
+    }
+    const update = () => setScrollMetrics({
+      scrollTop: handle.getScrollTop(),
+      pendingDelta: handle.getPendingDelta(),
+      viewportHeight: handle.getViewportHeight(),
+      scrollHeight: handle.getScrollHeight(),
+      sticky: handle.isSticky(),
+    });
+    update();
+    return handle.subscribe(update);
+  }, [snapshot.pendingApproval]);
   const repinScroll = useCallback(() => {
     jumpToNew(scrollRef.current);
     onRepin();
@@ -376,12 +398,23 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   }, []);
 
   const visibleMessages = snapshot.messages;
-  const showJumpHint = !snapshot.pendingApproval && dividerIndex !== null;
+  const scrollHandle = scrollRef.current;
+  const scrollBottom = scrollHandle
+    ? scrollHandle.getScrollTop() + scrollHandle.getPendingDelta() + scrollHandle.getViewportHeight()
+    : 0;
+  const dividerY = dividerYRef.current;
+  // Match 2.1.304 FullscreenLayout: the bottom pill is visible only while
+  // the viewport remains above the original scroll-away snapshot.
+  const showJumpHint = !snapshot.pendingApproval && scrollMetrics !== null &&
+    dividerY !== null && scrollBottom < dividerY &&
+    scrollBottom < (scrollHandle?.getScrollHeight() ?? 0);
   const unseenAssistantCount = dividerIndex === null
     ? 0
     : countUnseenAssistantTurns(visibleMessages, dividerIndex);
   const jumpHint = unseenAssistantCount > 0
-    ? translate(locale, 'tuiNewMessages', { count: unseenAssistantCount })
+    ? translate(locale, unseenAssistantCount === 1 ? 'tuiNewMessage' : 'tuiNewMessages', {
+      count: unseenAssistantCount,
+    })
     : translate(locale, 'tuiJumpToLatest');
   const maxInputLines = Math.max(2, Math.min(8, terminalRows - 10));
   const promptWrapWidth = Math.max(10, terminalColumns - 16);
@@ -393,7 +426,7 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
   const transcriptHeight = Math.max(
     snapshot.pendingApproval ? 1 : 3,
     terminalRows - (
-      snapshot.pendingApproval ? 23 : (canInput ? 13 + visiblePromptLines : 7) + (showJumpHint ? 1 : 0)
+      snapshot.pendingApproval ? 23 : canInput ? 13 + visiblePromptLines : 7
     ),
   );
   const placeholder = translate(locale, 'tuiPlaceholder');
@@ -414,15 +447,24 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
           PermissionPrompt visible on short terminals instead of squeezing it
           between a transcript viewport and the normal footer. */}
       {!snapshot.pendingApproval ? (
+      <Box
+        position="relative"
+        flexDirection="column"
+        height={transcriptHeight}
+        flexGrow={0}
+        flexShrink={0}
+        width="100%"
+        marginTop={1}
+        overflow="hidden"
+      >
       <ScrollBox
         ref={scrollRef}
         flexDirection="column"
         height={transcriptHeight}
         flexGrow={0}
         flexShrink={0}
-        minHeight={snapshot.pendingApproval ? 1 : 3}
+        minHeight={3}
         width="100%"
-        marginTop={1}
         stickyScroll
       >
         {visibleMessages.map(message => (
@@ -457,6 +499,14 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
           </Box>
         ))}
       </ScrollBox>
+      {showJumpHint ? (
+        <Box position="absolute" bottom={0} left={0} right={0} justifyContent="center">
+          <Box paddingX={1} backgroundColor="ansi:yellow">
+            <Text bold color="ansi:black">{jumpHint}</Text>
+          </Box>
+        </Box>
+      ) : null}
+      </Box>
       ) : null}
       {snapshot.pendingApproval ? (
         <PermissionPrompt
@@ -513,7 +563,6 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
 {!snapshot.pendingApproval ? (
         <Box flexDirection="column" marginTop={1}>
           <Text dimColor>{status}</Text>
-          {showJumpHint ? <Text color="yellow">{jumpHint}</Text> : null}
           <Text dimColor>{translate(locale, 'tuiFooterHelp')}</Text>
         </Box>
       ) : null}
