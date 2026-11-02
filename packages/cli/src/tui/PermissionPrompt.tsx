@@ -159,8 +159,9 @@ export default function PermissionPrompt({
   // Select then calls onChange for the currently focused option, including
   // when feedback is empty (PermissionPrompt sets allowEmptySubmitToCancel).
   const handleInputSubmit = useCallback(() => {
-    if (focusedValue !== undefined) handleSelect(focusedValue);
-  }, [focusedValue, handleSelect]);
+    const selectedValue = navigation.focusedValue;
+    if (selectedValue !== undefined) handleSelect(selectedValue);
+  }, [navigation.focusedValue, handleSelect]);
 
   useLayoutEffect(() => {
     onSubmitHandlerChange(handleInputSubmit);
