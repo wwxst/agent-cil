@@ -125,8 +125,14 @@ test('live Ink TUI acceptance harness completes two turns through native ConPTY'
     assert.equal(toolResults[2].content.includes('return a + b;'), true);
     assert.equal(toolResults[3].content.includes('return a + b;'), true);
 
-    // The script's finally block must remove its nested workspace and config.
-    assert.deepEqual(await readdir(workspace), []);
+    // The script's finally block must remove its nested coding workspace.
+    // node-pty may use the same TEMP directory for its own native artifacts.
+    const remainingTempEntries = await readdir(workspace);
+    assert.equal(
+      remainingTempEntries.some(name => name.startsWith('agent-cil-live-tui-')),
+      false,
+      'live TUI acceptance workspace was not cleaned up',
+    );
   } finally {
     for (const key of envKeys) {
       const value = originalEnv.get(key);
