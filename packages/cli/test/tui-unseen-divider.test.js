@@ -10,6 +10,7 @@ test('unseen transcript count includes only assistant messages with visible text
     { role: 'assistant', text: 'first unseen answer' },
     { role: 'tool', text: '', status: 'succeeded' },
     { role: 'assistant', text: 'second unseen answer' },
+    { role: 'assistant', text: 'continuation of the same turn' },
     { role: 'assistant', text: '   ', streaming: true },
     { role: 'system', text: 'background notice' },
   ];
