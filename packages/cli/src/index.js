@@ -2283,11 +2283,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 2;
   }
 
-  // Source /model default clears the current session override. This
-  // headless CLI has no subscription/settings model catalog yet; its
-  // already-selected startup model is the safe, resolved fallback.
-  const startupModel=selectedModel;
+  // 2.1.88 persists an interactive mainLoopModel selection to user settings;
+  // choosing Default removes settings.model and clears the session override.
+  // Keep the journal override separate from startup selection so a failed
+  // settings write can roll back without changing the live model.
   let activeModelSetting=requestedModel;
+  let sessionModelOverrideSetting=null;
 
   let prompt = options.prompt;
   // A positional first prompt should start the interactive session on a TTY,
@@ -2433,6 +2434,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       });
       model.setModel(restoredModel);
       activeModelSetting=saved.setting;
+      sessionModelOverrideSetting=saved.setting;
       process.stderr.write('[model] Restored session model: '+model.model+'\n');
     }catch(error){
       printLocalizedError('Session model recovery failed: '+
@@ -2812,22 +2814,27 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         return true;
       }
       try{
-        const setting=argument==='default'?requestedModel:argument;
+        const isDefault=argument==='default';
+        const setting=isDefault?null:argument;
+        // Default removes both the persisted preference and this session's
+        // override. It therefore falls through to the environment/default,
+        // not back to a one-time startup --model value.
+        const defaultSetting=provider==='openai' ? (env.OPENAI_MODEL||'gpt-5.1')
+          : provider==='deepseek' ? (env.DEEPSEEK_MODEL||'deepseek-flash')
+          : (env.ANTHROPIC_MODEL || getDefaultSonnetModel(env));
+        const candidateSetting=isDefault?defaultSetting:setting;
         // Same parser as --model: never reinterpret OpenAI/DeepSeek IDs,
         // and reject unsupported first-party [1m] before touching state.
-        const resolved=argument==='default'?startupModel:
-          resolveOriginalCliModel({
-            provider,model:setting,permissionMode:permissionContext.mode,env,
-          });
-        // Validate the candidate first, then write its versioned witness
-        // under the original session lock. A failed fsync can NEVER make
-        // an uncommitted model change effective in the current process.
+        const resolved=resolveOriginalCliModel({
+          provider,model:candidateSetting,permissionMode:permissionContext.mode,env,
+        });
         if(typeof resolved!=='string'||!resolved.trim())
           throw new TypeError('Model identifier cannot be empty.');
+        // The session journal is the crash-safe witness. Persist user settings
+        // only after that append succeeds, and roll the journal back if the
+        // config write fails so the current model and resume state stay aligned.
         try{
-          await journal.appendModelOverride({
-            provider,setting:argument==='default'?null:setting,
-          });
+          await journal.appendModelOverride({provider,setting});
         }catch(error){
           modelJournalFailure=true;
           printLocalizedError('Session model checkpoint failed; stopping to prevent an unrecorded model change: '+
@@ -2835,9 +2842,32 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           rl?.close();
           return true;
         }
+        if(provider==='anthropic'){
+          try{
+            if(isDefault) await clearModelPreference({env});
+            else await saveModelPreference(setting,{env});
+          }catch(error){
+            try{
+              await journal.appendModelOverride({
+                provider,setting:sessionModelOverrideSetting,
+              });
+            }catch(rollbackError){
+              modelJournalFailure=true;
+              printLocalizedError('Model preference save failed and session checkpoint rollback failed; stopping: '+
+                (rollbackError instanceof Error?rollbackError.message:String(rollbackError)));
+              rl?.close();
+              return true;
+            }
+            process.stderr.write(t(locale, 'modelUnchanged', {
+              reason:'Could not persist model preference: '+(error instanceof Error?error.message:String(error)),
+            })+'\\n');
+            return true;
+          }
+        }
         model.setModel(resolved);
         activeModelSetting=setting;
-        process.stderr.write(t(locale, 'modelSet', { model: model.model }) + '\n');
+        sessionModelOverrideSetting=setting;
+        process.stderr.write(t(locale, 'modelSet', { model: model.model }) + '\\n');
       }catch(error){
         process.stderr.write(t(locale, 'modelUnchanged', { reason: error instanceof Error ? error.message : String(error) }) + '\n');
       }
