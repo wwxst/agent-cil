@@ -2274,11 +2274,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 2;
   }
 
-  // Pinned 2.1.88 utils/model/model.ts priority:
+  // Preserve the 2.1.88 selection precedence:
   // CLI --model > ANTHROPIC_MODEL > saved settings.model > source default.
+  // Resolve Anthropic family aliases and capabilities from the 2.1.304
+  // baked-in model catalog. Signed remote catalogs in 2.1.304 feed its
+  // interactive picker; this headless CLI does not emulate that UI surface.
   // /model remains a session override persisted in the session journal.
-  // The dynamic 2.1.304 remote model catalog is not yet ported; never
-  // reinterpret DeepSeek/OpenAI IDs or send unsupported [1m] as an API ID.
   let selectedModel;
   let requestedModel;
   try{
@@ -2440,7 +2441,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   // CLI's versioned session metadata records the original /model session
   // override without inventing a user message. Resolve it again through
-  // the already-ported 2.1.88 aliases before any Query or tool is created.
+  // the catalog-backed model resolver before any Query or tool is created.
   // Source model override precedes startup --model, but a provider change
   // must never send a stale first-party model ID to a different API.
   if(options.resume && journal.modelOverride?.setting!==null &&
@@ -2850,8 +2851,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           : provider==='deepseek' ? (env.DEEPSEEK_MODEL||'deepseek-flash')
           : (env.ANTHROPIC_MODEL || getDefaultSonnetModel(env));
         const candidateSetting=isDefault?defaultSetting:setting;
-        // Same parser as --model: never reinterpret OpenAI/DeepSeek IDs,
-        // and reject unsupported first-party [1m] before touching state.
+        // Same parser as --model: never reinterpret OpenAI/DeepSeek IDs;
+        // validate 1M capability before touching session or user settings.
         if (!isDefault && provider === 'anthropic' && !isModelAllowed(setting, {
           availableModels: languageState.config.availableModels,
           deniedModels: languageState.config.deniedModels,
