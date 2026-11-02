@@ -2319,11 +2319,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 
   // 2.1.88 persists an interactive mainLoopModel selection to user settings;
-  // choosing Default removes settings.model and clears the session override.
-  // Keep the journal override separate from startup selection so a failed
+  // choosing Default removes settings.model and stores an explicit null
+  // session override. Keep journal metadata separate from startup selection
+  // so a failed
   // settings write can roll back without changing the live model.
   let activeModelSetting=requestedModel;
-  let sessionModelOverrideSetting=null;
 
   let prompt = options.prompt;
   // A positional first prompt should start the interactive session on a TTY,
@@ -2483,7 +2483,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       });
       model.setModel(restoredModel);
       activeModelSetting=saved.setting;
-      sessionModelOverrideSetting=saved.setting;
       process.stderr.write('[model] Restored session model: '+model.model+'\n');
     }catch(error){
       printLocalizedError('Session model recovery failed: '+
@@ -2866,9 +2865,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       try{
         const isDefault=argument==='default';
         const setting=isDefault?null:argument;
-        // Default removes both the persisted preference and this session's
-        // override. It therefore falls through to the environment/default,
-        // not back to a one-time startup --model value.
+        // Source onChangeAppState.ts writes userSettings.model=undefined
+        // and setMainLoopModelOverride(null). Explicit Default selects the
+        // built-in Anthropic default, not --model or ANTHROPIC_MODEL.
         const defaultSetting=provider==='openai' ? (env.OPENAI_MODEL||'gpt-5.1')
           : provider==='deepseek' ? (env.DEEPSEEK_MODEL||'deepseek-flash')
           : getDefaultSonnetModel(env);
@@ -2938,7 +2937,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           ? (provider==='anthropic' ? null
             : provider==='openai' ? (env.OPENAI_MODEL||null) : (env.DEEPSEEK_MODEL||null))
           : setting;
-        sessionModelOverrideSetting=setting;
         process.stderr.write(t(locale, 'modelSet', { model: model.model }) + '\\n');
       }catch(error){
         process.stderr.write(t(locale, 'modelUnchanged', { reason: error instanceof Error ? error.message : String(error) }) + '\n');
