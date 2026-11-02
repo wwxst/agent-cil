@@ -33,6 +33,7 @@ test('real interactive CLI /model changes next streamed request without losing o
 },async()=>{
   const root=await mkdtemp(join(tmpdir(),'agent-cil-interactive-model-'));
   const sessionId=randomUUID();
+  const configPath=join(root,'config.json');
   const requests=[];
   const server=createServer(async(req,res)=>{
     const chunks=[];
@@ -62,7 +63,8 @@ test('real interactive CLI /model changes next streamed request without losing o
       '--base-url','http://127.0.0.1:'+server.address().port,
       'First prompt uses the original haiku selection'];
     child=spawn('script',['-q','-e','-c',args.map(shellQuote).join(' '),'/dev/null'],{
-      env:{...process.env,ANTHROPIC_API_KEY:'fixture-interactive-model-key'},
+      env:{...process.env,ANTHROPIC_API_KEY:'fixture-interactive-model-key',
+        AGENT_CIL_CONFIG_PATH:configPath},
       stdio:['pipe','pipe','pipe'],
     });
     child.stdout.setEncoding('utf8');
@@ -88,12 +90,12 @@ test('real interactive CLI /model changes next streamed request without losing o
     assert.deepEqual(requests.map(x=>x.model),[
       'claude-haiku-4-5-20251001',
       'claude-opus-4-6',
-      'claude-haiku-4-5-20251001',
-    ],'original session override must affect subsequent requests only');
+      'claude-sonnet-4-6',
+    ],'Default must clear the startup --model override and return to the runtime default');
     assert.match(output,/Set model to claude-opus-4-6/);
     assert.match(output,/Model unchanged:.*\[1m\]/);
     assert.match(output,/Current model: claude-opus-4-6/);
-    assert.match(output,/Set model to claude-haiku-4-5-20251001/);
+    assert.match(output,/Set model to claude-sonnet-4-6/);
     assert.match(output,/MODEL_SESSION_ROUND_3/);
     const second=JSON.stringify(requests[1].messages);
     const third=JSON.stringify(requests[2].messages);
@@ -106,6 +108,8 @@ test('real interactive CLI /model changes next streamed request without losing o
     assert.equal(records.filter(x=>x.kind==='input').length,3,
       'only three real user prompts belong to source UUID-linked transcript');
     assert.equal(records.at(-1).kind,'finished');
+    const config=JSON.parse(await readFile(configPath,'utf8'));
+    assert.equal(config.model,undefined,'/model default must remove the saved model preference');
   }finally{
     if(watchdog)clearTimeout(watchdog);
     if(child&&child.exitCode===null)child.kill('SIGKILL');
@@ -117,11 +121,12 @@ test('real interactive CLI /model changes next streamed request without losing o
 });
 
 
-test('real TTY /model is fsynced and --resume in a new packed CLI process restores its model above new --model',{
+test('real TTY /model persists the default and --resume restores its session override above new --model',{
   timeout:70000,skip:process.platform==='win32',
 },async()=>{
   const root=await mkdtemp(join(tmpdir(),'agent-cil-cross-process-model-'));
   const id=randomUUID();
+  const configPath=join(root,'config.json');
   const requests=[];
   const server=createServer(async(req,res)=>{
     const chunks=[];for await(const chunk of req)chunks.push(chunk);
@@ -138,7 +143,25 @@ test('real TTY /model is fsynced and --resume in a new packed CLI process restor
       '--base-url','http://127.0.0.1:'+server.address().port,
       ...argv],{
       env:{...process.env,ANTHROPIC_API_KEY:'fixture-cross-process-model-key',
-        DEEPSEEK_API_KEY:'fixture-cross-process-deepseek-key'},
+        DEEPSEEK_API_KEY:'fixture-cross-process-deepseek-key',
+        AGENT_CIL_CONFIG_PATH:configPath},
+      stdio:['ignore','pipe','pipe'],
+    });
+    const stdout=[],stderr=[];
+    next.stdout.on('data',c=>stdout.push(c));
+    next.stderr.on('data',c=>stderr.push(c));
+    next.once('error',reject);
+    next.once('close',(code,signal)=>resolve({
+      code,signal,output:Buffer.concat(stdout).toString('utf8')+
+        Buffer.concat(stderr).toString('utf8'),
+    }));
+  });
+  const runFresh=prompt=>new Promise((resolve,reject)=>{
+    const next=spawn(process.execPath,[cli,'--print','--cwd',root,
+      '--max-retries','0','--compact-threshold','0',
+      '--base-url','http://127.0.0.1:'+server.address().port,prompt],{
+      env:{...process.env,ANTHROPIC_API_KEY:'fixture-cross-process-model-key',
+        AGENT_CIL_CONFIG_PATH:configPath},
       stdio:['ignore','pipe','pipe'],
     });
     const stdout=[],stderr=[];
@@ -159,7 +182,8 @@ test('real TTY /model is fsynced and --resume in a new packed CLI process restor
       '--base-url','http://127.0.0.1:'+server.address().port,
       'First conversation before switching'];
     child=spawn('script',['-q','-e','-c',cmd.map(shellQuote).join(' '),'/dev/null'],{
-      env:{...process.env,ANTHROPIC_API_KEY:'fixture-cross-process-model-key'},
+      env:{...process.env,ANTHROPIC_API_KEY:'fixture-cross-process-model-key',
+        AGENT_CIL_CONFIG_PATH:configPath},
       stdio:['pipe','pipe','pipe'],
     });
     child.stdout.setEncoding('utf8');
@@ -182,6 +206,15 @@ test('real TTY /model is fsynced and --resume in a new packed CLI process restor
     assert.equal(sent,2,output);
     assert.match(output,/Set model to claude-opus-4-6/);
     assert.equal(requests.length,1,output);
+    const savedConfig=JSON.parse(await readFile(configPath,'utf8'));
+    assert.equal(savedConfig.model,'opus','interactive /model must persist the default for future sessions');
+
+    const fresh=await runFresh('A new session must use the saved Opus preference');
+    assert.equal(fresh.signal,null,fresh.output);
+    assert.equal(fresh.code,0,fresh.output);
+    assert.deepEqual(requests.map(x=>x.model),[
+      'claude-sonnet-4-6','claude-opus-4-6',
+    ]);
 
     const transcriptPath=join(root,'.agent-cil','sessions',id,'transcript.jsonl');
     const initialRecords=(await readFile(transcriptPath,'utf8'))
@@ -199,11 +232,11 @@ test('real TTY /model is fsynced and --resume in a new packed CLI process restor
     assert.equal(continued.code,0,continued.output);
     assert.match(continued.output,/Restored session model: claude-opus-4-6/);
     assert.deepEqual(requests.map(x=>x.model),[
-      'claude-sonnet-4-6','claude-opus-4-6',
+      'claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-6',
     ]);
-    assert.match(JSON.stringify(requests[1].messages),
+    assert.match(JSON.stringify(requests[2].messages),
       /First conversation before switching/);
-    assert.doesNotMatch(JSON.stringify(requests[1].messages),/\/model opus/);
+    assert.doesNotMatch(JSON.stringify(requests[2].messages),/\/model opus/);
     const checkpoint=(await readFile(transcriptPath,'utf8'))
       .trim().split('\n').map(JSON.parse);
     assert.deepEqual(checkpoint.filter(x=>x.kind==='input').map(x=>x.kind),
