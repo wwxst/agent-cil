@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { normalizeTuiOutput } from './tui-test-helpers.js';
+import { createTerminalScreen } from './tui-test-helpers.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -69,6 +69,8 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
     });
     let output = '';
     let stderr = '';
+    const screen = createTerminalScreen(80, 24);
+    let sawApprovalPrompt = false;
     let approvalPrompts = 0;
     let feedbackPrompts = 0;
     let feedbackSubmitted = 0;
@@ -77,7 +79,9 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
-      const visible = normalizeTuiOutput(output);
+      screen.write(chunk);
+      const visible = screen.toString();
+      if (visible.includes('Permission required')) sawApprovalPrompt = true;
       // Permission keys are scheduled after the local SSE response below.
 
       if (submittedExits === 0 &&
@@ -104,7 +108,7 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
     assert.equal(signal, null, stderr + output);
     assert.equal(status, 0, stderr + output);
     assert.doesNotMatch(output + stderr, /Could not start the original Ink TUI|falling back to the readline interface/);
-    assert.ok(normalizeTuiOutput(output).includes('Permission required'), output);
+    assert.equal(sawApprovalPrompt, true, output);
     assert.equal(approvalPrompts, 1, output);
     assert.equal(feedbackPrompts, 1, output);
     assert.equal(feedbackSubmitted, 1, output);
@@ -167,6 +171,8 @@ test('installed original PermissionPrompt reject feedback remains the denial rea
     });
     let output = '';
     let stderr = '';
+    const screen = createTerminalScreen(80, 24);
+    let sawApprovalPrompt = false;
     let approvalPrompts = 0;
     let feedbackPrompts = 0;
     let feedbackSubmitted = 0;
@@ -175,7 +181,9 @@ test('installed original PermissionPrompt reject feedback remains the denial rea
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
-      const visible = normalizeTuiOutput(output);
+      screen.write(chunk);
+      const visible = screen.toString();
+      if (visible.includes('Permission required')) sawApprovalPrompt = true;
       // Permission keys are scheduled after the local SSE response below.
 
       if (submittedExits === 0 &&
@@ -258,13 +266,17 @@ test('Ctrl-D in an empty original permission feedback editor cancels the request
     });
     let output = '';
     let stderr = '';
+    const screen = createTerminalScreen(80, 24);
+    let sawApprovalPrompt = false;
     let approvalPrompts = 0;
     let submittedExits = 0;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
-      const visible = normalizeTuiOutput(output);
+      screen.write(chunk);
+      const visible = screen.toString();
+      if (visible.includes('Permission required')) sawApprovalPrompt = true;
       if (submittedExits === 0 &&
           visible.includes('The permission request was cancelled.') &&
           visible.includes('you> ')) {

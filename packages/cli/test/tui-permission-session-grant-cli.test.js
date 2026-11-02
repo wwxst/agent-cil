@@ -76,6 +76,8 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
   let child;
   let watchdog;
   let sentSessionGrant = false;
+  let grantScheduled = false;
+  let grantTimer;
   let sentExit = false;
   try {
     await new Promise((resolve, reject) => {
@@ -103,11 +105,17 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
       output += chunk;
       terminalScreen.write(chunk);
       const visible = terminalScreen.toString();
-      if (!sentSessionGrant && visible.includes('Permission required')) {
-        sentSessionGrant = true;
-        // Original CustomSelect supports immediate 1-based selection:
-        // option 2 is the exact-command session grant.
-        child.stdin.write('２');
+      if (!grantScheduled &&
+          visible.includes('Permission required') &&
+          visible.includes('2.Allow this exact Bash command for this session') &&
+          visible.includes('default: deny')) {
+        grantScheduled = true;
+        grantTimer = setTimeout(() => {
+          sentSessionGrant = true;
+          // Original CustomSelect supports immediate 1-based selection,
+          // including full-width digits, without a follow-up Enter.
+          child.stdin.write('２');
+        }, 150);
       }
       if (!sentExit &&
           visible.includes('Exact session permission was preserved.') &&
@@ -154,6 +162,7 @@ test('Bash session grant reuses the original PermissionUpdate contract and appli
     assert.equal(differentResult.is_error, true, JSON.stringify(differentResult));
   } finally {
     if (watchdog) clearTimeout(watchdog);
+    if (grantTimer) clearTimeout(grantTimer);
     if (child && child.exitCode === null && !child.killed) child.kill('SIGKILL');
     server.closeAllConnections?.();
     await new Promise(resolve => server.close(resolve));
