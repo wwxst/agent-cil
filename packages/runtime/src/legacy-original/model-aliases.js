@@ -226,8 +226,11 @@ export function resolveModelRequest(modelInput, {
   };
 }
 
+function stripContextSizeTags(value) {
+  return value.replace(/\\[(?:1|2)m\\]/gi, '');
+}
 function normalizedPolicyValue(value) {
-  return stripOneMSuffix(value.trim()).toLowerCase();
+  return stripContextSizeTags(value.trim()).toLowerCase();
 }
 function canonicalPolicyModel(value, env, availableModels, deniedModels) {
   const normalized = normalizedPolicyValue(value);
@@ -235,6 +238,74 @@ function canonicalPolicyModel(value, env, availableModels, deniedModels) {
     ? parseUserSpecifiedModel(value, { env, availableModels, deniedModels })
     : value;
   return getCanonicalModelName(parsed);
+}
+function parseModelVersion(value) {
+  if (typeof value !== 'string') return null;
+  let normalized = stripContextSizeTags(value.trim().toLowerCase());
+  if (!normalized || /\\s/.test(normalized)) return null;
+  const slash = normalized.lastIndexOf('/');
+  if (slash !== -1) normalized = normalized.slice(slash + 1);
+  const provider = /^(?:([a-z-]+)\\.)?anthropic\\.(claude-.*)$/.exec(normalized);
+  if (provider) normalized = provider[2];
+
+  let match = /^claude-([a-z]+)-(\\d{1,2})(?!\\d)(?:-(\\d{1,2})(?!\\d))?/.exec(normalized);
+  let family, major, minor, base;
+  if (match) {
+    [, family, major, minor] = match;
+    base = match[0];
+  } else {
+    match = /^claude-(\\d{1,2})(?!\\d)(?:-(\\d{1,2})(?!\\d))?-([a-z]+)/.exec(normalized);
+    if (!match) return null;
+    [, major, minor, family] = match;
+    base = match[0];
+  }
+  const trailerText = normalized.slice(base.length);
+  const standardTrailer = /^(?:-fast|-latest)?(?:-v\\d{1,3}@\\d{8}|[-@]\\d{8})?(?:-v\\d{1,3}(?::\\d{1,3})?)?$/;
+  const trailer = standardTrailer.test(trailerText) ? undefined : trailerText;
+  return {
+    family,
+    major: Number(major),
+    ...(minor !== undefined ? { minor: Number(minor) } : {}),
+    ...(trailer !== undefined ? { trailer } : {}),
+  };
+}
+function modelVersionMatches(entry, model) {
+  if (!model || entry.family !== model.family || entry.major !== model.major) return false;
+  if (entry.minor !== undefined && (model.minor ?? 0) !== entry.minor) return false;
+  if (entry.trailer === undefined) return true;
+  const trailer = model.trailer ?? '';
+  return trailer === entry.trailer || trailer.startsWith(entry.trailer + '-');
+}
+function parseDeniedModelEntry(value) {
+  const normalized = stripContextSizeTags(value.trim().toLowerCase());
+  if (!normalized) return { kind: 'ignored' };
+  if (isModelFamilyAlias(normalized)) {
+    return { kind: 'family', family: normalized };
+  }
+  // Dynamic aliases and "default" name different models across releases and
+  // settings. 2.1.304 deliberately ignores them in deniedModels.
+  if (isModelAlias(normalized) || normalized === 'default') {
+    return { kind: 'ignored' };
+  }
+  const version = parseModelVersion(normalized.startsWith('claude-')
+    ? normalized : 'claude-' + normalized);
+  if (version) return { kind: 'model', id: version };
+  return { kind: 'literal', value: normalized };
+}
+function modelIsDenied(model, entry, env, availableModels, deniedModels) {
+  const raw = normalizedPolicyValue(model);
+  const canonical = canonicalPolicyModel(model, env, availableModels, deniedModels);
+  if (entry.kind === 'ignored') return false;
+  if (entry.kind === 'literal') {
+    return raw === entry.value || canonical.toLowerCase() === entry.value;
+  }
+  const version = parseModelVersion(canonical) ?? parseModelVersion(raw);
+  if (entry.kind === 'family') {
+    return getModelFamily(canonical) === entry.family ||
+      version?.family === entry.family ||
+      canonical.toLowerCase().includes(entry.family);
+  }
+  return modelVersionMatches(entry.id, version);
 }
 function prefixMatchesModel(modelName, prefix) {
   return modelName.startsWith(prefix) &&
@@ -260,33 +331,19 @@ function modelMatchesVersionPrefix(model, entry, env, availableModels, deniedMod
   return !entry.startsWith('claude-') &&
     prefixMatchesModel(resolved, 'claude-' + entry);
 }
-function modelMatchesPolicyEntry(model, entry, env, availableModels, deniedModels) {
-  const family = MODEL_FAMILY_ALIASES.find(value => entry === value);
-  if (family) return modelBelongsToFamily(
-    model, family, env, availableModels, deniedModels,
-  );
-  const normalizedModel = normalizedPolicyValue(model);
-  if (normalizedModel === entry) return true;
-  const canonical = canonicalPolicyModel(model, env, availableModels, deniedModels);
-  if (canonical === entry) return true;
-  if (isModelAlias(entry)) {
-    return canonicalPolicyModel(entry, env, availableModels, deniedModels) === canonical;
-  }
-  return modelMatchesVersionPrefix(model, entry, env, availableModels, deniedModels);
-}
 
 /**
- * Port of 2.1.88 modelAllowlist.ts, extended with 2.1.304 deniedModels.
- * Family aliases are wildcards unless a version-qualified entry narrows
- * that family. Denies always win over allows.
+ * Port of the 2.1.88 modelAllowlist matcher, extended with the 2.1.304
+ * deniedModels entry grammar (family/model/literal; dynamic aliases ignored).
+ * Family aliases are wildcards unless version-qualified entries narrow them.
  */
 export function isModelAllowed(model, {
   availableModels, deniedModels = [], env = process.env,
 } = {}) {
   if (typeof model !== 'string' || !model.trim()) return false;
   if (!Array.isArray(deniedModels) || deniedModels.some(x => typeof x !== 'string')) return false;
-  const denies = deniedModels.map(x => x.trim().toLowerCase()).filter(Boolean);
-  if (denies.some(entry => modelMatchesPolicyEntry(
+  const denies = deniedModels.map(parseDeniedModelEntry);
+  if (denies.some(entry => modelIsDenied(
     model, entry, env, availableModels, deniedModels,
   ))) return false;
   if (availableModels === undefined || availableModels === null) return true;
@@ -302,15 +359,15 @@ export function isModelAllowed(model, {
   for (const family of MODEL_FAMILY_ALIASES) {
     if (allowlist.includes(family) &&
         !familyHasSpecificEntries(family, allowlist) &&
-        modelBelongsToFamily(model, family, env, allowlist, denies)) return true;
+        modelBelongsToFamily(model, family, env, allowlist, deniedModels)) return true;
   }
-  const canonical = canonicalPolicyModel(model, env, allowlist, denies);
+  const canonical = canonicalPolicyModel(model, env, allowlist, deniedModels);
   if (allowlist.includes(canonical)) return true;
   for (const entry of allowlist) {
     if (isModelAlias(entry) &&
-        canonicalPolicyModel(entry, env, allowlist, denies) === canonical) return true;
+        canonicalPolicyModel(entry, env, allowlist, deniedModels) === canonical) return true;
     if (!isModelFamilyAlias(entry) && !isModelAlias(entry) &&
-        modelMatchesVersionPrefix(model, entry, env, allowlist, denies)) return true;
+        modelMatchesVersionPrefix(model, entry, env, allowlist, deniedModels)) return true;
   }
   return false;
 }
