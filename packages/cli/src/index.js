@@ -2468,6 +2468,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         provider,model:saved.setting,permissionMode:options.permissionMode,env,
         availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
         deniedModels:provider==='anthropic'?languageState.config.deniedModels:[],
+        availableModelsMatch:provider==='anthropic'?languageState.config.availableModelsMatch:undefined,
         firstPartyBaseUrl:provider==='anthropic'&&isFirstPartyAnthropicBaseUrl(
           options.baseUrl||env.ANTHROPIC_BASE_URL,env,
         ),
@@ -2878,6 +2879,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           provider,model:candidateSetting,permissionMode:permissionContext.mode,env,
           availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
           deniedModels:provider==='anthropic'?languageState.config.deniedModels:[],
+          availableModelsMatch:provider==='anthropic'?languageState.config.availableModelsMatch:undefined,
           firstPartyBaseUrl:provider==='anthropic'&&isFirstPartyAnthropicBaseUrl(
             options.baseUrl||env.ANTHROPIC_BASE_URL,env,
           ),
