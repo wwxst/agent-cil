@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createTerminalScreen, normalizeTuiOutput } from './tui-test-helpers.js';
+import { createTerminalScreen } from './tui-test-helpers.js';
 
 // This test also runs against the npm-pack-installed CLI executable.
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -107,24 +107,29 @@ test('original 2.1.88 ScrollBox keeps older interactive turns reachable with Pag
     child.stdout.on('data', chunk => {
       output += chunk;
       terminalScreen.write(chunk);
-      const visible = normalizeTuiOutput(output);
       const screenText = terminalScreen.toString();
+      // The transcript itself contains historical "you> " labels. Never use
+      // the cumulative PTY byte stream as a readiness signal: after turn one
+      // it would remain true forever and race subsequent prompts into the
+      // previous frame. The unique empty-input placeholder is only present
+      // when the current input is mounted and ready for another turn.
+      const inputReady = screenText.includes('Describe a task');
 
-      if (sentPrompts === 0 && visible.includes('you> ')) {
+      if (sentPrompts === 0 && inputReady) {
         sentPrompts = 1;
         sendPrompt(1);
         return;
       }
 
       if (sentPrompts > 0 && sentPrompts < totalTurns &&
-          visible.includes('reply-' + pad(sentPrompts)) && visible.includes('you> ')) {
+          screenText.includes('reply-' + pad(sentPrompts)) && inputReady) {
         sentPrompts += 1;
         sendPrompt(sentPrompts);
         return;
       }
 
       if (sentPrompts === totalTurns && !pageUpStarted &&
-          visible.includes('reply-' + pad(totalTurns)) && visible.includes('you> ')) {
+          screenText.includes('reply-' + pad(totalTurns)) && inputReady) {
         pageUpStarted = true;
         assert.ok(screenText.includes('reply-' + pad(totalTurns)),
           'the newest turn must be visible before scrolling: ' + screenText);
