@@ -92,6 +92,7 @@ export function getBestModel(env = process.env, options = {}) {
     return isModelAllowed(candidate, {
       availableModels: options.availableModels,
       deniedModels: options.deniedModels,
+      availableModelsMatch: options.availableModelsMatch,
       env,
     }) ? candidate : getDefaultOpusModel(env, options);
   } finally {
@@ -103,7 +104,7 @@ function resolveAlias(alias, {
   env = process.env, apiProvider = 'firstParty',
   availableModels, deniedModels = [], availableModelsMatch,
 } = {}) {
-  const options = { apiProvider, availableModels, deniedModels };
+  const options = { apiProvider, availableModels, deniedModels, availableModelsMatch };
   switch (alias) {
     case 'sonnet': return getDefaultSonnetModel(env, options);
     case 'opus': return getDefaultOpusModel(env, options);
@@ -449,7 +450,9 @@ function getAllowedDefaultModel({
   }
   for (const entry of availableModels ?? []) {
     if (!entry || isModelFamilyAlias(entry.toLowerCase())) continue;
-    const parsed = parseUserSpecifiedModel(entry, { env });
+    const parsed = parseUserSpecifiedModel(entry, {
+      env, availableModels, deniedModels, availableModelsMatch,
+    });
     const metadata = getCatalogModel(parsed) ??
       (!String(parsed).toLowerCase().startsWith('claude-')
         ? getCatalogModel('claude-' + parsed) : undefined);
