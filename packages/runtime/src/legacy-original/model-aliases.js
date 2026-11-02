@@ -408,18 +408,16 @@ function parseDeniedModelEntry(value) {
   if (version) return { kind: 'model', id: version };
   return { kind: 'literal', value: normalized };
 }
-function modelIsDenied(model, entry, env, availableModels, deniedModels) {
-  const raw = stripContextSizeTags(model.trim()).toLowerCase();
-  const canonical = canonicalPolicyModel(model, env, availableModels, deniedModels);
+function modelIsDenied(model, entry) {
+  // Exact 2.1.304 CHo semantics: denied entries are evaluated against the
+  // normalized model ID itself, not against a locally re-resolved alias.
+  const normalized = stripContextSizeTags(model.trim()).toLowerCase();
   if (entry.kind === 'ignored') return false;
-  if (entry.kind === 'literal') {
-    return raw === entry.value || canonical.toLowerCase() === entry.value;
-  }
-  const version = parseModelVersion(canonical) ?? parseModelVersion(raw);
+  if (entry.kind === 'literal') return normalized === entry.value;
+  const version = parseModelVersion(normalized);
   if (entry.kind === 'family') {
-    return getModelFamily(canonical) === entry.family ||
-      version?.family === entry.family ||
-      containsFamilyBoundary(canonical.toLowerCase(), entry.family);
+    return version?.family === entry.family ||
+      containsFamilyBoundary(normalized, entry.family);
   }
   return modelVersionMatches(entry.id, version);
 }
@@ -443,7 +441,7 @@ function modelBelongsToFamily(
     model, env, availableModels, deniedModels, availableModelsMatch,
   );
   const modelFamily = getModelFamily(resolved);
-  return modelFamily === family || resolved.includes(family);
+  return modelFamily === family || containsFamilyBoundary(resolved.toLowerCase(), family);
 }
 function modelMatchesVersionPrefix(
   model, entry, env, availableModels, deniedModels, availableModelsMatch,
@@ -467,9 +465,7 @@ export function isModelAllowed(model, {
   if (typeof model !== 'string' || !model.trim()) return false;
   if (!Array.isArray(deniedModels) || deniedModels.some(x => typeof x !== 'string')) return false;
   const denies = deniedModels.map(parseDeniedModelEntry);
-  if (denies.some(entry => modelIsDenied(
-    model, entry, env, availableModels, deniedModels,
-  ))) return false;
+  if (denies.some(entry => modelIsDenied(model, entry))) return false;
   if (availableModels === undefined || availableModels === null) return true;
   if (!Array.isArray(availableModels) || availableModels.some(x => typeof x !== 'string')) return false;
   const allowlist = availableModels.map(x => x.trim().toLowerCase()).filter(Boolean);
