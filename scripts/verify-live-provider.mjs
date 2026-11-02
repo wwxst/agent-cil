@@ -23,13 +23,12 @@ const apiKey = provider === 'openai' ? process.env.OPENAI_API_KEY
 const baseUrl = provider === 'openai'
   ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
   : provider === 'deepseek'
-    ? (process.env.DEEPSEEK_BASE_URL || process.env.ANTHROPIC_BASE_URL ||
-       'https://api.deepseek.com/anthropic')
+    ? (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/anthropic')
     : process.env.ANTHROPIC_BASE_URL;
 const model = provider === 'openai'
   ? (process.env.OPENAI_MODEL || 'gpt-5.1')
   : provider === 'deepseek'
-    ? (process.env.DEEPSEEK_MODEL || process.env.ANTHROPIC_MODEL || 'deepseek-flash')
+    ? (process.env.DEEPSEEK_MODEL || 'deepseek-flash')
     : (process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5');
 const executable = process.argv[2] || process.env.AGENT_CIL_TEST_EXECUTABLE || 'agent-cil';
 
