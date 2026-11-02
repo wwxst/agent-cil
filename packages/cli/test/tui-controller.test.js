@@ -129,27 +129,10 @@ test('closing the TUI denies any outstanding approval and resolves its exit wait
 
 test('original 2.1.88 Ink root and TUI component load through the Node TSX compatibility boundary', async () => {
   process.env.TSX_TSCONFIG_PATH = fileURLToPath(new URL('../../../tsconfig.json', import.meta.url));
-  const { registerHooks } = await import('node:module');
-  if (typeof registerHooks === 'function') {
-    registerHooks({
-      resolve(specifier, context, nextResolve) {
-        try {
-          const resolved = nextResolve(specifier, context);
-          if (resolved.url?.startsWith('bun:')) {
-            process.stderr.write('[tui-node-loader] ' + specifier + ' from ' + context.parentURL + ' -> ' + resolved.url + '\\n');
-          }
-          return resolved;
-        } catch (error) {
-          if (specifier.startsWith('bun:')) {
-            process.stderr.write('[tui-node-loader] ' + specifier + ' from ' + context.parentURL + ' failed: ' + error.message + '\\n');
-          }
-          throw error;
-        }
-      },
-    });
-  }
   const { register } = await import('tsx/esm/api');
   register();
+  const { register: registerNodeLoader } = await import('node:module');
+  registerNodeLoader(new URL('../src/tui/node-loader.js', import.meta.url), import.meta.url);
   let root;
   try {
     root = await import('../../../legacy/2.1.88/restored-src/src/ink/root.ts');
