@@ -104,12 +104,19 @@ export function parseUserSpecifiedModel(modelInput, {
 } = {}) {
   const value = normalizeModelInput(modelInput);
   const withOneM = hasOneMSuffix(value);
+  if (withOneM && is1mContextDisabled(env)) {
+    throw new TypeError('1M context is disabled by CLAUDE_CODE_DISABLE_1M_CONTEXT.');
+  }
   const withoutOneM = stripOneMSuffix(value);
   const alias = withoutOneM.toLowerCase();
   const resolved = resolveAlias(alias, { env, apiProvider });
   if (resolved === undefined) return value;
-  if (alias === 'best') return resolved;
-  return withOneM ? resolved.replace(/(?:\[1m\])+$/i, '') + '[1m]' : resolved;
+  if (!withOneM || alias === 'best') return resolved;
+  const base = stripOneMSuffix(resolved);
+  // 2.1.304 strips the opt-in suffix for models whose catalog entry is
+  // already native_1m; their context window remains 1M without a beta.
+  return getCatalogModel(base)?.context?.native_1m === true
+    ? base : base + '[1m]';
 }
 
 /** Resolve the 2.1.304 catalog entry for a canonical ID or provider ID. */
@@ -137,8 +144,12 @@ export function modelSupports1M(model) {
   return context?.native_1m === true || context?.supports_1m_beta === true;
 }
 export function getModelContextWindow(model, { env = process.env } = {}) {
-  if (hasOneMSuffix(String(model ?? '')) && !is1mContextDisabled(env)) return 1_000_000;
-  return getCatalogModel(model)?.context?.window ?? DEFAULT_CONTEXT_WINDOW;
+  const context = getCatalogModel(model)?.context;
+  if (is1mContextDisabled(env) && (context?.window ?? 0) > DEFAULT_CONTEXT_WINDOW) {
+    return DEFAULT_CONTEXT_WINDOW;
+  }
+  if (hasOneMSuffix(String(model ?? ''))) return 1_000_000;
+  return context?.window ?? DEFAULT_CONTEXT_WINDOW;
 }
 export function getModelMaxOutputTokens(model) {
   const limits = getCatalogModel(model)?.maxOutputTokens;
@@ -282,10 +293,14 @@ export function getRuntimeMainLoopModel({
   availableModels, deniedModels = [], exceeds200kTokens = false,
 } = {}) {
   const chosen = typeof userSpecifiedModel === 'string'
-    ? stripOneMSuffix(userSpecifiedModel.trim()).toLowerCase() : '';
+    ? userSpecifiedModel.trim().toLowerCase() : '';
   if (permissionMode !== 'plan') return mainLoopModel;
-  if (chosen === 'opusplan' && !exceeds200kTokens) {
-    const candidate = getDefaultOpusModel(env);
+  if ((chosen === 'opusplan' || chosen === 'opusplan[1m]') && !exceeds200kTokens) {
+    let candidate = getDefaultOpusModel(env);
+    if (chosen === 'opusplan[1m]' &&
+        getCatalogModel(candidate)?.context?.native_1m !== true) {
+      candidate = stripOneMSuffix(candidate) + '[1m]';
+    }
     return isModelAllowed(candidate, { availableModels, deniedModels, env })
       ? candidate : mainLoopModel;
   }
