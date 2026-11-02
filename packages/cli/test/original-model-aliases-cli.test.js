@@ -118,6 +118,9 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   assert.deepEqual(resolveModelRequest('claude-haiku-4-5[1m]'),{
     model:'claude-haiku-4-5',betaHeaders:[],
   },'the canonical catalog ID remains the API model ID when no provider-specific ID was selected');
+  assert.throws(()=>resolveModelRequest('claude-3-7-sonnet[1m]'),
+    /does not support 1M context/,
+    'a catalog model with neither suffix nor beta support rejects 1M');
   assert.deepEqual(resolveModelRequest('claude-sonnet-5-5[1m]',{
     env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
   }),{model:'claude-sonnet-5-5',betaHeaders:[]},
