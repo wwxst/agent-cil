@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createTerminalScreen, waitForTuiText, waitForTuiTextAfter } from './tui-test-helpers.js';
+import { waitForTuiText, waitForTuiTextAfter } from './tui-test-helpers.js';
 
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
   fileURLToPath(new URL('../src/index.js', import.meta.url));
@@ -70,7 +70,6 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
     });
     let output = '';
     let stderr = '';
-    const screen = createTerminalScreen(80, 24);
     let sawApprovalPrompt = false;
     let approvalPrompts = 0;
     let feedbackPrompts = 0;
@@ -78,26 +77,23 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
     let submittedExits = 0;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => {
-      output += chunk;
-      screen.write(chunk);
-    });
+    child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
     watchdog = setTimeout(() => child.kill('SIGKILL'), 17000);
     const interaction = (async () => {
       // Do not send fixed-delay keystrokes from process start: provider and
       // Ink startup latency varies on CI. Drive each action from the actual
       // rendered permission/feedback state.
-      await waitForTuiText(() => screen.toString(), 'Permission required', 10000);
+      await waitForTuiText(() => output, 'Permission required', 10000);
       sawApprovalPrompt = true;
       approvalPrompts++;
       child.stdin.write('\x1b[B');
       await delay(180);
       child.stdin.write('\t');
-      await waitForTuiText(() => screen.toString(), 'tell Claude what to do next', 3000);
+      await waitForTuiText(() => output, 'tell Claude what to do next', 3000);
       feedbackPrompts++;
       child.stdin.write(feedback);
-      await waitForTuiText(() => screen.toString(), feedback, 3000);
+      await waitForTuiText(() => output, feedback, 3000);
       await delay(180);
       // The original selector retains non-empty feedback while focus leaves
       // the Allow option and returns to it.
@@ -107,9 +103,9 @@ test('installed original PermissionPrompt Tab feedback is retained after a real 
       await delay(180);
       feedbackSubmitted++;
       child.stdin.write('\r');
-      await waitForTuiText(() => screen.toString(), 'Approval feedback was retained.', 10000);
+      await waitForTuiText(() => output, 'Approval feedback was retained.', 10000);
       await waitForTuiTextAfter(
-        () => screen.toString(), 'Approval feedback was retained.', 'you>', 3000,
+        () => output, 'Approval feedback was retained.', 'you>', 3000,
       );
       submittedExits++;
       child.stdin.write('/exit\r');
@@ -186,34 +182,30 @@ test('installed original PermissionPrompt reject feedback remains the denial rea
     });
     let output = '';
     let stderr = '';
-    const screen = createTerminalScreen(80, 24);
     let approvalPrompts = 0;
     let feedbackPrompts = 0;
     let feedbackSubmitted = 0;
     let submittedExits = 0;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => {
-      output += chunk;
-      screen.write(chunk);
-    });
+    child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
     watchdog = setTimeout(() => child.kill('SIGKILL'), 17000);
     const interaction = (async () => {
-      await waitForTuiText(() => screen.toString(), 'Permission required', 10000);
+      await waitForTuiText(() => output, 'Permission required', 10000);
       approvalPrompts++;
       // defaultToNo focuses Deny, so Tab opens its reject-feedback editor.
       child.stdin.write('\t');
-      await waitForTuiText(() => screen.toString(), 'tell Claude what to do differently', 3000);
+      await waitForTuiText(() => output, 'tell Claude what to do differently', 3000);
       feedbackPrompts++;
       child.stdin.write(feedback);
-      await waitForTuiText(() => screen.toString(), feedback, 3000);
+      await waitForTuiText(() => output, feedback, 3000);
       await delay(180);
       feedbackSubmitted++;
       child.stdin.write('\r');
-      await waitForTuiText(() => screen.toString(), 'The denial feedback was retained.', 10000);
+      await waitForTuiText(() => output, 'The denial feedback was retained.', 10000);
       await waitForTuiTextAfter(
-        () => screen.toString(), 'The denial feedback was retained.', 'you>', 3000,
+        () => output, 'The denial feedback was retained.', 'you>', 3000,
       );
       submittedExits++;
       child.stdin.write('/exit\r');
@@ -288,32 +280,28 @@ test('Ctrl-D in an empty original permission feedback editor cancels the request
     });
     let output = '';
     let stderr = '';
-    const screen = createTerminalScreen(80, 24);
     let approvalPrompts = 0;
     let submittedExits = 0;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => {
-      output += chunk;
-      screen.write(chunk);
-    });
+    child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
     watchdog = setTimeout(() => child.kill('SIGKILL'), 17000);
     const interaction = (async () => {
-      await waitForTuiText(() => screen.toString(), 'Permission required', 10000);
+      await waitForTuiText(() => output, 'Permission required', 10000);
       approvalPrompts++;
       child.stdin.write('\x1b[B');
       await delay(180);
       child.stdin.write('\t');
-      await waitForTuiText(() => screen.toString(), 'tell Claude what to do next', 3000);
+      await waitForTuiText(() => output, 'tell Claude what to do next', 3000);
       // Ctrl+D in the focused empty feedback editor follows the original
       // 800ms double-press cancellation contract.
       child.stdin.write('\x04');
       await delay(280);
       child.stdin.write('\x04');
-      await waitForTuiText(() => screen.toString(), 'The permission request was cancelled.', 10000);
+      await waitForTuiText(() => output, 'The permission request was cancelled.', 10000);
       await waitForTuiTextAfter(
-        () => screen.toString(), 'The permission request was cancelled.', 'you>', 3000,
+        () => output, 'The permission request was cancelled.', 'you>', 3000,
       );
       submittedExits++;
       child.stdin.write('/exit\r');
