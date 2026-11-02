@@ -10,6 +10,7 @@ import {
   MODEL_ALIASES,isModelAlias,parseUserSpecifiedModel,
   getRuntimeMainLoopModel,resolveOriginalCliModel,getDefaultFableModel,
   getModelContextWindow,getModelMaxOutputTokens,isModelAllowed,resolveModelRequest,
+  getModelMetadata,isModelFamilyAlias,modelSupports1M,
 } from '../../runtime/src/legacy-original/model-aliases.js';
 
 const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -29,11 +30,13 @@ function finalStream(){
 }
 test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan adjustments',()=>{
   assert.deepEqual(MODEL_ALIASES,[
-    'sonnet','opus','haiku','fable','best','sonnet[1m]','opus[1m]','opusplan',
+    'sonnet','opus','haiku','fable','best','sonnet[1m]','opus[1m]','fable[1m]','opusplan',
   ]);
   assert.equal(isModelAlias('sonnet'),true);
   assert.equal(isModelAlias('Sonnet'),false);
   assert.equal(isModelAlias('fable'),true);
+  assert.equal(isModelAlias('fable[1m]'),true);
+  assert.equal(isModelFamilyAlias('fable'),true);
   const env={};
   for(const [input,model] of [
     ['sonnet','claude-sonnet-5-5'],
@@ -72,8 +75,8 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   assert.equal(resolveOriginalCliModel({
     provider:'openai',model:'Opus',env:overrideEnv,
   }),'Opus','Never rewrite an OpenAI model ID.');
-  assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env}),'claude-sonnet-5-5',
-    'native 1M aliases do not retain an opt-in suffix');
+  assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env}),'claude-sonnet-5-5[1m]',
+    '2.1.304 retains the explicit 1M attribute for family aliases');
   assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env:overrideEnv}),'sonnet-local-id[1m]',
     'non-native custom defaults retain the explicit 1M opt-in');
   assert.equal(resolveOriginalCliModel({
@@ -81,22 +84,41 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   }),'opus-local-id[1m]',
   'opusplan[1m] upgrades to the Opus family and preserves beta opt-in for custom models');
   assert.equal(parseUserSpecifiedModel('claude-sonnet-4-6[1m]',{env}),'claude-sonnet-4-6[1m]');
+  assert.equal(parseUserSpecifiedModel('claude-sonnet-5-5[1m]',{env}),'claude-sonnet-5-5',
+    'native 1M model IDs do not need the suffix on the first-party API');
+  assert.equal(parseUserSpecifiedModel('claude-sonnet-5-5[1m]',{
+    env,firstPartyBaseUrl:false,
+  }),'claude-sonnet-5-5[1m]',
+  'custom API base URLs retain explicit 1M model attributes');
+  assert.equal(parseUserSpecifiedModel('fable[1m]',{env}),'claude-fable-5-1');
+  assert.equal(parseUserSpecifiedModel('fable[1m]',{
+    env,firstPartyBaseUrl:false,
+  }),'claude-fable-5-1[1m]');
   assert.deepEqual(resolveModelRequest('claude-sonnet-5-5[1m]'),{
     model:'claude-sonnet-5-5',betaHeaders:[],
   },'native 1M models do not send the context beta');
   assert.deepEqual(resolveModelRequest('claude-sonnet-4-6[1m]'),{
     model:'claude-sonnet-4-6',betaHeaders:['context-1m-2025-08-07'],
   });
-  assert.throws(()=>resolveModelRequest('claude-haiku-4-5[1m]'),/does not support the 1M context beta/);
-  assert.throws(()=>resolveModelRequest('claude-sonnet-5-5[1m]',{
+  assert.deepEqual(resolveModelRequest('claude-haiku-4-5[1m]'),{
+    model:'claude-haiku-4-5-20251001',betaHeaders:[],
+  },'supports_1m_suffix is distinct from supports_1m_beta in the source catalog');
+  assert.deepEqual(resolveModelRequest('claude-sonnet-5-5[1m]',{
     env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
-  }),/1M context is disabled/);
+  }),{model:'claude-sonnet-5-5',betaHeaders:[]},
+  'the disable flag suppresses 1M negotiation instead of rejecting the model setting');
   assert.throws(()=>resolveModelRequest('claude-sonnet-5-5[1m]',{
     provider:'deepseek',
   }),/only by the Anthropic provider/);
   assert.equal(getModelContextWindow('claude-sonnet-5-5'),1_000_000);
   assert.equal(getModelContextWindow('claude-sonnet-4-6'),200_000);
   assert.equal(getModelContextWindow('claude-sonnet-4-6[1m]'),1_000_000);
+  assert.equal(getModelContextWindow('claude-sonnet-5-5[1m]',{
+    env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
+  }),200_000);
+  assert.equal(modelSupports1M('claude-haiku-4-5-20251001'),true);
+  assert.equal(getModelMetadata('us.anthropic.claude-sonnet-4-6').id,
+    'claude-sonnet-4-6','all provider IDs map back to the baked catalog row');
   assert.deepEqual(getModelMaxOutputTokens('claude-sonnet-5-5'),{
     default:128_000,upperLimit:128_000,
   });
