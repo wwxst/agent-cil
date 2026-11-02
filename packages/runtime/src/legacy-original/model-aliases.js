@@ -77,18 +77,26 @@ export const getDefaultHaikuModel = (env = process.env, options = {}) =>
 export const getDefaultFableModel = (env = process.env, options = {}) =>
   familyDefault('fable', { ...options, env });
 
+let resolvingBestModel = false;
 export function getBestModel(env = process.env, options = {}) {
   const family = MODEL_CATALOG_BEST;
   if (family !== 'fable') return familyDefault(family, { ...options, env });
   const candidate = getDefaultFableModel(env, options);
-  // 2.1.304 best-model selection uses Fable only when the provider/catalog
-  // makes it available and the active model policy permits it; otherwise
-  // it falls back to the current Opus default.
-  return isModelAllowed(candidate, {
-    availableModels: options.availableModels,
-    deniedModels: options.deniedModels,
-    env,
-  }) ? candidate : getDefaultOpusModel(env, options);
+  // Mirror 2.1.304's resolvingBestModel guard: an allowlist containing the
+  // "best" alias must be able to resolve that alias without recursing.
+  if (resolvingBestModel) return candidate;
+  resolvingBestModel = true;
+  try {
+    // Fable is the baked-in best family only when provider/policy permits it;
+    // otherwise the source resolver falls back to the current Opus default.
+    return isModelAllowed(candidate, {
+      availableModels: options.availableModels,
+      deniedModels: options.deniedModels,
+      env,
+    }) ? candidate : getDefaultOpusModel(env, options);
+  } finally {
+    resolvingBestModel = false;
+  }
 }
 
 function resolveAlias(alias, {
