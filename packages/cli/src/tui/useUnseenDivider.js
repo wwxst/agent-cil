@@ -65,12 +65,17 @@ export function useUnseenDivider(messageCount) {
 export function countUnseenAssistantTurns(messages, dividerIndex) {
   if (!Number.isInteger(dividerIndex) || dividerIndex < 0) return 0;
   let count = 0;
+  let previousWasAssistant = false;
   for (let i = dividerIndex; i < messages.length; i++) {
     const message = messages[i];
+    if (message?.role === 'progress') continue;
+    // Match the original helper: tool-use-only/empty assistant entries do
+    // not count and do not split a visible assistant turn.
     if (message?.role === 'assistant' &&
-        typeof message.text === 'string' && message.text.trim() !== '') {
-      count++;
-    }
+        (typeof message.text !== 'string' || message.text.trim() === '')) continue;
+    const isAssistant = message?.role === 'assistant';
+    if (isAssistant && !previousWasAssistant) count++;
+    previousWasAssistant = isAssistant;
   }
   return count;
 }
