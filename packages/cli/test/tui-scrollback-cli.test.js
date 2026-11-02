@@ -143,6 +143,9 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
 
       if (pageUpStarted && !endSent && screenText.includes('reply-01')) {
         endSent = true;
+        // Stop the recursive PageUp sender before testing End/Home. The
+        // terminal may reach the top before all scheduled repeat ticks fire.
+        pageUpCount = 16;
         child.stdin.write('\x1b[4~');
         return;
       }
