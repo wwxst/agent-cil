@@ -255,6 +255,7 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
   const configPath = getLanguageConfigPath(env, homeDirectory);
   let config = {};
   let configError;
+  let configErrorField;
   try {
     const parsed = JSON.parse(await readFile(configPath, 'utf8'));
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -262,7 +263,10 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
     }
     config = parsed;
   } catch (error) {
-    if (error?.code !== 'ENOENT') configError = error;
+    if (error?.code !== 'ENOENT') {
+      configError = error;
+      configErrorField = 'config';
+    }
   }
   // A present but invalid model field is configuration corruption, not an
   // absent preference. Do not silently fall back to the default model: that
@@ -272,6 +276,7 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
     configError = new TypeError(
       'Saved model setting must be a non-empty string of at most 256 characters.',
     );
+    configErrorField = 'model';
   }
   if (!configError) {
     for (const key of ['availableModels', 'deniedModels']) {
@@ -280,6 +285,7 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
         configError = new TypeError(
           'Saved ' + key + ' must be an array of at most 256 non-empty model names.',
         );
+        configErrorField = key;
         break;
       }
     }
@@ -290,9 +296,13 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
     configError = new TypeError(
       'Saved availableModelsMatch must be either "prefix" or "exact".',
     );
+    configErrorField = 'availableModelsMatch';
   }
   const preference = normalizeLanguagePreference(config.language) ?? 'auto';
-  return { preference, locale: resolveLanguage(preference, env, intlLocale), configPath, config, configError };
+  return {
+    preference, locale: resolveLanguage(preference, env, intlLocale),
+    configPath, config, configError, configErrorField,
+  };
 }
 
 export async function saveLanguagePreference(language, { env = process.env, homeDirectory = homedir() } = {}) {
