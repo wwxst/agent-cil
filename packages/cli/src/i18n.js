@@ -264,6 +264,15 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
   } catch (error) {
     if (error?.code !== 'ENOENT') configError = error;
   }
+  // A present but invalid model field is configuration corruption, not an
+  // absent preference. Do not silently fall back to the default model: that
+  // would discard an explicit user setting without telling them.
+  if (!configError && Object.prototype.hasOwnProperty.call(config, 'model') &&
+      !normalizeModelPreference(config.model)) {
+    configError = new TypeError(
+      'Saved model setting must be a non-empty string of at most 256 characters.',
+    );
+  }
   const preference = normalizeLanguagePreference(config.language) ?? 'auto';
   return { preference, locale: resolveLanguage(preference, env, intlLocale), configPath, config, configError };
 }
