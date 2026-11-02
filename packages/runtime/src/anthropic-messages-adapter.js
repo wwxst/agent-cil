@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 // The old 2.1.88 withRetry.ts and client.ts transport logic is now used
 // directly. A successful HTTP response / started SSE body is NEVER replayed.
 import { normalizeMessagesForAPI } from './legacy-query/normalize-messages-for-api.js';
-import { resolveModelRequest } from './legacy-original/model-aliases.js';
+import { getModelMaxOutputTokens, resolveModelRequest } from './legacy-original/model-aliases.js';
 import {
   getBoundedRetryDelay,
   isRetryablePreStreamConnectionError,
@@ -156,6 +156,7 @@ export class AnthropicMessagesAdapter {
   #apiKeyProvider;
   #model;
   #maxTokens;
+  #maxTokensOverride;
   #system;
   #baseUrl;
   #version;
@@ -167,7 +168,7 @@ export class AnthropicMessagesAdapter {
     apiKey,
     apiKeyProvider,
     model,
-    maxTokens = 1024,
+    maxTokens,
     system,
     baseUrl = 'https://api.anthropic.com',
     apiVersion = '2023-06-01',
@@ -185,7 +186,9 @@ export class AnthropicMessagesAdapter {
       throw new TypeError('Provide apiKey or apiKeyProvider.');
     }
     if (typeof model !== 'string' || model.trim().length === 0) throw new TypeError('model must be a non-empty string.');
-    if (!Number.isSafeInteger(maxTokens) || maxTokens < 1) throw new RangeError('maxTokens must be a positive safe integer.');
+    if (maxTokens !== undefined && (!Number.isSafeInteger(maxTokens) || maxTokens < 1)) {
+      throw new RangeError('maxTokens must be a positive safe integer.');
+    }
     if (system !== undefined && typeof system !== 'string') throw new TypeError('system must be a string when provided.');
     if (typeof baseUrl !== 'string' || baseUrl.trim().length === 0) throw new TypeError('baseUrl must be a non-empty URL.');
     let parsedBaseUrl;
@@ -215,7 +218,8 @@ export class AnthropicMessagesAdapter {
     this.#apiKey = apiKey;
     this.#apiKeyProvider = apiKeyProvider;
     this.#model = model;
-    this.#maxTokens = maxTokens;
+    this.#maxTokensOverride = maxTokens !== undefined;
+    this.#maxTokens = maxTokens ?? getModelMaxOutputTokens(model).default;
     this.#system = system;
     this.#baseUrl = parsedBaseUrl.toString().replace(/\/+$/, '');
     this.#version = apiVersion;
@@ -235,6 +239,7 @@ export class AnthropicMessagesAdapter {
     const nextModel=model.trim();
     resolveModelRequest(nextModel,{provider:this.#provider});
     this.#model=nextModel;
+    if (!this.#maxTokensOverride) this.#maxTokens=getModelMaxOutputTokens(nextModel).default;
   }
 
   async *stream({ messages, tools = [], signal } = {}) {
