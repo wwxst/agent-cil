@@ -64,6 +64,10 @@ test('real interactive CLI /model changes next streamed request without losing o
       'First prompt uses the original haiku selection'];
     child=spawn('script',['-q','-e','-c',args.map(shellQuote).join(' '),'/dev/null'],{
       env:{...process.env,ANTHROPIC_API_KEY:'fixture-interactive-model-key',
+        ANTHROPIC_MODEL:'',
+        ANTHROPIC_DEFAULT_SONNET_MODEL:'',
+        ANTHROPIC_DEFAULT_OPUS_MODEL:'',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL:'',
         AGENT_CIL_CONFIG_PATH:configPath},
       stdio:['pipe','pipe','pipe'],
     });
@@ -149,6 +153,10 @@ test('real TTY /model rolls back the session checkpoint when persisted settings 
       'First prompt before failed model switch'];
     child=spawn('script',['-q','-e','-c',args.map(shellQuote).join(' '),'/dev/null'],{
       env:{...process.env,ANTHROPIC_API_KEY:'fixture-model-save-failure-key',
+        ANTHROPIC_MODEL:'',
+        ANTHROPIC_DEFAULT_SONNET_MODEL:'',
+        ANTHROPIC_DEFAULT_OPUS_MODEL:'',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL:'',
         AGENT_CIL_CONFIG_PATH:configPath},
       stdio:['pipe','pipe','pipe'],
     });
@@ -212,6 +220,10 @@ test('real TTY /model persists the default and --resume restores its session ove
       ...argv],{
       env:{...process.env,ANTHROPIC_API_KEY:'fixture-cross-process-model-key',
         DEEPSEEK_API_KEY:'fixture-cross-process-deepseek-key',
+        ANTHROPIC_MODEL:'',
+        ANTHROPIC_DEFAULT_SONNET_MODEL:'',
+        ANTHROPIC_DEFAULT_OPUS_MODEL:'',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL:'',
         AGENT_CIL_CONFIG_PATH:configPath},
       stdio:['ignore','pipe','pipe'],
     });
@@ -229,6 +241,10 @@ test('real TTY /model persists the default and --resume restores its session ove
       '--max-retries','0','--compact-threshold','0',
       '--base-url','http://127.0.0.1:'+server.address().port,prompt],{
       env:{...process.env,ANTHROPIC_API_KEY:'fixture-cross-process-model-key',
+        ANTHROPIC_MODEL:'',
+        ANTHROPIC_DEFAULT_SONNET_MODEL:'',
+        ANTHROPIC_DEFAULT_OPUS_MODEL:'',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL:'',
         AGENT_CIL_CONFIG_PATH:configPath},
       stdio:['ignore','pipe','pipe'],
     });
