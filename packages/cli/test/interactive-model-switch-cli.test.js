@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {mkdir,mkdtemp,readFile,rm} from 'node:fs/promises';
+import {chmod,mkdir,mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -120,6 +120,7 @@ test('real interactive CLI /model changes next streamed request without losing o
     if(closed)await closed.catch(()=>{});
     server.closeAllConnections?.();
     if(server.listening)await new Promise(resolve=>server.close(resolve));
+    await chmod(configDirectory,0o700).catch(()=>{});
     await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
   }
 });
@@ -130,8 +131,14 @@ test('real TTY /model rolls back the session checkpoint when persisted settings 
 },async()=>{
   const root=await mkdtemp(join(tmpdir(),'agent-cil-model-save-failure-'));
   const sessionId=randomUUID();
-  const configPath=join(root,'blocked-config');
-  await mkdir(configPath);
+  const configDirectory=join(root,'blocked-config');
+  const configPath=join(configDirectory,'config.json');
+  await mkdir(configDirectory);
+  await writeFile(configPath,JSON.stringify({language:'en'}));
+  // Keep startup reads valid, but deny the atomic temp-file creation used by
+  // saveModelPreference(). An unreadable config path would correctly stop the
+  // CLI before the interactive /model rollback path could be exercised.
+  await chmod(configDirectory,0o500);
   const requests=[];
   const server=createServer(async(req,res)=>{
     const chunks=[];
@@ -178,7 +185,7 @@ test('real TTY /model rolls back the session checkpoint when persisted settings 
     assert.equal(result.signal,null,output);
     assert.equal(result.code,0,output);
     assert.equal(sent,commands.length,output);
-    assert.match(output,/Model unchanged: Could not persist model preference:.*EISDIR/);
+    assert.match(output,/Model unchanged: Could not persist model preference:.*EACCES/);
     assert.deepEqual(requests.map(x=>x.model),[
       'claude-sonnet-5-5','claude-sonnet-5-5',
     ]);
