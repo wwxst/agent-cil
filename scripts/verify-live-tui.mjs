@@ -28,7 +28,10 @@ const model = provider === 'openai'
   : provider === 'deepseek'
     ? (process.env.DEEPSEEK_MODEL || 'deepseek-flash')
     : (process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5');
-const executable = process.argv[2] || process.env.AGENT_CIL_TEST_EXECUTABLE ||
+const invokedDirectly = process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const executable = (invokedDirectly ? process.argv[2] : null) ||
+  process.env.AGENT_CIL_TEST_EXECUTABLE ||
   fileURLToPath(new URL('../packages/cli/src/index.js', import.meta.url));
 
 function redact(value) {
@@ -60,7 +63,7 @@ function validateConfiguration() {
   }
 }
 
-async function main() {
+export async function main() {
   validateConfiguration();
   let pty;
   try {
@@ -231,7 +234,9 @@ async function main() {
   }
 }
 
-main().catch(error => {
-  process.stderr.write('FAIL: ' + redact(error instanceof Error ? error.message : error) + '\n');
-  process.exitCode = 1;
-});
+if (invokedDirectly) {
+  main().catch(error => {
+    process.stderr.write('FAIL: ' + redact(error instanceof Error ? error.message : error) + '\n');
+    process.exitCode = 1;
+  });
+}
