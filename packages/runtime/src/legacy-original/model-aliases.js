@@ -79,19 +79,30 @@ export const getDefaultFableModel = (env = process.env, options = {}) =>
 
 export function getBestModel(env = process.env, options = {}) {
   const family = MODEL_CATALOG_BEST;
-  if (family === 'fable') return getDefaultFableModel(env, options);
-  if (family === 'opus') return getDefaultOpusModel(env, options);
-  return familyDefault(family, { ...options, env });
+  if (family !== 'fable') return familyDefault(family, { ...options, env });
+  const candidate = getDefaultFableModel(env, options);
+  // 2.1.304 best-model selection uses Fable only when the provider/catalog
+  // makes it available and the active model policy permits it; otherwise
+  // it falls back to the current Opus default.
+  return isModelAllowed(candidate, {
+    availableModels: options.availableModels,
+    deniedModels: options.deniedModels,
+    env,
+  }) ? candidate : getDefaultOpusModel(env, options);
 }
 
-function resolveAlias(alias, { env = process.env, apiProvider = 'firstParty' } = {}) {
+function resolveAlias(alias, {
+  env = process.env, apiProvider = 'firstParty',
+  availableModels, deniedModels = [],
+} = {}) {
+  const options = { apiProvider, availableModels, deniedModels };
   switch (alias) {
-    case 'sonnet': return getDefaultSonnetModel(env, { apiProvider });
-    case 'opus': return getDefaultOpusModel(env, { apiProvider });
-    case 'haiku': return getDefaultHaikuModel(env, { apiProvider });
-    case 'fable': return getDefaultFableModel(env, { apiProvider });
-    case 'best': return getBestModel(env, { apiProvider });
-    case 'opusplan': return getDefaultSonnetModel(env, { apiProvider });
+    case 'sonnet': return getDefaultSonnetModel(env, options);
+    case 'opus': return getDefaultOpusModel(env, options);
+    case 'haiku': return getDefaultHaikuModel(env, options);
+    case 'fable': return getDefaultFableModel(env, options);
+    case 'best': return getBestModel(env, options);
+    case 'opusplan': return getDefaultSonnetModel(env, options);
     default: return undefined;
   }
 }
@@ -105,13 +116,14 @@ function resolveAlias(alias, { env = process.env, apiProvider = 'firstParty' } =
  */
 export function parseUserSpecifiedModel(modelInput, {
   env = process.env, apiProvider = 'firstParty', firstPartyBaseUrl = true,
+  availableModels, deniedModels = [],
 } = {}) {
   const value = normalizeModelInput(modelInput);
   const withOneM = hasOneMSuffix(value);
   const oneMEnabled = withOneM && !is1mContextDisabled(env);
   const withoutOneM = stripOneMSuffix(value);
   const alias = withoutOneM.toLowerCase();
-  const resolved = resolveAlias(alias, { env, apiProvider });
+  const resolved = resolveAlias(alias, { env, apiProvider, availableModels, deniedModels });
 
   if (resolved !== undefined) {
     // 2.1.304 treats [1m] family aliases as a model-selection attribute.
@@ -209,10 +221,9 @@ export function resolveModelRequest(modelInput, {
 function normalizedPolicyValue(value) {
   return stripOneMSuffix(value.trim()).toLowerCase();
 }
-function canonicalPolicyModel(value, env) {
-  const normalized = normalizedPolicyValue(value);
+function canonicalPolicyModel(value, env, availableModels, deniedModels) {
   const parsed = isModelAlias(value) || isModelAlias(stripOneMSuffix(value))
-    ? parseUserSpecifiedModel(value, { env })
+    ? parseUserSpecifiedModel(value, { env, availableModels, deniedModels })
     : value;
   return getCanonicalModelName(parsed);
 }
@@ -229,28 +240,28 @@ function familyHasSpecificEntries(family, allowlist) {
     return end === entry.length || entry[end] === '-';
   });
 }
-function modelBelongsToFamily(model, family, env) {
-  const resolved = canonicalPolicyModel(model, env);
+function modelBelongsToFamily(model, family, env, availableModels, deniedModels) {
+  const resolved = canonicalPolicyModel(model, env, availableModels, deniedModels);
   const modelFamily = getModelFamily(resolved);
   return modelFamily === family || resolved.includes(family);
 }
-function modelMatchesVersionPrefix(model, entry, env) {
-  const resolved = canonicalPolicyModel(model, env);
+function modelMatchesVersionPrefix(model, entry, env, availableModels, deniedModels) {
+  const resolved = canonicalPolicyModel(model, env, availableModels, deniedModels);
   if (prefixMatchesModel(resolved, entry)) return true;
   return !entry.startsWith('claude-') &&
     prefixMatchesModel(resolved, 'claude-' + entry);
 }
-function modelMatchesPolicyEntry(model, entry, env) {
+function modelMatchesPolicyEntry(model, entry, env, availableModels, deniedModels) {
   const family = MODEL_FAMILY_ALIASES.find(value => entry === value);
   if (family) return modelBelongsToFamily(model, family, env);
   const normalizedModel = normalizedPolicyValue(model);
   if (normalizedModel === entry) return true;
-  const canonical = canonicalPolicyModel(model, env);
+  const canonical = canonicalPolicyModel(model, env, availableModels, deniedModels);
   if (canonical === entry) return true;
   if (isModelAlias(entry)) {
-    return canonicalPolicyModel(entry, env) === canonical;
+    return canonicalPolicyModel(entry, env, availableModels, deniedModels) === canonical;
   }
-  return modelMatchesVersionPrefix(model, entry, env);
+  return modelMatchesVersionPrefix(model, entry, env, availableModels, deniedModels);
 }
 
 /**
@@ -264,7 +275,9 @@ export function isModelAllowed(model, {
   if (typeof model !== 'string' || !model.trim()) return false;
   if (!Array.isArray(deniedModels) || deniedModels.some(x => typeof x !== 'string')) return false;
   const denies = deniedModels.map(x => x.trim().toLowerCase()).filter(Boolean);
-  if (denies.some(entry => modelMatchesPolicyEntry(model, entry, env))) return false;
+  if (denies.some(entry => modelMatchesPolicyEntry(
+    model, entry, env, availableModels, deniedModels,
+  ))) return false;
   if (availableModels === undefined || availableModels === null) return true;
   if (!Array.isArray(availableModels) || availableModels.some(x => typeof x !== 'string')) return false;
   const allowlist = availableModels.map(x => x.trim().toLowerCase()).filter(Boolean);
@@ -278,14 +291,15 @@ export function isModelAllowed(model, {
   for (const family of MODEL_FAMILY_ALIASES) {
     if (allowlist.includes(family) &&
         !familyHasSpecificEntries(family, allowlist) &&
-        modelBelongsToFamily(model, family, env)) return true;
+        modelBelongsToFamily(model, family, env, allowlist, denies)) return true;
   }
-  const canonical = canonicalPolicyModel(model, env);
+  const canonical = canonicalPolicyModel(model, env, allowlist, denies);
   if (allowlist.includes(canonical)) return true;
   for (const entry of allowlist) {
-    if (isModelAlias(entry) && canonicalPolicyModel(entry, env) === canonical) return true;
+    if (isModelAlias(entry) &&
+        canonicalPolicyModel(entry, env, allowlist, denies) === canonical) return true;
     if (!isModelFamilyAlias(entry) && !isModelAlias(entry) &&
-        modelMatchesVersionPrefix(model, entry, env)) return true;
+        modelMatchesVersionPrefix(model, entry, env, allowlist, denies)) return true;
   }
   return false;
 }
@@ -348,7 +362,9 @@ export function resolveOriginalCliModel({
     }
     return model;
   }
-  const requested = parseUserSpecifiedModel(model, { env, firstPartyBaseUrl });
+  const requested = parseUserSpecifiedModel(model, {
+    env, firstPartyBaseUrl, availableModels, deniedModels,
+  });
   const allowed = isModelAllowed(requested, { availableModels, deniedModels, env });
   const mainLoopModel = allowed
     ? requested
