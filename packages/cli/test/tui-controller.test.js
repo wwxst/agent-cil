@@ -205,6 +205,11 @@ test('TUI controller retains concurrent tool calls and their terminal lifecycle 
   const second = controller.beginToolMessage('tool-write-2', 'Write');
   assert.ok(first);
   assert.ok(second);
+  assert.equal(controller.setToolMessageResult({
+    toolUseId: 'tool-read-1',
+    toolName: 'Read',
+    content: 'value:file',
+  }), true);
   assert.equal(controller.finishToolMessage({
     toolUseId: 'tool-read-1',
   }), true);
@@ -228,6 +233,8 @@ test('TUI controller retains concurrent tool calls and their terminal lifecycle 
     ['tool-read-1', 'Read', 'succeeded'],
     ['tool-write-2', 'Write', 'failed'],
   ]);
+  assert.equal(messages[2].resultContent, 'value:file');
+  assert.equal(messages[2].resultIsError, false);
   assert.equal(messages[1].text, 'I will inspect first. Then report the result.');
   controller.close(0);
 });
