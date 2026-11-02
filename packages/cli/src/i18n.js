@@ -273,6 +273,17 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
       'Saved model setting must be a non-empty string of at most 256 characters.',
     );
   }
+  if (!configError) {
+    for (const key of ['availableModels', 'deniedModels']) {
+      if (Object.prototype.hasOwnProperty.call(config, key) &&
+          normalizeModelListPreference(config[key]) === null) {
+        configError = new TypeError(
+          'Saved ' + key + ' must be an array of at most 256 non-empty model names.',
+        );
+        break;
+      }
+    }
+  }
   const preference = normalizeLanguagePreference(config.language) ?? 'auto';
   return { preference, locale: resolveLanguage(preference, env, intlLocale), configPath, config, configError };
 }
@@ -305,6 +316,19 @@ export function normalizeModelPreference(value) {
   if (typeof value !== 'string') return null;
   const normalized = value.trim();
   if (!normalized || normalized.length > 256 || /[\u0000-\u001f\u007f]/.test(normalized)) return null;
+  return normalized;
+}
+
+/** Validate the 2.1.88/2.1.304 model policy arrays without dropping entries. */
+export function normalizeModelListPreference(value) {
+  if (!Array.isArray(value) || value.length > 256) return null;
+  const normalized = [];
+  for (const item of value) {
+    if (typeof item !== 'string') return null;
+    const entry = item.trim();
+    if (!entry || entry.length > 256 || /[\u0000-\u001f\u007f]/.test(entry)) return null;
+    normalized.push(entry);
+  }
   return normalized;
 }
 
