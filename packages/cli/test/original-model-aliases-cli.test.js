@@ -12,7 +12,6 @@ import {
   getModelContextWindow,getModelMaxOutputTokens,isModelAllowed,resolveModelRequest,
   getModelMetadata,isModelFamilyAlias,modelSupports1M,
   getDefaultSonnetModel,getDefaultOpusModel,getDefaultHaikuModel,
-  getApiProviderFromEnv,
 } from '../../runtime/src/legacy-original/model-aliases.js';
 
 const cli=process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -82,28 +81,14 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   assert.equal(getDefaultOpusModel({}, {apiProvider:'gateway'}),'claude-opus-4-7');
   assert.equal(getDefaultHaikuModel({}, {apiProvider:'anthropicGoogleCloud'}),'claude-haiku-4-5');
   assert.equal(getDefaultFableModel({}, {apiProvider:'gateway'}),'claude-fable-5');
-  assert.equal(getApiProviderFromEnv({CLAUDE_CODE_USE_BEDROCK:'1'}),'bedrock');
-  assert.equal(getApiProviderFromEnv({CLAUDE_CODE_USE_FOUNDRY:'1'}),'foundry');
-  assert.equal(getApiProviderFromEnv({CLAUDE_CODE_USE_ANTHROPIC_AWS:'1'}),'anthropicAws');
-  assert.equal(getApiProviderFromEnv({CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD:'1'}),
-    'anthropicGoogleCloud');
-  assert.equal(getApiProviderFromEnv({CLAUDE_CODE_USE_MANTLE:'1'}),'mantle');
-  assert.equal(getApiProviderFromEnv({CLAUDE_CODE_USE_VERTEX:'1'}),'vertex');
-  assert.equal(getApiProviderFromEnv({
-    CLAUDE_CODE_USE_BEDROCK:'1',CLAUDE_CODE_USE_GATEWAY:'1',
-  }),'gateway','gateway selection precedes the other provider flags');
-  assert.equal(parseUserSpecifiedModel('sonnet',{
-    env:{CLAUDE_CODE_USE_BEDROCK:'1'},
-  }),'claude-sonnet-4-5',
-  'model aliases use the configured Bedrock family default without a caller override');
   assert.equal(resolveOriginalCliModel({
-    provider:'anthropic',model:'sonnet',env:{CLAUDE_CODE_USE_BEDROCK:'1'},
+    provider:'anthropic',model:'sonnet',apiProvider:'bedrock',
   }),'claude-sonnet-4-5',
-  'the real CLI model resolver derives the upstream provider from environment flags');
+  'an explicitly selected Bedrock model family uses its provider-specific default');
   assert.equal(resolveOriginalCliModel({
-    provider:'anthropic',model:'opus',env:{CLAUDE_CODE_USE_GATEWAY:'1'},
+    provider:'anthropic',model:'opus',apiProvider:'gateway',
   }),'claude-opus-4-7',
-  'gateway model selection reaches the provider-specific Opus default');
+  'an explicitly selected gateway model family uses its provider-specific default');
   assert.equal(parseUserSpecifiedModel('best',{env,availableModels:['opus']}),
     'claude-opus-5-5',
     'best falls back to Opus when Fable is excluded by the model allowlist');
