@@ -20,7 +20,7 @@ import { checkWholeToolPermissionRules } from '../../runtime/src/legacy-permissi
 import { permissionRuleValueFromString, permissionRuleValueToString } from '../../runtime/src/legacy-permissions/permission-rule-parser.js';
 import { bashToolCheckExactMatchPermission } from '../../runtime/src/legacy-permissions/bash-exact-permission.js';
 import { bashToolCheckAstPermission } from '../../runtime/src/legacy-permissions/bash-ast-permission.js';
-import { resolveOriginalCliModel, getDefaultSonnetModel } from '../../runtime/src/legacy-original/model-aliases.js';
+import { resolveOriginalCliModel, getDefaultSonnetModel, isModelAllowed } from '../../runtime/src/legacy-original/model-aliases.js';
 import { getOriginalCliAutoCompactThreshold, isEnvTruthy } from '../../runtime/src/legacy-compact/original-auto-compact-threshold.js';
 import {
   getPerMessageBudgetLimit, generatePreview, buildLargeToolResultMessage,
@@ -2219,10 +2219,23 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   if (options.mode === 'config-set-model') {
     try {
-      // Validate through the same 2.1.88 model resolver used at runtime.
+      // Apply the same source availableModels/deniedModels policy before
+      // persisting a setting. A rejected model must not become a saved
+      // preference that silently resolves to a different model at startup.
+      if (!isModelAllowed(options.model, {
+        availableModels: languageState.config.availableModels,
+        deniedModels: languageState.config.deniedModels,
+        env,
+      })) {
+        throw new TypeError('Model ' + options.model + ' is not permitted by availableModels/deniedModels.');
+      }
       // Store the original alias/ID, not the resolved value, so model-family
       // environment overrides continue to apply on the next launch.
-      resolveOriginalCliModel({ provider: 'anthropic', model: options.model, env });
+      resolveOriginalCliModel({
+        provider: 'anthropic', model: options.model, env,
+        availableModels: languageState.config.availableModels,
+        deniedModels: languageState.config.deniedModels,
+      });
       const saved = await saveModelPreference(options.model, { env });
       process.stdout.write(t(locale, 'configModelSaved', { model: saved.preference }) + '\n');
       return 0;
@@ -2276,6 +2289,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       : (env.ANTHROPIC_MODEL || normalizeModelPreference(languageState.config.model) || getDefaultSonnetModel(env));
     selectedModel=resolveOriginalCliModel({
       provider,model:requestedModel,permissionMode:options.permissionMode,env,
+      availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
+      deniedModels:provider==='anthropic'?languageState.config.deniedModels:[],
     });
   }catch(error){
     printLocalizedError('Model configuration failed: '+
@@ -2350,6 +2365,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     model = new AnthropicMessagesAdapter({
       apiKey,
       model: selectedModel,
+      provider,
       baseUrl: options.baseUrl || (provider === 'deepseek'
         ? (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/anthropic')
         : (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com')),
@@ -2431,6 +2447,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     try{
       const restoredModel=resolveOriginalCliModel({
         provider,model:saved.setting,permissionMode:options.permissionMode,env,
+        availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
+        deniedModels:provider==='anthropic'?languageState.config.deniedModels:[],
       });
       model.setModel(restoredModel);
       activeModelSetting=saved.setting;
@@ -2826,8 +2844,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         const candidateSetting=isDefault?defaultSetting:setting;
         // Same parser as --model: never reinterpret OpenAI/DeepSeek IDs,
         // and reject unsupported first-party [1m] before touching state.
+        if (!isDefault && provider === 'anthropic' && !isModelAllowed(setting, {
+          availableModels: languageState.config.availableModels,
+          deniedModels: languageState.config.deniedModels,
+          env,
+        })) {
+          throw new TypeError('Model ' + setting + ' is not permitted by availableModels/deniedModels.');
+        }
         const resolved=resolveOriginalCliModel({
           provider,model:candidateSetting,permissionMode:permissionContext.mode,env,
+          availableModels:provider==='anthropic'?languageState.config.availableModels:undefined,
+          deniedModels:provider==='anthropic'?languageState.config.deniedModels:[],
         });
         if(typeof resolved!=='string'||!resolved.trim())
           throw new TypeError('Model identifier cannot be empty.');
