@@ -149,6 +149,10 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   assert.equal(resolveOriginalCliModel({
     provider:'anthropic',model:'opus',availableModels:['sonnet'],env,
   }),'claude-sonnet-5-5','a disallowed saved selection falls back to the permitted default');
+  assert.equal(resolveOriginalCliModel({
+    provider:'anthropic',model:'sonnet',availableModels:['opus-4-6'],env,
+  }),'claude-opus-4-6',
+  'a version-only allowlist entry resolves to its canonical first-party model ID');
   assert.equal(getRuntimeMainLoopModel({
     permissionMode:'plan',mainLoopModel:'claude-sonnet-5-5',
     userSpecifiedModel:'opusplan',availableModels:['sonnet'],env,
