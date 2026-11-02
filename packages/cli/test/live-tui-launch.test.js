@@ -13,7 +13,7 @@ const verificationScript = fileURLToPath(
 const cliEntry = fileURLToPath(new URL('../src/index.js', import.meta.url));
 
 const sse = (type, fields = {}) =>
-  'event: ' + type + '\\ndata: ' + JSON.stringify({ type, ...fields }) + '\\n\\n';
+  'event: ' + type + '\ndata: ' + JSON.stringify({ type, ...fields }) + '\n\n';
 
 function textReply(text) {
   return [
