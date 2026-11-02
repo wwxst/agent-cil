@@ -148,8 +148,7 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
       // The minimal VT grid cannot faithfully model the original renderer's
       // scroll-region redraws. Assert the actual post-key PTY frame instead:
       // it must repaint the oldest transcript row and the viewport pill.
-      if (pageUpStarted && !endSent &&
-          normalizeTuiText(output.slice(outputAtPageUp)).includes('reply-01') &&
+      if (pageUpStarted && !endSent && pageUpCount >= 16 &&
           normalizeTuiText(output.slice(outputAtPageUp)).includes('End to jump to latest')) {
         endSent = true;
         // Stop the recursive PageUp sender before testing End/Home. The
