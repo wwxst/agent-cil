@@ -84,6 +84,29 @@ export function createTuiController({ locale = 'en', model = 'default', permissi
       publish({ messages: [...snapshot.messages, message] });
       return message.id;
     },
+    setToolMessageResult({ toolUseId, toolName, content, isError = false } = {}) {
+      if (typeof toolUseId !== 'string' || !toolUseId ||
+          typeof toolName !== 'string' || !toolName ||
+          (typeof content !== 'string' && !Array.isArray(content))) return false;
+      let resultContent;
+      try {
+        resultContent = structuredClone(content);
+      } catch {
+        return false;
+      }
+      let found = false;
+      const messages = snapshot.messages.map(message => {
+        if (message.role !== 'tool' || message.toolUseId !== toolUseId) return message;
+        found = true;
+        return {
+          ...message,
+          resultContent,
+          resultIsError: isError === true,
+        };
+      });
+      if (found) publish({ messages });
+      return found;
+    },
     finishToolMessage({ toolUseId, isError = false, denied = false, interrupted = false } = {}) {
       if (typeof toolUseId !== 'string' || !toolUseId) return false;
       const status = interrupted ? 'interrupted'
