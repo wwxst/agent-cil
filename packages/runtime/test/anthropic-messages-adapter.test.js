@@ -575,17 +575,23 @@ test('2.1.304 catalog controls default output limits and 1M request headers acro
   const explicitLimit=new AnthropicMessagesAdapter({
     apiKey:'catalog-fixture-key',
     model:'claude-sonnet-5-5',
-    maxTokens:256,
+    maxTokens:100000,
     maxRetries:0,
     fetchImpl:async(_url,options)=>{
       pinned.push(JSON.parse(options.body));
       return {ok:true,status:200,body:makeSseBody(successfulStream())};
     },
   });
+  const runExplicit=async()=>{
+    for await(const event of explicitLimit.stream({
+      messages:[{role:'user',content:'explicit output limit'}],
+    })) void event;
+  };
+  await runExplicit();
   explicitLimit.setModel('claude-haiku-4-5-20251001');
-  for await(const event of explicitLimit.stream({
-    messages:[{role:'user',content:'explicit output limit'}],
-  })) void event;
-  assert.equal(pinned[0].max_tokens,256,
-    'an explicit --max-tokens override remains fixed across model switches');
+  await runExplicit();
+  explicitLimit.setModel('claude-sonnet-5-5');
+  await runExplicit();
+  assert.deepEqual(pinned.map(body=>body.max_tokens),[100000,64000,100000],
+    'the explicit output override is capped per active model and restored when switching back');
 });
