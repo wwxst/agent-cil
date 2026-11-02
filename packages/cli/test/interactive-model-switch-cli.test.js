@@ -64,7 +64,8 @@ test('real interactive CLI /model changes next streamed request without losing o
       'First prompt uses the original haiku selection'];
     child=spawn('script',['-q','-e','-c',args.map(shellQuote).join(' '),'/dev/null'],{
       env:{...process.env,ANTHROPIC_API_KEY:'fixture-interactive-model-key',
-        ANTHROPIC_MODEL:'',
+        // Default is an explicit null override, not this environment value.
+        ANTHROPIC_MODEL:'haiku',
         ANTHROPIC_DEFAULT_SONNET_MODEL:'',
         ANTHROPIC_DEFAULT_OPUS_MODEL:'',
         ANTHROPIC_DEFAULT_HAIKU_MODEL:'',
@@ -114,6 +115,45 @@ test('real interactive CLI /model changes next streamed request without losing o
     assert.equal(records.at(-1).kind,'finished');
     const config=JSON.parse(await readFile(configPath,'utf8'));
     assert.equal(config.model,undefined,'/model default must remove the saved model preference');
+    const runResumed=(args,provider='anthropic')=>new Promise((resolve,reject)=>{
+      const next=spawn(process.execPath,[cli,'--print','--cwd',root,
+        '--resume',sessionId,'--model',
+        provider==='anthropic'?'opus':'deepseek-flash',
+        '--provider',provider,'--max-retries','0','--compact-threshold','0',
+        '--base-url','http://127.0.0.1:'+server.address().port,...args],{
+        env:{...process.env,ANTHROPIC_API_KEY:'fixture-interactive-model-key',
+          DEEPSEEK_API_KEY:'fixture-interactive-deepseek-key',
+          ANTHROPIC_MODEL:'haiku',
+          ANTHROPIC_DEFAULT_SONNET_MODEL:'',
+          ANTHROPIC_DEFAULT_OPUS_MODEL:'',
+          ANTHROPIC_DEFAULT_HAIKU_MODEL:'',
+          AGENT_CIL_CONFIG_PATH:configPath},
+        stdio:['ignore','pipe','pipe'],
+      });
+      const output=[];
+      next.stdout.on('data',chunk=>output.push(chunk));
+      next.stderr.on('data',chunk=>output.push(chunk));
+      next.once('error',reject);
+      next.once('close',(code,signal)=>resolve({
+        code,signal,output:Buffer.concat(output).toString('utf8'),
+      }));
+    });
+    const resumed=await runResumed(['Fourth prompt after restoring Default']);
+    assert.equal(resumed.signal,null,resumed.output);
+    assert.equal(resumed.code,0,resumed.output);
+    assert.match(resumed.output,/Restored session model: claude-sonnet-5-5/);
+    assert.deepEqual(requests.map(x=>x.model),[
+      'claude-haiku-5-5','claude-opus-5-5',
+      'claude-sonnet-5-5','claude-sonnet-5-5',
+    ],'explicit Default must survive --resume over --model and ANTHROPIC_MODEL');
+    assert.doesNotMatch(JSON.stringify(requests[3].messages),/\\/model default/,
+      'Default metadata must not become a model-visible message');
+    const beforeProviderSwitch=requests.length;
+    const denied=await runResumed(['Do not send to another provider'],'deepseek');
+    assert.equal(denied.signal,null,denied.output);
+    assert.equal(denied.code,2,denied.output);
+    assert.match(denied.output,/model override belongs to provider anthropic/);
+    assert.equal(requests.length,beforeProviderSwitch);
   }finally{
     if(watchdog)clearTimeout(watchdog);
     if(child&&child.exitCode===null)child.kill('SIGKILL');
@@ -191,7 +231,7 @@ test('real TTY /model rolls back the session checkpoint when persisted settings 
     const records=(await readFile(join(root,'.agent-cil','sessions',
       sessionId,'transcript.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
     assert.deepEqual(records.filter(x=>x.kind==='model_override').map(x=>x.setting),
-      ['opus',null],'failed persistence must append a rollback checkpoint');
+      ['opus','sonnet'],'failed persistence must restore the actual startup model');
   }finally{
     if(watchdog)clearTimeout(watchdog);
     if(child&&child.exitCode===null)child.kill('SIGKILL');
