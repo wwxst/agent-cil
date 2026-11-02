@@ -50,7 +50,6 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
   let homeSent = false;
   let exitSent = false;
   let outputAtPageUp = 0;
-  let outputAtEnd = 0;
   let outputAtHome = 0;
   const totalTurns = 12;
   const timers = new Set();
@@ -155,16 +154,14 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
         // Stop the recursive PageUp sender before testing End/Home. The
         // terminal may reach the top before all scheduled repeat ticks fire.
         pageUpCount = 16;
-        outputAtEnd = output.length;
         child.stdin.write('\x1b[4~');
         return;
       }
 
-      const endOutput = normalizeTuiText(output.slice(outputAtEnd));
       if (endSent && !homeSent &&
-          endOutput.includes('reply-' + pad(totalTurns)) &&
-          !endOutput.includes('reply-01') && inputReady &&
-          !endOutput.includes('End to jump to latest')) {
+          screenText.includes('reply-' + pad(totalTurns)) &&
+          !screenText.includes('reply-01') && inputReady &&
+          !screenText.includes('End to jump to latest')) {
         homeSent = true;
         outputAtHome = output.length;
         child.stdin.write('\x1b[1~');
