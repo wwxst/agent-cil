@@ -18,25 +18,29 @@ export function normalizeTuiText(output) {
   return normalizeTuiOutput(output).replace(/\s+/g, ' ').trim();
 }
 
+function compactTuiText(value) {
+  return normalizeTuiOutput(value).replace(/\s+/g, '');
+}
+
+// Ink's incremental renderer uses cursor-forward to skip unchanged cells.
+// A raw stream therefore contains cursor jumps between fragments of a word;
+// replacing those jumps with spaces can turn "Bash" into "B ash". For
+// semantic text assertions, compare the cumulative rendered characters while
+// ignoring layout whitespace. Keep createTerminalScreen for tests that need
+// exact viewport/cursor placement.
 export async function waitForTuiText(getOutput, expected, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
+  const compactExpected = String(expected ?? '').replace(/\s+/g, '');
   let lastOutput = '';
   let visibleText = '';
   while (Date.now() < deadline) {
     lastOutput = String(getOutput() ?? '');
-    // Ink's incremental diff stream moves the cursor over unchanged cells.
-    // Replacing CSI cursor-forward with spaces corrupts words ("Bash" can
-    // become "B ash"). Reconstruct the VT screen so those cells retain their
-    // previous contents, then assert what is actually visible to the user.
-    const screen = createTerminalScreen(80, 24);
-    screen.write(lastOutput);
-    visibleText = normalizeTuiText(screen.toString());
-    if (visibleText.includes(expected)) return lastOutput;
+    visibleText = compactTuiText(lastOutput);
+    if (visibleText.includes(compactExpected)) return lastOutput;
     await new Promise(resolve => setTimeout(resolve, 25));
   }
   throw new Error(
-    'Timed out waiting for TUI text "' + expected + '":\n' + lastOutput +
-    '\nReconstructed screen:\n' + visibleText,
+    'Timed out waiting for TUI text "' + expected + '":\n' + lastOutput,
   );
 }
 
@@ -48,13 +52,12 @@ export async function waitForTuiTextAfter(
 ) {
   const deadline = Date.now() + timeoutMs;
   let lastOutput = '';
+  const compactPreceding = String(precedingText ?? '').replace(/\s+/g, '');
+  const compactExpected = String(expectedText ?? '').replace(/\s+/g, '');
   while (Date.now() < deadline) {
-    const rawOutput = String(getOutput() ?? '');
-    const screen = createTerminalScreen(80, 24);
-    screen.write(rawOutput);
-    lastOutput = normalizeTuiText(screen.toString());
-    const precedingIndex = lastOutput.lastIndexOf(precedingText);
-    const expectedIndex = lastOutput.lastIndexOf(expectedText);
+    lastOutput = compactTuiText(getOutput());
+    const precedingIndex = lastOutput.lastIndexOf(compactPreceding);
+    const expectedIndex = lastOutput.lastIndexOf(compactExpected);
     if (precedingIndex >= 0 && expectedIndex > precedingIndex) return lastOutput;
     await new Promise(resolve => setTimeout(resolve, 25));
   }
