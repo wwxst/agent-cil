@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict';
+
+// These existing PTY cases verify the readline fallback contract;
+// newly restored tui-*.test.js cases exercise the default Ink renderer.
+process.env.AGENT_CIL_TEST_FORCE_READLINE = '1';
+
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';

@@ -24,6 +24,18 @@ jobs:
       - name: Verify actual Windows ConPTY Ctrl+C path
         timeout-minutes: 1
         run: node --test packages/cli/test/ctrl-c-interrupt-windows-pty.test.js
+      - name: Verify original Ink TUI permission flow on native Windows ConPTY
+        timeout-minutes: 2
+        run: node --test packages/cli/test/tui-permission-windows-pty.test.js
+      - name: Verify original Ink TUI scrollback pager on native Windows ConPTY
+        timeout-minutes: 2
+        run: node --test packages/cli/test/tui-scrollback-cli.test.js
+      - name: Verify bilingual Ink TUI language switching on native Windows ConPTY
+        timeout-minutes: 2
+        run: node --test packages/cli/test/tui-language-cli.test.js
+      - name: Verify credentialed live Ink TUI harness with a local provider fixture
+        timeout-minutes: 2
+        run: node --test packages/cli/test/live-tui-launch.test.js
       - name: Preflight cold Windows Bash Job Object startup
         run: |
           node --test packages/cli/test/windows-job-supervisor-smoke.test.js
@@ -81,6 +93,7 @@ jobs:
         run: |
           find packages -name '*.js' -print0 | xargs -0 -n1 node --check
           node --check scripts/verify-live-provider.mjs
+          node --check scripts/verify-live-tui.mjs
       - name: Validate packed installation and real CLI entry point
         shell: bash
         run: |
@@ -100,6 +113,9 @@ jobs:
           "$cli" --help | head -n 30
           "$cli" --help | grep -q -- '--allow-edits'
           node scripts/verify-installed-cli.mjs "$cli"
+          # Verify the original Ink Markdown renderer, transcript scrollback,
+          # Home/End pager, and unseen-message hint through the npm-installed binary.
+          AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/tui-markdown-cli.test.js packages/cli/test/tui-scrollback-cli.test.js
           # Exercise model transport and TTY approval via the installed CLI.
           AGENT_CIL_TEST_EXECUTABLE="$cli" node --test packages/cli/test/legacy-model-transport-cli.test.js
           # Verify signed thinking, 3 model rounds and Read/Edit behavior

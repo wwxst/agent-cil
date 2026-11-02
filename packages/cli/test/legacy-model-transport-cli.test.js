@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+
+// This pre-Ink interactive fixture verifies the historical readline fallback.
+// Default Ink behavior is covered by the restored tui-*.test.js PTY cases.
+process.env.AGENT_CIL_TEST_FORCE_READLINE = '1';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';

@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "src/*": ["legacy/2.1.88/restored-src/src/*"]
+    },
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "strict": false
+  }
+}

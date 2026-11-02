@@ -78,7 +78,7 @@ test('live-provider harness launches .js CLI through Node on Windows and POSIX',
       env: {
         ...process.env,
         ANTHROPIC_API_KEY: 'local-acceptance-fixture-key',
-        ANTHROPIC_MODEL: 'deepseek-flash',
+        ANTHROPIC_MODEL: '',
         ANTHROPIC_BASE_URL: 'http://127.0.0.1:' + address.port + '/anthropic',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -99,7 +99,7 @@ test('live-provider harness launches .js CLI through Node on Windows and POSIX',
     assert.match(output, /PASS: credentialed streaming response/);
     assert.match(output, /PASS: live Read -> Edit -> Read coding task/);
     assert.equal(requests.length, 5, 'both live-harness runs should complete');
-    assert.equal(requests[0].model, 'deepseek-flash');
+    assert.equal(requests[0].model, 'claude-sonnet-4-5');
     assert.equal(requests[2].messages.at(-1).content[0].tool_use_id, 'read-before');
     assert.equal(requests[3].messages.at(-1).content[0].tool_use_id, 'edit-code');
     assert.equal(requests[4].messages.at(-1).content[0].tool_use_id, 'read-after');

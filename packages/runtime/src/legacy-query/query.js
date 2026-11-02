@@ -546,6 +546,13 @@ export async function query({
             await onSessionCheckpoint?.({
               messages: structuredClone(history), kind: 'output_recovery',
             });
+            // A max_tokens response is a completed model message even though
+            // the enclosing agent turn continues. Close its transcript row
+            // after the recovery prompt is durable and before the next request.
+            emit('turnFinished', {
+              turn, stopReason, toolResultCount: 0,
+              committedMessages: structuredClone(history),
+            });
             emit('outputLimitRecovery', {
               turn, attempt: outputLimitRecoveryCount,
             });
@@ -593,6 +600,20 @@ export async function query({
           executor.addTool(toolUse);
         }
         const toolResults = [];
+        const emittedToolResultIds = new Set();
+        const emitCommittedToolResult = index => {
+          const result = toolResults[index];
+          const toolUse = toolUses[index];
+          if (!result || !toolUse || emittedToolResultIds.has(result.tool_use_id)) return;
+          emittedToolResultIds.add(result.tool_use_id);
+          emit('toolResult', {
+            turn,
+            toolUseId: result.tool_use_id,
+            toolName: toolUse.name,
+            content: structuredClone(result.content),
+            isError: result.is_error === true,
+          });
+        };
         let finalToolBlocks;
         try {
           for await (const update of executor.getRemainingResults()) {
@@ -636,6 +657,10 @@ export async function query({
                 await onSessionCheckpoint?.({
                   messages:structuredClone(history),kind:'tool_partial',
                 });
+                // The original transcript keeps completed sibling results
+                // visible even if a later tool is still running. Publish only
+                // after the same incremental checkpoint has been committed.
+                emitCommittedToolResult(toolResults.length - 1);
               } else {
                 // Wait until original Hook/native attachment normalization
                 // finishes before closing the last tool user message.
@@ -699,6 +724,7 @@ export async function query({
           await onSessionCheckpoint?.({
             messages:structuredClone(history),kind:'tool_uncertain',
           });
+          emitCommittedToolResult(toolResults.length - 1);
           throw error;
         }
         history.push({role:'user',content:[
@@ -712,6 +738,9 @@ export async function query({
         // request. This prevents replaying a completed Write/Bash on a later
         // model transport failure or process restart.
         await onSessionCheckpoint?.({ messages: structuredClone(history), kind: 'tool' });
+        for (let index = 0; index < toolResults.length; index += 1) {
+          emitCommittedToolResult(index);
+        }
         emit('turnFinished', {
           turn, stopReason, toolResultCount: toolResults.length,
           committedMessages: structuredClone(history),

@@ -23,14 +23,13 @@ const apiKey = provider === 'openai' ? process.env.OPENAI_API_KEY
 const baseUrl = provider === 'openai'
   ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
   : provider === 'deepseek'
-    ? (process.env.DEEPSEEK_BASE_URL || process.env.ANTHROPIC_BASE_URL ||
-       'https://api.deepseek.com/anthropic')
+    ? (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/anthropic')
     : process.env.ANTHROPIC_BASE_URL;
 const model = provider === 'openai'
   ? (process.env.OPENAI_MODEL || 'gpt-5.1')
   : provider === 'deepseek'
-    ? (process.env.DEEPSEEK_MODEL || process.env.ANTHROPIC_MODEL || 'deepseek-flash')
-    : (process.env.ANTHROPIC_MODEL || 'deepseek-flash');
+    ? (process.env.DEEPSEEK_MODEL || 'deepseek-flash')
+    : (process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5');
 const executable = process.argv[2] || process.env.AGENT_CIL_TEST_EXECUTABLE || 'agent-cil';
 
 function redact(text) {
@@ -69,12 +68,17 @@ async function runCli({ workspace, prompt, label }) {
   const isNodeScript = /\.(?:c|m)?js$/i.test(executable);
   const command = isNodeScript ? process.execPath : executable;
   const launchArgs = isNodeScript ? [executable, ...args] : args;
+  const childEnv = { ...process.env };
+  // Never forward credentials for providers that this run is not using.
+  // Avoid assigning undefined: child_process may stringify it as "undefined".
+  delete childEnv.ANTHROPIC_API_KEY;
+  delete childEnv.DEEPSEEK_API_KEY;
+  delete childEnv.OPENAI_API_KEY;
+  if (provider === 'anthropic') childEnv.ANTHROPIC_API_KEY = apiKey;
+  else if (provider === 'deepseek') childEnv.DEEPSEEK_API_KEY = apiKey;
+  else childEnv.OPENAI_API_KEY = apiKey;
   const child = spawn(command, launchArgs, {
-    env: { ...process.env,
-      ANTHROPIC_API_KEY: provider === 'anthropic' ? apiKey : undefined,
-      DEEPSEEK_API_KEY: provider === 'deepseek' ? apiKey : undefined,
-      OPENAI_API_KEY: provider === 'openai' ? apiKey : undefined,
-    },
+    env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: false,
   });
