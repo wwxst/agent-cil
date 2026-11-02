@@ -2704,7 +2704,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       tui.setBusy(true);
       tui.setStatus(t(locale, 'tuiWorking'));
       if (text !== undefined) tui.addMessage('user', text);
-      if (!plain) tui.beginAssistantMessage();
     } else if (!plain) {
       process.stdout.write(t(locale, 'assistantPrompt'));
     }
@@ -2712,11 +2711,20 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (tui) tui.appendAssistantText(delta);
       else process.stdout.write(delta);
     };
+    // Each original Query turn is a distinct assistant message. Close it
+    // before its committed tool_result messages are appended, then start a
+    // fresh assistant message for the next model request. This preserves the
+    // source REPL transcript order instead of appending a final answer to the
+    // first (possibly empty) assistant row above all tool results.
+    const onTurnStarted = () => {
+      if (tui) tui.beginAssistantMessage();
+    };
     // Once a model-requested tool turn has finished, its effects may already
     // be on disk. If the NEXT model stream fails, retaining the completed
     // assistant/tool_result pair prevents a retry from redoing that work.
     let committedHistory;
     const onTurnFinished = ({ committedMessages }) => {
+      if (tui) tui.finishAssistantMessage();
       if (committedMessages) committedHistory = committedMessages;
     };
     const onContextCompacted = ({ committedMessages, beforeCount, afterCount }) => {
@@ -2728,6 +2736,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (tui) tui.setStatus(notice);
       else process.stderr.write(notice + '\n');
     };
+    loop.on('turnStarted', onTurnStarted);
     loop.on('textDelta', onTextDelta);
     loop.on('turnFinished', onTurnFinished);
     loop.on('contextCompacted', onContextCompacted);
@@ -2807,6 +2816,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         tui.setBusy(false);
         if (!sigtermRequested) tui.setStatus(t(locale, 'tuiReady'));
       }
+      loop.off('turnStarted', onTurnStarted);
       loop.off('textDelta', onTextDelta);
       loop.off('turnFinished', onTurnFinished);
       loop.off('contextCompacted', onContextCompacted);
