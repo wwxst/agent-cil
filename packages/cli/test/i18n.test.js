@@ -87,6 +87,47 @@ test('malformed configuration is not overwritten by language preference updates'
   }
 });
 
+test('invalid persisted model values fail closed and can be repaired explicitly', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-invalid-value-'));
+  const configPath = join(directory, 'config.json');
+  const env = { AGENT_CIL_CONFIG_PATH: configPath, LANG: 'en_US.UTF-8' };
+  try {
+    for (const model of [null, 123, '', '   ', 'x'.repeat(257), 'bad\\nmodel']) {
+      await writeFile(configPath, JSON.stringify({
+        language: 'zh-CN', theme: 'dark', model,
+      }));
+      const state = await loadLanguagePreference({ env });
+      assert.ok(state.configError instanceof TypeError, JSON.stringify(model));
+      assert.equal(state.preference, 'zh-CN');
+      assert.equal(state.locale, 'zh-CN');
+    }
+
+    // An explicit config command is the recovery path: it may replace the
+    // invalid model field while preserving all unrelated settings.
+    await writeFile(configPath, JSON.stringify({
+      language: 'zh-CN', theme: 'dark', model: 123,
+    }));
+    const saved = await saveModelPreference('opus', { env });
+    assert.equal(saved.preference, 'opus');
+    const repaired = await loadLanguagePreference({ env });
+    assert.equal(repaired.configError, undefined);
+    assert.deepEqual(repaired.config, {
+      language: 'zh-CN', theme: 'dark', model: 'opus',
+    });
+
+    await writeFile(configPath, JSON.stringify({
+      language: 'zh-CN', theme: 'dark', model: 123,
+    }));
+    const cleared = await clearModelPreference({ env });
+    assert.equal(cleared.config.model, undefined);
+    const unset = await loadLanguagePreference({ env });
+    assert.equal(unset.configError, undefined);
+    assert.deepEqual(unset.config, { language: 'zh-CN', theme: 'dark' });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('translation interpolates values and uses English fallback for unknown keys', () => {
   assert.equal(translate('zh-CN', 'languageSet', { language: '简体中文' }), '界面语言已切换为 简体中文。');
   assert.equal(translate('en', 'toolFailed', { tool: 'Bash', status: 'failed' }), '[tool] Bash failed');
