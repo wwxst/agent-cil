@@ -109,6 +109,14 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
   }),'Opus','Never rewrite an OpenAI model ID.');
   assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env}),'claude-sonnet-5-5[1m]',
     '2.1.304 retains the explicit 1M attribute for family aliases');
+  assert.equal(parseUserSpecifiedModel('sonnet[1m]',{
+    env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
+  }),'sonnet[1m]',
+  '2.1.304 does not strip the suffix before alias recognition when 1M is disabled');
+  assert.equal(parseUserSpecifiedModel('claude-opus-4-20250514[1m]',{
+    env:{CLAUDE_CODE_DISABLE_1M_CONTEXT:'1'},
+  }),'claude-opus-4-20250514[1m]',
+  'disabled 1M also prevents the legacy Opus remap from treating a suffixed ID as bare');
   assert.equal(parseUserSpecifiedModel('sonnet[1m]',{env:overrideEnv}),'sonnet-local-id[1m]',
     'non-native custom defaults retain the explicit 1M opt-in');
   assert.equal(resolveOriginalCliModel({
