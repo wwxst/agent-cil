@@ -29,7 +29,13 @@ export default function AgentTui({ controller, initialHistory = [], onSubmit, on
     onRepin,
     jumpToNew,
   } = useUnseenDivider(snapshot.messages.length);
-  const [scrollMetrics, setScrollMetrics] = useState(null);
+  const [scrollMetrics, setScrollMetrics] = useState<{
+    scrollTop: number;
+    pendingDelta: number;
+    viewportHeight: number;
+    scrollHeight: number;
+    sticky: boolean;
+  } | null>(null);
   useEffect(() => {
     if (snapshot.pendingApproval) {
       setScrollMetrics(null);
