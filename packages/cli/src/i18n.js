@@ -284,6 +284,13 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
       }
     }
   }
+  if (!configError &&
+      Object.prototype.hasOwnProperty.call(config, 'availableModelsMatch') &&
+      !['prefix', 'exact'].includes(config.availableModelsMatch)) {
+    configError = new TypeError(
+      'Saved availableModelsMatch must be either "prefix" or "exact".',
+    );
+  }
   const preference = normalizeLanguagePreference(config.language) ?? 'auto';
   return { preference, locale: resolveLanguage(preference, env, intlLocale), configPath, config, configError };
 }
