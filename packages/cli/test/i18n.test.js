@@ -92,7 +92,7 @@ test('invalid persisted model values fail closed and can be repaired explicitly'
   const configPath = join(directory, 'config.json');
   const env = { AGENT_CIL_CONFIG_PATH: configPath, LANG: 'en_US.UTF-8' };
   try {
-    for (const model of [null, 123, '', '   ', 'x'.repeat(257), 'bad\\nmodel']) {
+    for (const model of [null, 123, '', '   ', 'x'.repeat(257), 'bad\nmodel']) {
       await writeFile(configPath, JSON.stringify({
         language: 'zh-CN', theme: 'dark', model,
       }));
