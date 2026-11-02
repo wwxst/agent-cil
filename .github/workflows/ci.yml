@@ -30,6 +30,9 @@ jobs:
       - name: Verify original Ink TUI scrollback pager on native Windows ConPTY
         timeout-minutes: 2
         run: node --test packages/cli/test/tui-scrollback-cli.test.js
+      - name: Verify bilingual Ink TUI language switching on native Windows ConPTY
+        timeout-minutes: 2
+        run: node --test packages/cli/test/tui-language-cli.test.js
       - name: Preflight cold Windows Bash Job Object startup
         run: |
           node --test packages/cli/test/windows-job-supervisor-smoke.test.js
