@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -292,17 +292,7 @@ export async function saveLanguagePreference(language, { env = process.env, home
     if (error?.code !== 'ENOENT') throw error;
   }
   const nextConfig = { ...config, language: preference };
-  await mkdir(dirname(configPath), { recursive: true });
-  const temporaryPath = configPath + '.' + process.pid + '.' + randomUUID() + '.tmp';
-  try {
-    await writeFile(temporaryPath, JSON.stringify(nextConfig, null, 2) + '\n', {
-      encoding: 'utf8', flag: 'wx', mode: 0o600,
-    });
-    await rename(temporaryPath, configPath);
-  } catch (error) {
-    await rm(temporaryPath, { force: true }).catch(() => {});
-    throw error;
-  }
+  await writeUserConfigAtomically(configPath, nextConfig);
   return { preference, locale: resolveLanguage(preference, env), configPath, config: nextConfig };
 }
 
@@ -334,12 +324,19 @@ async function readUserConfigForWrite(configPath) {
 async function writeUserConfigAtomically(configPath, config) {
   await mkdir(dirname(configPath), { recursive: true });
   const temporaryPath = configPath + '.' + process.pid + '.' + randomUUID() + '.tmp';
+  let handle;
   try {
-    await writeFile(temporaryPath, JSON.stringify(config, null, 2) + '\n', {
-      encoding: 'utf8', flag: 'wx', mode: 0o600,
-    });
+    // Match the original settings writer's flush guarantee before the atomic
+    // replacement. A process crash must not publish a partially written JSON
+    // document as the user's new model/language configuration.
+    handle = await open(temporaryPath, 'wx', 0o600);
+    await handle.writeFile(JSON.stringify(config, null, 2) + '\n', 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
     await rename(temporaryPath, configPath);
   } catch (error) {
+    await handle?.close().catch(() => {});
     await rm(temporaryPath, { force: true }).catch(() => {});
     throw error;
   }
