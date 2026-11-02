@@ -141,6 +141,8 @@ test('2.1.304 model catalog preserves aliases, custom casing, native 1M and plan
     default:128_000,upperLimit:128_000,
   });
   assert.equal(isModelAllowed('claude-opus-5-5',{availableModels:['opus']}),true);
+  assert.equal(isModelAllowed('mysonnet-custom',{availableModels:['sonnet']}),true,
+    'legacy prefix-mode family matching preserves the 2.1.88 includes() behavior');
   assert.equal(isModelAllowed('claude-opus-4-6',{
     availableModels:['opus','opus-5-5'],
   }),false,'a version-qualified entry narrows the family wildcard');
