@@ -33,6 +33,9 @@ jobs:
       - name: Verify bilingual Ink TUI language switching on native Windows ConPTY
         timeout-minutes: 2
         run: node --test packages/cli/test/tui-language-cli.test.js
+      - name: Verify credentialed live Ink TUI harness with a local provider fixture
+        timeout-minutes: 2
+        run: node --test packages/cli/test/live-tui-launch.test.js
       - name: Preflight cold Windows Bash Job Object startup
         run: |
           node --test packages/cli/test/windows-job-supervisor-smoke.test.js
@@ -90,6 +93,7 @@ jobs:
         run: |
           find packages -name '*.js' -print0 | xargs -0 -n1 node --check
           node --check scripts/verify-live-provider.mjs
+          node --check scripts/verify-live-tui.mjs
       - name: Validate packed installation and real CLI entry point
         shell: bash
         run: |
