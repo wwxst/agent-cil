@@ -38,7 +38,7 @@ export async function startAgentTui({
   const initialHistory = await loadPromptHistory({ limit: 100 }).catch(() => []);
   const onNotification = notification => {
     const localized = notification?.text === 'Esc again to clear'
-      ? { ...notification, text: translate(locale, 'pressEscAgainToClear') }
+      ? { ...notification, text: translate(controller.getSnapshot().locale, 'pressEscAgainToClear') }
       : notification;
     controller.setNotification(localized);
   };
