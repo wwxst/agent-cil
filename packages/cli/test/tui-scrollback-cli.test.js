@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createTerminalScreen } from './tui-test-helpers.js';
+import { createTerminalScreen, normalizeTuiText } from './tui-test-helpers.js';
 
 // This test also runs against the npm-pack-installed CLI executable.
 const cli = process.env.AGENT_CIL_TEST_EXECUTABLE ??
@@ -49,6 +49,9 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
   let endSent = false;
   let homeSent = false;
   let exitSent = false;
+  let outputAtPageUp = 0;
+  let outputAtEnd = 0;
+  let outputAtHome = 0;
   const totalTurns = 12;
   const timers = new Set();
   const later = (callback, delay) => {
@@ -137,37 +140,38 @@ test('original 2.1.88 ScrollBox supports PageUp and the 2.1.304 Home/End pager k
           'the newest turn must be visible before scrolling: ' + screenText);
         assert.ok(!screenText.includes('reply-01'),
           'the oldest turn must be outside the bottom viewport before PageUp: ' + screenText);
+        outputAtPageUp = output.length;
         sendPageUp();
         return;
       }
 
-      // PageUp can move the ScrollBox before React commits the unseen
-      // divider state and redraws the footer. Wait for the settled VT frame
-      // containing both the historical transcript and its jump hint; do not
-      // assert against the intermediate frame from the same input batch.
+      // The VT test screen intentionally models cursor movement, but the
+      // renderer emits the pill's spaces as CSI cursor-forward sequences.
+      // Normalize the actual PTY stream for the pill text and use the VT
+      // screen only for transcript position assertions.
       if (pageUpStarted && !endSent && screenText.includes('reply-01') &&
-          screenText.includes('End to jump to latest')) {
+          normalizeTuiText(output.slice(outputAtPageUp)).includes('End to jump to latest')) {
         endSent = true;
         // Stop the recursive PageUp sender before testing End/Home. The
         // terminal may reach the top before all scheduled repeat ticks fire.
         pageUpCount = 16;
+        outputAtEnd = output.length;
         child.stdin.write('\x1b[4~');
         return;
       }
 
       if (endSent && !homeSent &&
           screenText.includes('reply-' + pad(totalTurns)) &&
-          !screenText.includes('reply-01') && inputReady) {
-        assert.ok(!screenText.includes('End to jump to latest'),
-          'returning to the live tail must clear the unseen-message hint: ' + screenText);
+          !screenText.includes('reply-01') && inputReady &&
+          !normalizeTuiText(output.slice(outputAtEnd)).includes('End to jump to latest')) {
         homeSent = true;
+        outputAtHome = output.length;
         child.stdin.write('\x1b[1~');
         return;
       }
 
-      if (homeSent && !exitSent && screenText.includes('reply-01')) {
-        assert.ok(screenText.includes('End to jump to latest'),
-          'returning to the top must restore the jump hint: ' + screenText);
+      if (homeSent && !exitSent && screenText.includes('reply-01') &&
+          normalizeTuiText(output.slice(outputAtHome)).includes('End to jump to latest')) {
         exitSent = true;
         for (const timer of timers) clearTimeout(timer);
         timers.clear();
