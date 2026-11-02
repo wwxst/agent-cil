@@ -278,7 +278,7 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
     );
     configErrorField = 'model';
   }
-  if (!configError) {
+  if (!configError || configErrorField === 'model') {
     for (const key of ['availableModels', 'deniedModels']) {
       if (Object.prototype.hasOwnProperty.call(config, key) &&
           normalizeModelListPreference(config[key]) === null) {
@@ -290,7 +290,7 @@ export async function loadLanguagePreference({ env = process.env, homeDirectory 
       }
     }
   }
-  if (!configError &&
+  if ((!configError || configErrorField === 'model') &&
       Object.prototype.hasOwnProperty.call(config, 'availableModelsMatch') &&
       !['prefix', 'exact'].includes(config.availableModelsMatch)) {
     configError = new TypeError(
