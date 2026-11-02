@@ -63,7 +63,7 @@ function validateConfiguration() {
   }
 }
 
-export async function main() {
+export async function main({ turnTimeoutMs = 120_000 } = {}) {
   validateConfiguration();
   let pty;
   try {
@@ -162,7 +162,7 @@ export async function main() {
     await waitFor(
       () => completedMarker(output, 'LIVE_TUI_FIXED'),
       'first interactive coding turn did not complete',
-      120_000,
+      turnTimeoutMs,
     );
     const afterEdit = await readFile(source, 'utf8');
     assert.equal(afterEdit, expected,
@@ -195,7 +195,7 @@ export async function main() {
     await waitFor(
       () => completedMarker(output.slice(secondPromptStart), 'LIVE_TUI_SECOND_TURN:5'),
       'second interactive model turn did not complete',
-      120_000,
+      turnTimeoutMs,
     );
 
     const normalized = normalizeOutput(output);
