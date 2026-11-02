@@ -104,11 +104,16 @@ test('ported query persists complete multi-tool results and obeys maximum-turn b
     yield { type: 'tool_use', id: 'b', name: 'Read', input: { key: 'B' } };
     yield { type: 'message_end', stopReason: 'end_turn' };
   } };
+  const lifecycle = [];
   const loop = new AgentLoop({
     model, tools, maxTurns: 1,
     permissionPolicy: async () => ({ behavior: 'allow' }),
+    onSessionCheckpoint: async checkpoint => {
+      lifecycle.push('checkpoint:' + checkpoint.kind);
+    },
   });
   loop.on('toolCallFinished', () => { executions++; });
+  loop.on('toolResult', event => lifecycle.push('result:' + event.toolUseId));
   const result = await loop.run({ input: 'read two things' });
   assert.equal(result.stopReason, 'max_turns');
   assert.equal(result.turns, 1);
@@ -118,6 +123,13 @@ test('ported query persists complete multi-tool results and obeys maximum-turn b
     'original Query keeps one UUID-linked source result per tool');
   assert.deepEqual(normalizeMessagesForAPI(result.messages).at(-1).content
     .map(b=>b.content),['value:A','value:B']);
+  assert.deepEqual(lifecycle, [
+    'checkpoint:tool_pending',
+    'checkpoint:tool_partial',
+    'result:a',
+    'checkpoint:tool',
+    'result:b',
+  ], 'each visible result follows its durable checkpoint and preserves tool order');
 });
 
 test('ported query preserves strict malformed message protections', async () => {
