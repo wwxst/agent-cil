@@ -213,6 +213,38 @@ test('runtime model selection follows 2.1.88 priority: --model, env, saved setti
 });
 
 
+test('empty model allowlist fails closed before a provider request', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-policy-empty-'));
+  const configPath = join(directory, 'config.json');
+  try {
+    await writeFile(configPath, JSON.stringify({
+      language: 'en',
+      availableModels: [],
+    }));
+    const result = spawnSync(process.execPath, [
+      cli, '--print', '--model', 'sonnet', '--max-retries', '0',
+      '--cwd', directory, '--base-url', 'http://127.0.0.1:1',
+      'Do not send a request when no model is allowed.',
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ANTHROPIC_API_KEY: 'model-policy-test-key',
+        AGENT_CIL_CONFIG_PATH: configPath,
+        ANTHROPIC_MODEL: '',
+      },
+    });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /No model remains available/);
+    assert.equal(result.stdout, '');
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), {
+      language: 'en', availableModels: [],
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('normal startup rejects an invalid saved model value instead of silently using the default', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agent-cil-model-config-invalid-value-start-'));
   const configPath = join(directory, 'config.json');
